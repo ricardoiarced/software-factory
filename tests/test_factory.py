@@ -7,8 +7,6 @@ import sys
 
 import pytest
 
-from factory import _parse_run
-
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
@@ -120,54 +118,30 @@ def test_valid_grammar_reaches_operational_stage(args: tuple[str, ...]) -> None:
     assert b"Traceback" not in result.stderr
 
 
-def test_run_arguments_preserve_instruction_and_context_source_order() -> None:
-    parsed = _parse_run([
-        "--file", "first.txt", "--project=api", "--file=first.txt",
-        "--force", "--", "  Fix  this  ", "--file", "last\tword",
-    ])
-
-    assert parsed.instruction == "  Fix  this   --file last\tword"
-    assert parsed.selector == ("project", "api")
-    assert parsed.files == ("first.txt", "first.txt")
-    assert parsed.force is True
-
-
-def test_run_prefix_stops_at_first_instruction_token() -> None:
-    parsed = _parse_run(["--path", "./api", "Fix", "--force", "--file=ignored"])
-
-    assert parsed.instruction == "Fix --force --file=ignored"
-    assert parsed.selector == ("path", "./api")
-    assert parsed.files == ()
-    assert parsed.force is False
-
-
-def test_run_terminator_allows_reserved_project_as_instruction() -> None:
-    parsed = _parse_run(["--", "project", "list"])
-    result = invoke("--", "project", "list")
-
-    assert parsed.instruction == "project list"
-    assert parsed.selector is None
-    assert result.returncode == 1
-    assert b"Run execution is not yet available" in result.stderr
-
-
 @pytest.mark.parametrize(
-    ("args", "selector", "files"),
+    "args",
     [
-        (("--project", "api", "Fix"), ("project", "api"), ()),
-        (("--path=-workspace", "Fix"), ("path", "-workspace"), ()),
-        (("--file=-log", "--file", "next.log", "Fix"), None, ("-log", "next.log")),
-        (("-", "--force"), None, ()),
+        ("--file", "first.txt", "--project=api", "--file=first.txt", "--force",
+         "--", "  Fix  this  ", "--file", "last\tword"),
+        ("--path", "./api", "Fix", "--force", "--file=ignored"),
+        ("--", "project", "list"),
+        ("--project", "api", "Fix"),
+        ("--path=-workspace", "Fix"),
+        ("--file=-log", "--file", "next.log", "Fix"),
+        ("-", "--force"),
     ],
-    ids=["separate-selector", "equals-selector", "repeatable-files", "lone-dash-instruction"],
+    ids=[
+        "repeated-context-and-whitespace", "first-instruction-ends-options",
+        "terminator-escapes-project", "separate-selector", "equals-selector",
+        "repeatable-files", "lone-dash-instruction",
+    ],
 )
-def test_run_accepts_documented_value_forms(
-    args: tuple[str, ...], selector: tuple[str, str] | None, files: tuple[str, ...]
-) -> None:
-    parsed = _parse_run(list(args))
+def test_run_accepts_documented_forms_through_cli(args: tuple[str, ...]) -> None:
+    result = invoke(*args)
 
-    assert parsed.selector == selector
-    assert parsed.files == files
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr == b"factory: error: Run execution is not yet available.\n"
 
 
 @pytest.mark.parametrize(

@@ -112,6 +112,17 @@ def test_explicit_path_handles_newline_in_git_worktree_path(tmp_path: Path) -> N
     assert _resolve_explicit_path(str(boundary), tmp_path) == boundary
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem byte paths")
+def test_explicit_path_handles_non_utf8_git_worktree_path(tmp_path: Path) -> None:
+    project = tmp_path / os.fsdecode(b"project-\xff")
+    project.mkdir()
+    git("init", "-q", cwd=project)
+    boundary = project / "service"
+    boundary.mkdir()
+
+    assert _resolve_explicit_path(str(boundary), tmp_path) == boundary
+
+
 def test_explicit_path_accepts_linked_worktree(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

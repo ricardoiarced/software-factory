@@ -137,16 +137,15 @@ def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
         result = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree",
              "--is-bare-repository", "--show-toplevel"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            check=False,
+            capture_output=True, check=False,
         )
     except OSError as error:
         raise ProjectSelectionError(f"Git inspection failed for {_quoted(supplied)}: {error}") from error
-    lines = result.stdout.split("\n", 2)
-    if result.returncode or len(lines) != 3 or lines[0] != "true" or lines[1] != "false":
+    lines = result.stdout.split(b"\n", 2)
+    if result.returncode or len(lines) != 3 or lines[0] != b"true" or lines[1] != b"false":
         raise ProjectSelectionError(f"path {_quoted(supplied)} is not inside a non-bare Git worktree")
     try:
-        top_level = Path(lines[2].removesuffix("\n")).resolve(strict=True)
+        top_level = Path(os.fsdecode(lines[2].removesuffix(b"\n"))).resolve(strict=True)
     except (OSError, RuntimeError) as error:
         raise ProjectSelectionError(
             f"Git inspection failed for {_quoted(supplied)}: invalid worktree path"

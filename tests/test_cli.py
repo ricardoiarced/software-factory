@@ -52,3 +52,22 @@ def test_built_wheel_installs_and_reports_distribution_version(tmp_path):
     assert result.returncode == 0
     assert result.stdout == b"factory 0.1.0\n"
     assert result.stderr == b""
+
+    help_result = subprocess.run(
+        [str(scripts / "factory"), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+    )
+    assert help_result.returncode == 0
+    assert help_result.stdout.startswith(b"Usage:\n  factory [--project NAME")
+    assert help_result.stderr == b""
+
+    malformed = subprocess.run(
+        [str(scripts / "factory"), "--version", "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+    )
+    assert malformed.returncode == 2
+    assert malformed.stdout == b""
+    assert malformed.stderr.startswith(b"factory: error: ")
+    assert b"Try 'factory --help' for more information.\n" in malformed.stderr

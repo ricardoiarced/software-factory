@@ -181,7 +181,7 @@ def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == b"factory: error: Run execution is not yet available.\n"
+    assert result.stderr == b"factory: error: Codex Compatibility Set is empty; no Run is supported.\n"
 
 
 def test_explicit_root_help_is_stable_stdout() -> None:

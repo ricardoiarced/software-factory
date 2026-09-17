@@ -2,12 +2,19 @@
 
 from importlib.metadata import PackageNotFoundError, version
 from dataclasses import dataclass
+import codecs
 import json
 import os
 from pathlib import Path
 import re
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
+from typing import BinaryIO
+
+from _codex import RunAdmissionError, run as _codex_run
 
 
 ROOT_SYNOPSIS = """Usage:
@@ -91,6 +98,10 @@ class ProjectSelectionError(Exception):
     """An explicit Project Boundary could not be selected."""
 
 
+class RunInputError(Exception):
+    """A Project Spec or Context Source cannot be used for this Run."""
+
+
 @dataclass(frozen=True)
 class RunArguments:
     instruction: str
@@ -106,9 +117,7 @@ def _quoted(value: str) -> str:
 _ENV_REFERENCE = re.compile(r"\$(\w+|\{[^}]*\})")
 
 
-def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
-    """Resolve and validate an exact explicit Project Boundary."""
-
+def _expand_path(supplied: str) -> str:
     def expand_variable(match: re.Match[str]) -> str:
         name = match.group(1).strip("{}")
         value = os.environ.get(name)
@@ -120,6 +129,13 @@ def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
     expanded_home = os.path.expanduser(expanded)
     if expanded_home.startswith("~"):
         raise ProjectSelectionError(f"home directory in {_quoted(supplied)} could not be expanded")
+    return expanded_home
+
+
+def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
+    """Resolve and validate an exact explicit Project Boundary."""
+
+    expanded_home = _expand_path(supplied)
     try:
         path = Path(expanded_home)
         if not path.is_absolute():
@@ -153,6 +169,169 @@ def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
     if not path.is_relative_to(top_level):
         raise ProjectSelectionError(f"Git inspection failed for {_quoted(supplied)}: worktree does not contain path")
     return path
+
+
+def _project_spec(boundary: Path) -> Path | None:
+    marker = boundary / ".agent"
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise RunInputError(f"Project Spec marker cannot be inspected: {error}") from error
+    try:
+        resolved_marker = marker.resolve(strict=True)
+        if not resolved_marker.is_relative_to(boundary) or not resolved_marker.is_dir():
+            raise RunInputError("Project Spec marker is not a contained directory")
+        spec = marker / "spec.md"
+        try:
+            spec.lstat()
+        except FileNotFoundError:
+            return None
+        resolved = spec.resolve(strict=True)
+        if not resolved.is_relative_to(boundary):
+            raise RunInputError("Project Spec is outside the Project Boundary")
+        return resolved
+    except (OSError, RuntimeError) as error:
+        raise RunInputError(f"Project Spec cannot be resolved: {error}") from error
+
+
+def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int]:
+    """Copy one source, validating bytes and counting terminal line feeds."""
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    size = 0
+    trailing_lfs = 0
+    try:
+        prefix = b""
+        while len(prefix) < 3:
+            part = source.read(3 - len(prefix))
+            if not part:
+                break
+            prefix += part
+        chunk = prefix.removeprefix(codecs.BOM_UTF8)
+        while True:
+            if chunk:
+                if b"\x00" in chunk:
+                    raise RunInputError(f"{label} contains NUL")
+                decoder.decode(chunk)
+                target.write(chunk)
+                size += len(chunk)
+                trailing_lfs = _terminal_lfs(chunk, trailing_lfs)
+            chunk = source.read(65536)
+            if not chunk:
+                break
+        decoder.decode(b"", final=True)
+    except UnicodeError as error:
+        raise RunInputError(f"{label} is not valid UTF-8") from error
+    except OSError as error:
+        raise RunInputError(f"{label} could not be read: {error}") from error
+    return size, trailing_lfs
+
+
+def _terminal_lfs(chunk: bytes, previous: int = 0) -> int:
+    last_non_newline = len(chunk.rstrip(b"\r\n"))
+    return min(2, chunk[last_non_newline:].count(b"\n") +
+               (previous if last_non_newline == 0 else 0))
+
+
+def _separator(spool: BinaryIO, trailing_lfs: int) -> None:
+    spool.write(b"\n" * (2 - trailing_lfs))
+
+
+def _read_source(source: BinaryIO, spool: BinaryIO, heading: bytes | None,
+                 label: str, trailing_lfs: int) -> tuple[int, int]:
+    with tempfile.TemporaryFile(mode="w+b") as staged:
+        size, payload_lfs = _copy_utf8(source, staged, label)
+        if not size and heading is not None:
+            return 0, trailing_lfs
+        if heading is not None:
+            _separator(spool, trailing_lfs)
+            spool.write(heading)
+        staged.seek(0)
+        shutil.copyfileobj(staged, spool, 65536)
+        return size, payload_lfs if size else 2
+
+
+def _open_regular(path: Path, label: str) -> BinaryIO:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise RunInputError(f"{label} is not a regular file")
+        return os.fdopen(descriptor, "rb")
+    except OSError as error:
+        raise RunInputError(f"{label} cannot be opened: {error}") from error
+
+
+def _context_path(supplied: str, invocation_dir: Path) -> Path:
+    try:
+        expanded = Path(_expand_path(supplied))
+        return expanded if expanded.is_absolute() else invocation_dir / expanded
+    except ProjectSelectionError as error:
+        raise RunInputError(str(error)) from error
+
+
+def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
+                 spool: BinaryIO) -> int:
+    spec = _project_spec(boundary)
+    trailing_lfs = 2
+    if spec is not None:
+        spool.write(b"# Project Guidance\n\n")
+        with _open_regular(spec, "Project Spec") as source:
+            _, trailing_lfs = _read_source(source, spool, None, "Project Spec", 2)
+        _separator(spool, trailing_lfs)
+    spool.write(b"# Run Request\n\n## Instruction\n\n")
+    try:
+        instruction = run.instruction.encode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise RunInputError("Instruction is not valid UTF-8") from error
+    spool.write(instruction)
+    trailing_lfs = _terminal_lfs(instruction)
+    context_bytes = 0
+    context_started = False
+    for supplied in run.files:
+        label = f"Context file {_quoted(supplied)}"
+        heading = b"### File: " + _quoted(supplied).encode("utf-8") + b"\n\n"
+        with _open_regular(_context_path(supplied, invocation_dir), label) as source:
+            size, trailing_lfs, context_started = _append_context(
+                source, spool, heading, label, trailing_lfs, context_started)
+            context_bytes += size
+    if not sys.stdin.isatty():
+        size, trailing_lfs, context_started = _append_context(
+            sys.stdin.buffer, spool, b"### Standard Input\n\n", "standard input",
+            trailing_lfs, context_started)
+        context_bytes += size
+    return context_bytes
+
+
+def _append_context(source: BinaryIO, spool: BinaryIO, heading: bytes, label: str,
+                    trailing_lfs: int, started: bool) -> tuple[int, int, bool]:
+    with tempfile.TemporaryFile(mode="w+b") as staged:
+        size, payload_lfs = _copy_utf8(source, staged, label)
+        if not size:
+            return 0, trailing_lfs, started
+        if not started:
+            _separator(spool, trailing_lfs)
+            spool.write(b"## Context\n\n")
+            started = True
+        else:
+            _separator(spool, trailing_lfs)
+        spool.write(heading)
+        staged.seek(0)
+        shutil.copyfileobj(staged, spool, 65536)
+        return size, payload_lfs, started
+
+
+def _context_threshold() -> int:
+    supplied = os.environ.get("FACTORY_CONTEXT_WARN_BYTES")
+    if supplied is None:
+        return 1_048_576
+    if not supplied or not supplied.isascii() or not all("0" <= char <= "9" for char in supplied):
+        raise RunInputError("FACTORY_CONTEXT_WARN_BYTES must be an unsigned ASCII decimal integer")
+    threshold = 0
+    for char in supplied:
+        threshold = threshold * 10 + ord(char) - ord("0")
+    return threshold
 
 
 def _parse_run(args: list[str]) -> RunArguments:
@@ -242,12 +421,37 @@ def _dispatch() -> int:
         else:
             run = _parse_run(sys.argv[1:])
             if run.selector and run.selector[0] == "path":
-                _resolve_explicit_path(run.selector[1], Path.cwd())
+                invocation_dir = Path.cwd()
+                boundary = _resolve_explicit_path(run.selector[1], invocation_dir)
+                try:
+                    spool = tempfile.TemporaryFile(mode="w+b")
+                except OSError as error:
+                    raise RunInputError(f"Run Request spool failed: {error}") from error
+                with spool:
+                    try:
+                        context_bytes = _compose_run(run, boundary, invocation_dir, spool)
+                    except OSError as error:
+                        raise RunInputError(f"Run Request spool failed: {error}") from error
+                    threshold = _context_threshold()
+                    if context_bytes > threshold:
+                        message = f"Context is {context_bytes} bytes; the warning threshold is {threshold} bytes."
+                        if not run.force:
+                            sys.stderr.write(f"factory: error: {message} Re-run with --force to continue.\n")
+                            return 1
+                        sys.stderr.write(f"factory: warning: {message} Continuing because --force was supplied.\n")
+                    try:
+                        spool.seek(0)
+                    except OSError as error:
+                        raise RunInputError(f"Run Request spool failed: {error}") from error
+                    return _codex_run(boundary, spool)
             sys.stderr.write("factory: error: Run execution is not yet available.\n")
         return 1
     except UsageError as error:
         return _usage(error)
     except ProjectSelectionError as error:
+        sys.stderr.write(f"factory: error: {error}.\n")
+        return 1
+    except (RunInputError, RunAdmissionError) as error:
         sys.stderr.write(f"factory: error: {error}.\n")
         return 1
     except PackageNotFoundError:

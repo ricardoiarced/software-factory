@@ -7,18 +7,181 @@ import sys
 
 import pytest
 
-from factory import _parse_run
+from factory import ProjectSelectionError, _parse_run, _resolve_explicit_path
 
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
 
-def invoke(*args: str, columns: str = "80") -> subprocess.CompletedProcess[bytes]:
+def invoke(
+    *args: str, columns: str = "80", cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         [sys.executable, str(FACTORY), *args],
         capture_output=True,
-        env={**os.environ, "COLUMNS": columns},
+        cwd=cwd,
+        env={**os.environ, "COLUMNS": columns, **(env or {})},
     )
+
+
+def git(*args: str, cwd: Path) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_explicit_path_preserves_canonical_subdirectory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    git("init", "-q", cwd=tmp_path)
+    boundary = tmp_path / "service"
+    boundary.mkdir()
+    (tmp_path / "link").symlink_to(boundary, target_is_directory=True)
+    monkeypatch.setenv("FACTORY_TEST_BOUNDARY", "link")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert _resolve_explicit_path("$FACTORY_TEST_BOUNDARY", tmp_path) == boundary
+    assert _resolve_explicit_path("${FACTORY_TEST_BOUNDARY}", tmp_path) == boundary
+    assert _resolve_explicit_path("~/service", tmp_path) == boundary
+
+
+@pytest.mark.parametrize("value", ["missing", "empty"])
+def test_explicit_path_rejects_unset_or_empty_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    git("init", "-q", cwd=tmp_path)
+    if value == "missing":
+        monkeypatch.delenv("FACTORY_TEST_MISSING", raising=False)
+        supplied = "${FACTORY_TEST_MISSING}"
+    else:
+        monkeypatch.setenv("FACTORY_TEST_EMPTY", "")
+        supplied = "$FACTORY_TEST_EMPTY"
+
+    result = invoke("--path", supplied, "Fix", cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"environment variable" in result.stderr
+    assert b"Run execution is not yet available" not in result.stderr
+    assert b"Usage:" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["missing", "file", "dangling", "outside-git"])
+def test_explicit_path_refuses_invalid_directory_without_fallback(tmp_path: Path, kind: str) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    git("init", "-q", cwd=project)
+    if kind == "file":
+        (project / "target").write_text("data")
+        target = project / "target"
+    elif kind == "dangling":
+        target = project / "target"
+        target.symlink_to(project / "missing")
+    elif kind == "outside-git":
+        target = tmp_path / "other"
+        target.mkdir()
+    else:
+        target = project / "missing"
+
+    result = invoke("--path", str(target), "Fix", cwd=project)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"factory: error:" in result.stderr
+    assert b"Run execution is not yet available" not in result.stderr
+    assert b"Usage:" not in result.stderr
+
+
+def test_explicit_path_uses_nested_git_worktree(tmp_path: Path) -> None:
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    git("init", "-q", cwd=outer)
+    inner = outer / "inner"
+    inner.mkdir()
+    git("init", "-q", cwd=inner)
+    boundary = inner / "service"
+    boundary.mkdir()
+
+    assert _resolve_explicit_path(str(boundary), outer) == boundary
+
+
+def test_explicit_path_handles_newline_in_git_worktree_path(tmp_path: Path) -> None:
+    project = tmp_path / "project\nname"
+    project.mkdir()
+    git("init", "-q", cwd=project)
+    boundary = project / "service"
+    boundary.mkdir()
+
+    assert _resolve_explicit_path(str(boundary), tmp_path) == boundary
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem byte paths")
+def test_explicit_path_handles_non_utf8_git_worktree_path(tmp_path: Path) -> None:
+    project = tmp_path / os.fsdecode(b"project-\xff")
+    project.mkdir()
+    git("init", "-q", cwd=project)
+    boundary = project / "service"
+    boundary.mkdir()
+
+    assert _resolve_explicit_path(str(boundary), tmp_path) == boundary
+
+
+def test_explicit_path_accepts_linked_worktree(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    git("init", "-q", cwd=source)
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "--allow-empty", "-m", "initial", "-q", cwd=source)
+    linked = tmp_path / "linked"
+    git("worktree", "add", "-q", "-b", "linked", str(linked), cwd=source)
+    boundary = linked / "service"
+    boundary.mkdir()
+
+    assert _resolve_explicit_path(str(boundary), source) == boundary
+
+
+def test_explicit_path_accepts_submodule(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    git("init", "-q", cwd=source)
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "--allow-empty", "-m", "initial", "-q", cwd=source)
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    git("init", "-q", cwd=parent)
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source),
+        "module", cwd=parent)
+    boundary = parent / "module" / "service"
+    boundary.mkdir()
+
+    assert _resolve_explicit_path(str(boundary), parent) == boundary
+
+
+def test_explicit_path_rejects_bare_repository(tmp_path: Path) -> None:
+    bare = tmp_path / "bare.git"
+    git("init", "--bare", "-q", str(bare), cwd=tmp_path)
+
+    with pytest.raises(ProjectSelectionError, match="non-bare Git worktree"):
+        _resolve_explicit_path(str(bare), tmp_path)
+
+
+def test_explicit_path_rejects_missing_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", "")
+
+    with pytest.raises(ProjectSelectionError, match="Git inspection failed"):
+        _resolve_explicit_path(str(tmp_path), tmp_path)
+
+
+def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:
+    git("init", "-q", cwd=tmp_path)
+    boundary = tmp_path / "service"
+    boundary.mkdir()
+
+    result = invoke(
+        "--path=$FACTORY_TEST_BOUNDARY", "Fix", cwd=tmp_path,
+        env={"FACTORY_TEST_BOUNDARY": "service"},
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr == b"factory: error: Run execution is not yet available.\n"
 
 
 def test_explicit_root_help_is_stable_stdout() -> None:
@@ -125,16 +288,14 @@ def test_valid_grammar_reaches_operational_stage(args: tuple[str, ...]) -> None:
     [
         ("--file", "first.txt", "--project=api", "--file=first.txt", "--force",
          "--", "  Fix  this  ", "--file", "last\tword"),
-        ("--path", "./api", "Fix", "--force", "--file=ignored"),
         ("--", "project", "list"),
         ("--project", "api", "Fix"),
-        ("--path=-workspace", "Fix"),
         ("--file=-log", "--file", "next.log", "Fix"),
         ("-", "--force"),
     ],
     ids=[
-        "repeated-context-and-whitespace", "first-instruction-ends-options",
-        "terminator-escapes-project", "separate-selector", "equals-selector",
+        "repeated-context-and-whitespace", "terminator-escapes-project",
+        "separate-selector",
         "repeatable-files", "lone-dash-instruction",
     ],
 )

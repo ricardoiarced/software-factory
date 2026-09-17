@@ -3,6 +3,10 @@
 from importlib.metadata import PackageNotFoundError, version
 from dataclasses import dataclass
 import json
+import os
+from pathlib import Path
+import re
+import subprocess
 import sys
 
 
@@ -83,6 +87,10 @@ class UsageError(Exception):
         self.project = project
 
 
+class ProjectSelectionError(Exception):
+    """An explicit Project Boundary could not be selected."""
+
+
 @dataclass(frozen=True)
 class RunArguments:
     instruction: str
@@ -93,6 +101,58 @@ class RunArguments:
 
 def _quoted(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
+
+
+_ENV_REFERENCE = re.compile(r"\$(\w+|\{[^}]*\})")
+
+
+def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
+    """Resolve and validate an exact explicit Project Boundary."""
+
+    def expand_variable(match: re.Match[str]) -> str:
+        name = match.group(1).strip("{}")
+        value = os.environ.get(name)
+        if not value:
+            raise ProjectSelectionError(f"environment variable {_quoted(name)} is unset or empty")
+        return value
+
+    expanded = _ENV_REFERENCE.sub(expand_variable, supplied)
+    expanded_home = os.path.expanduser(expanded)
+    if expanded_home.startswith("~"):
+        raise ProjectSelectionError(f"home directory in {_quoted(supplied)} could not be expanded")
+    try:
+        path = Path(expanded_home)
+        if not path.is_absolute():
+            path = invocation_dir / path
+        path = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        cause = error.strerror if isinstance(error, OSError) and error.strerror else "symlink loop"
+        raise ProjectSelectionError(
+            f"path {_quoted(supplied)} cannot be resolved: {cause}"
+        ) from error
+    if not path.is_dir():
+        raise ProjectSelectionError(f"path {_quoted(supplied)} is not a directory")
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree",
+             "--is-bare-repository", "--show-toplevel"],
+            capture_output=True, check=False,
+        )
+    except OSError as error:
+        raise ProjectSelectionError(f"Git inspection failed for {_quoted(supplied)}: {error}") from error
+    lines = result.stdout.split(b"\n", 2)
+    if result.returncode or len(lines) != 3 or lines[0] != b"true" or lines[1] != b"false":
+        raise ProjectSelectionError(f"path {_quoted(supplied)} is not inside a non-bare Git worktree")
+    try:
+        top_level = Path(os.fsdecode(lines[2].removesuffix(b"\n"))).resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ProjectSelectionError(
+            f"Git inspection failed for {_quoted(supplied)}: invalid worktree path"
+        ) from error
+    if not path.is_relative_to(top_level):
+        raise ProjectSelectionError(f"Git inspection failed for {_quoted(supplied)}: worktree does not contain path")
+    return path
 
 
 def _parse_run(args: list[str]) -> RunArguments:
@@ -180,11 +240,16 @@ def _dispatch() -> int:
             _parse_project(sys.argv[2:])
             sys.stderr.write("factory: error: Project administration is not yet available.\n")
         else:
-            _parse_run(sys.argv[1:])
+            run = _parse_run(sys.argv[1:])
+            if run.selector and run.selector[0] == "path":
+                _resolve_explicit_path(run.selector[1], Path.cwd())
             sys.stderr.write("factory: error: Run execution is not yet available.\n")
         return 1
     except UsageError as error:
         return _usage(error)
+    except ProjectSelectionError as error:
+        sys.stderr.write(f"factory: error: {error}.\n")
+        return 1
     except PackageNotFoundError:
         sys.stderr.write("factory: error: software-factory distribution metadata is unavailable.\n")
         return 1

@@ -1,6 +1,7 @@
 """Entry point for the Factory command."""
 
 from importlib.metadata import PackageNotFoundError, version
+from dataclasses import dataclass
 import json
 import sys
 
@@ -82,13 +83,23 @@ class UsageError(Exception):
         self.project = project
 
 
+@dataclass(frozen=True)
+class RunArguments:
+    instruction: str
+    selector: tuple[str, str] | None
+    files: tuple[str, ...]
+    force: bool
+
+
 def _quoted(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
-def _parse_run(args: list[str]) -> None:
+def _parse_run(args: list[str]) -> RunArguments:
     selectors: set[str] = set()
     seen_force = False
+    selector: tuple[str, str] | None = None
+    files: list[str] = []
     position = 0
     while position < len(args):
         argument = args[position]
@@ -114,6 +125,9 @@ def _parse_run(args: list[str]) -> None:
                 selectors.add(option)
                 if len(selectors) > 1:
                     raise UsageError("--project and --path cannot be combined")
+                selector = (option[2:], value)
+            else:
+                files.append(value)
         elif argument == "--force":
             if seen_force:
                 raise UsageError("--force may appear only once")
@@ -123,8 +137,10 @@ def _parse_run(args: list[str]) -> None:
         else:
             raise UsageError(f"unknown option {_quoted(argument)}")
         position += 1
-    if not args[position:] or not " ".join(args[position:]).strip():
+    instruction = " ".join(args[position:])
+    if not args[position:] or not instruction.strip():
         raise UsageError("an Instruction with non-whitespace text is required")
+    return RunArguments(instruction, selector, tuple(files), seen_force)
 
 
 def _parse_project(args: list[str]) -> None:

@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from factory import _parse_run
+
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
@@ -142,6 +144,18 @@ def test_run_accepts_documented_forms_through_cli(args: tuple[str, ...]) -> None
     assert result.returncode == 1
     assert result.stdout == b""
     assert result.stderr == b"factory: error: Run execution is not yet available.\n"
+
+
+def test_run_parser_returns_instruction_selector_context_sources_and_force() -> None:
+    parsed = _parse_run([
+        "--file", "first.txt", "--project=api", "--file=first.txt",
+        "--force", "--", "  Fix  this  ", "--file", "last\tword",
+    ])
+
+    assert parsed.instruction == "  Fix  this   --file last\tword"
+    assert parsed.selector == ("project", "api")
+    assert parsed.files == ("first.txt", "first.txt")
+    assert parsed.force is True
 
 
 @pytest.mark.parametrize(

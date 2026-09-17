@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from factory import _parse_run
+
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
@@ -116,3 +118,95 @@ def test_valid_grammar_reaches_operational_stage(args: tuple[str, ...]) -> None:
     assert result.stderr.startswith(b"factory: error: ")
     assert b"Usage:" not in result.stderr
     assert b"Traceback" not in result.stderr
+
+
+def test_run_arguments_preserve_instruction_and_context_source_order() -> None:
+    parsed = _parse_run([
+        "--file", "first.txt", "--project=api", "--file=first.txt",
+        "--force", "--", "  Fix  this  ", "--file", "last\tword",
+    ])
+
+    assert parsed.instruction == "  Fix  this   --file last\tword"
+    assert parsed.selector == ("project", "api")
+    assert parsed.files == ("first.txt", "first.txt")
+    assert parsed.force is True
+
+
+def test_run_prefix_stops_at_first_instruction_token() -> None:
+    parsed = _parse_run(["--path", "./api", "Fix", "--force", "--file=ignored"])
+
+    assert parsed.instruction == "Fix --force --file=ignored"
+    assert parsed.selector == ("path", "./api")
+    assert parsed.files == ()
+    assert parsed.force is False
+
+
+def test_run_terminator_allows_reserved_project_as_instruction() -> None:
+    parsed = _parse_run(["--", "project", "list"])
+    result = invoke("--", "project", "list")
+
+    assert parsed.instruction == "project list"
+    assert parsed.selector is None
+    assert result.returncode == 1
+    assert b"Run execution is not yet available" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "selector", "files"),
+    [
+        (("--project", "api", "Fix"), ("project", "api"), ()),
+        (("--path=-workspace", "Fix"), ("path", "-workspace"), ()),
+        (("--file=-log", "--file", "next.log", "Fix"), None, ("-log", "next.log")),
+        (("-", "--force"), None, ()),
+    ],
+    ids=["separate-selector", "equals-selector", "repeatable-files", "lone-dash-instruction"],
+)
+def test_run_accepts_documented_value_forms(
+    args: tuple[str, ...], selector: tuple[str, str] | None, files: tuple[str, ...]
+) -> None:
+    parsed = _parse_run(list(args))
+
+    assert parsed.selector == selector
+    assert parsed.files == files
+
+
+@pytest.mark.parametrize(
+    ("args", "reason"),
+    [
+        (("--project", "api", "--project", "api", "Fix"), b"--project may appear only once"),
+        (("--path=a", "--path=b", "Fix"), b"--path may appear only once"),
+        (("--project=api", "--path=./api", "Fix"), b"cannot be combined"),
+        (("--force", "--force", "Fix"), b"--force may appear only once"),
+        (("--file", "-log", "Fix"), b"--file requires a value"),
+        (("--project", "--", "Fix"), b"--project requires a value"),
+        (("--file=", "Fix"), b"--file requires a non-empty value"),
+        (("--path",), b"--path requires a non-empty value"),
+        (("--force=1", "Fix"), b"unknown option"),
+        (("--unknown", "Fix"), b"unknown option"),
+        (("--", " \t", "\n"), b"non-whitespace text is required"),
+    ],
+    ids=[
+        "duplicate-project", "duplicate-path", "conflicting-selectors", "duplicate-force",
+        "separate-dash-file", "separate-terminator-selector", "empty-equals-file",
+        "missing-path", "force-has-no-value", "unknown-option", "blank-instruction",
+    ],
+)
+def test_run_grammar_failures_exit_two(args: tuple[str, ...], reason: bytes) -> None:
+    result = invoke(*args)
+
+    assert result.returncode == 2
+    assert result.stdout == b""
+    assert reason in result.stderr
+    assert b"Try 'factory --help' for more information." in result.stderr
+    assert b"Traceback" not in result.stderr
+
+
+def test_only_exact_first_project_enters_administration() -> None:
+    administration = invoke("project", "list")
+    run = invoke("Project", "list")
+    escaped = invoke("--", "project", "list")
+
+    assert administration.returncode == run.returncode == escaped.returncode == 1
+    assert b"Project administration is not yet available" in administration.stderr
+    assert b"Run execution is not yet available" in run.stderr
+    assert b"Run execution is not yet available" in escaped.stderr

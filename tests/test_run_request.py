@@ -1,0 +1,247 @@
+"""Run Request behavior at the Factory command boundary."""
+
+import io
+import sys
+from pathlib import Path
+
+import pytest
+
+import factory
+from _codex import RunAdmissionError
+
+
+def test_explicit_run_hands_off_exact_request_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    marker = tmp_path / ".agent"
+    marker.mkdir()
+    (marker / "spec.md").write_bytes(b"\xef\xbb\xbfGuide\r\n")
+    (tmp_path / "notes.txt").write_bytes(b"\xef\xbb\xbfFirst\n\n")
+    requests: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        assert boundary == tmp_path
+        requests.append(spool.read())
+        return 7
+
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
+                                      "--file", "notes.txt", "Fix", "it"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"stdin")))
+    monkeypatch.setattr(factory, "_codex_run", handoff, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 7
+    assert requests == [
+        b"# Project Guidance\n\nGuide\r\n\n# Run Request\n\n"
+        b"## Instruction\n\nFix it\n\n## Context\n\n"
+        b"### File: \"notes.txt\"\n\nFirst\n\n"
+        b"### Standard Input\n\nstdin"
+    ]
+    assert capsys.readouterr().err == ""
+
+
+def test_absent_spec_and_empty_context_keep_only_required_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "empty").write_bytes(b"\xef\xbb\xbf")
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
+                                      "--file", "empty", "Do", "work"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [b"# Run Request\n\n## Instruction\n\nDo work"]
+
+
+@pytest.mark.parametrize("content", [b"\xff", b"before\x00after"])
+def test_invalid_project_spec_refuses_before_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    content: bytes,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    marker = tmp_path / ".agent"
+    marker.mkdir()
+    (marker / "spec.md").write_bytes(content)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert "Project Spec" in capsys.readouterr().err
+
+
+def test_project_spec_symlink_outside_boundary_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import subprocess
+
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    marker = project / ".agent"
+    marker.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("secret")
+    (marker / "spec.md").symlink_to(outside)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(project), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(project)
+
+    assert factory.main() == 1
+    assert "outside the Project Boundary" in capsys.readouterr().err
+
+
+def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "context").write_bytes(b"\xef\xbb\xbfcaf\xc3\xa9")
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "4")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
+                                      "--file", "context", "Fix"])
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        "factory: error: Context is 5 bytes; the warning threshold is 4 bytes. "
+        "Re-run with --force to continue.\n"
+    )
+
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
+                                      "--file", "context", "--force", "Fix"])
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        "factory: warning: Context is 5 bytes; the warning threshold is 4 bytes. "
+        "Continuing because --force was supplied.\n"
+        "factory: error: Codex Compatibility Set is empty; no Run is supported.\n"
+    )
+
+
+def test_spool_is_private_rewound_and_closed_after_admission_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    spools: list[io.BufferedRandom] = []
+
+    def refuse(boundary: Path, spool: io.BufferedRandom) -> int:
+        assert spool.tell() == 0
+        assert not isinstance(spool.name, str)
+        spools.append(spool)
+        raise RunAdmissionError("unsupported")
+
+    monkeypatch.setattr(factory, "_codex_run", refuse)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert len(spools) == 1 and spools[0].closed
+
+
+def test_explicit_subdirectory_does_not_inherit_ancestor_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "spec.md").write_text("ancestor guidance")
+    boundary = tmp_path / "service"
+    boundary.mkdir()
+    received: list[bytes] = []
+
+    def handoff(project: Path, spool: io.BufferedRandom) -> int:
+        assert project == boundary
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(boundary), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [b"# Run Request\n\n## Instruction\n\nFix"]
+
+
+@pytest.mark.parametrize("content", [b"\xff", b"a\x00b"])
+def test_invalid_context_refuses_before_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], content: bytes,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "context").write_bytes(content)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
+                                      "--file", "context", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert "Context file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("setting", ["", "-1", "+1", " 1", "1 ", "１２", "1.0"])
+def test_malformed_context_threshold_refuses_even_empty_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], setting: str,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", setting)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert "unsigned ASCII decimal integer" in capsys.readouterr().err
+
+
+def test_repeated_file_context_uses_original_json_labels_and_preserves_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    name = 'line\n"quote".txt'
+    (tmp_path / name).write_bytes(b"x\r\ny\r")
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
+                                      "--file", name, "--file", name, "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [
+        b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
+        b'### File: "line\\n\\"quote\\".txt"\n\nx\r\ny\r\n\n'
+        b'### File: "line\\n\\"quote\\".txt"\n\nx\r\ny\r'
+    ]

@@ -197,7 +197,7 @@ def _project_spec(boundary: Path) -> Path | None:
 
 
 def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int]:
-    """Copy one source, validating bytes and returning size and trailing LF count."""
+    """Copy one source, validating bytes and counting terminal line feeds."""
     decoder = codecs.getincrementaldecoder("utf-8")("strict")
     size = 0
     trailing_lfs = 0
@@ -216,9 +216,7 @@ def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int
                 decoder.decode(chunk)
                 target.write(chunk)
                 size += len(chunk)
-                last_non_lf = len(chunk.rstrip(b"\n"))
-                trailing_lfs = min(2, len(chunk) - last_non_lf +
-                                   (trailing_lfs if last_non_lf == 0 else 0))
+                trailing_lfs = _terminal_lfs(chunk, trailing_lfs)
             chunk = source.read(65536)
             if not chunk:
                 break
@@ -228,6 +226,12 @@ def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int
     except OSError as error:
         raise RunInputError(f"{label} could not be read: {error}") from error
     return size, trailing_lfs
+
+
+def _terminal_lfs(chunk: bytes, previous: int = 0) -> int:
+    last_non_newline = len(chunk.rstrip(b"\r\n"))
+    return min(2, chunk[last_non_newline:].count(b"\n") +
+               (previous if last_non_newline == 0 else 0))
 
 
 def _separator(spool: BinaryIO, trailing_lfs: int) -> None:
@@ -282,7 +286,7 @@ def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
     except UnicodeError as error:
         raise RunInputError("Instruction is not valid UTF-8") from error
     spool.write(instruction)
-    trailing_lfs = min(2, len(instruction) - len(instruction.rstrip(b"\n")))
+    trailing_lfs = _terminal_lfs(instruction)
     context_bytes = 0
     context_started = False
     for supplied in run.files:
@@ -419,8 +423,15 @@ def _dispatch() -> int:
             if run.selector and run.selector[0] == "path":
                 invocation_dir = Path.cwd()
                 boundary = _resolve_explicit_path(run.selector[1], invocation_dir)
-                with tempfile.TemporaryFile(mode="w+b") as spool:
-                    context_bytes = _compose_run(run, boundary, invocation_dir, spool)
+                try:
+                    spool = tempfile.TemporaryFile(mode="w+b")
+                except OSError as error:
+                    raise RunInputError(f"Run Request spool failed: {error}") from error
+                with spool:
+                    try:
+                        context_bytes = _compose_run(run, boundary, invocation_dir, spool)
+                    except OSError as error:
+                        raise RunInputError(f"Run Request spool failed: {error}") from error
                     threshold = _context_threshold()
                     if context_bytes > threshold:
                         message = f"Context is {context_bytes} bytes; the warning threshold is {threshold} bytes."
@@ -428,7 +439,10 @@ def _dispatch() -> int:
                             sys.stderr.write(f"factory: error: {message} Re-run with --force to continue.\n")
                             return 1
                         sys.stderr.write(f"factory: warning: {message} Continuing because --force was supplied.\n")
-                    spool.seek(0)
+                    try:
+                        spool.seek(0)
+                    except OSError as error:
+                        raise RunInputError(f"Run Request spool failed: {error}") from error
                     return _codex_run(boundary, spool)
             sys.stderr.write("factory: error: Run execution is not yet available.\n")
         return 1

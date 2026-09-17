@@ -245,3 +245,81 @@ def test_repeated_file_context_uses_original_json_labels_and_preserves_payload(
         b'### File: "line\\n\\"quote\\".txt"\n\nx\r\ny\r\n\n'
         b'### File: "line\\n\\"quote\\".txt"\n\nx\r\ny\r'
     ]
+
+
+def test_crlf_blank_lines_need_no_added_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "spec.md").write_bytes(b"guide\r\n\r\n")
+    (tmp_path / "context").write_bytes(b"context\r\n\r\n")
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
+                                      "--file", "context", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"next")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [
+        b"# Project Guidance\n\nguide\r\n\r\n# Run Request\n\n"
+        b"## Instruction\n\nFix\n\n## Context\n\n"
+        b"### File: \"context\"\n\ncontext\r\n\r\n"
+        b"### Standard Input\n\nnext"
+    ]
+
+
+def test_spool_creation_failure_identifies_spool_and_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    def fail_spool(*args: object, **kwargs: object) -> io.BufferedRandom:
+        raise OSError("temporary storage unavailable")
+
+    monkeypatch.setattr(factory.tempfile, "TemporaryFile", fail_spool)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        "factory: error: Run Request spool failed: temporary storage unavailable.\n"
+    )
+
+
+def test_instruction_crlf_blank_line_needs_no_added_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "context").write_bytes(b"detail")
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
+                                      "--file", "context", "Fix\r\n\r\n"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [
+        b"# Run Request\n\n## Instruction\n\nFix\r\n\r\n"
+        b"## Context\n\n### File: \"context\"\n\ndetail"
+    ]

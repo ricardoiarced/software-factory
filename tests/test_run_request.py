@@ -32,6 +32,127 @@ def test_run_without_selector_uses_containing_worktree_root(
     assert boundaries == [tmp_path]
 
 
+def test_discovery_selects_nearest_marker_without_ancestor_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "spec.md").write_text("ancestor guidance")
+    service = tmp_path / "service"
+    (service / ".agent").mkdir(parents=True)
+    invocation = service / "src"
+    invocation.mkdir()
+    received: list[tuple[Path, bytes]] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append((boundary, spool.read()))
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(invocation)
+
+    assert factory.main() == 0
+    assert received == [(service, b"# Run Request\n\n## Instruction\n\nFix")]
+
+
+@pytest.mark.parametrize("kind", ["file", "dangling", "escaping"])
+def test_discovery_refuses_malformed_marker_instead_of_using_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], kind: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    (project / ".agent").mkdir()
+    service = project / "service"
+    service.mkdir()
+    marker = service / ".agent"
+    if kind == "file":
+        marker.write_text("not a directory")
+    elif kind == "dangling":
+        marker.symlink_to("missing", target_is_directory=True)
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        marker.symlink_to(outside, target_is_directory=True)
+    received: list[Path] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(boundary)
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(service)
+
+    assert factory.main() == 1
+    assert received == []
+    assert "Project Marker" in capsys.readouterr().err
+
+
+def test_discovery_refuses_inaccessible_marker_instead_of_using_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".agent").mkdir()
+    service = tmp_path / "service"
+    service.mkdir()
+    marker = service / ".agent"
+    marker.mkdir()
+    original_lstat = Path.lstat
+
+    def inaccessible_lstat(path: Path) -> object:
+        if path == marker:
+            raise PermissionError("access denied")
+        return original_lstat(path)
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Codex must not run after an inaccessible Project Marker")
+
+    monkeypatch.setattr(Path, "lstat", inaccessible_lstat)
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(service)
+
+    assert factory.main() == 1
+    assert "Project Marker" in capsys.readouterr().err
+
+
+def test_discovery_accepts_contained_symlinked_marker_and_its_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    service = tmp_path / "service"
+    guidance = service / "guidance"
+    guidance.mkdir(parents=True)
+    (guidance / "spec.md").write_text("service guidance")
+    (service / ".agent").symlink_to(guidance, target_is_directory=True)
+    invocation = service / "src"
+    invocation.mkdir()
+    received: list[tuple[Path, bytes]] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append((boundary, spool.read()))
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(invocation)
+
+    assert factory.main() == 0
+    assert received == [(
+        service,
+        b"# Project Guidance\n\nservice guidance\n\n"
+        b"# Run Request\n\n## Instruction\n\nFix",
+    )]
+
+
 def test_discovery_stays_inside_nested_repository(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -40,12 +161,14 @@ def test_discovery_stays_inside_nested_repository(
     inner.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
     subprocess.run(["git", "init", "-q"], cwd=inner, check=True)
+    (outer / ".agent").mkdir()
+    (outer / ".agent" / "spec.md").write_text("outer guidance")
     nested = inner / "service"
     nested.mkdir()
-    boundaries: list[Path] = []
+    received: list[tuple[Path, bytes]] = []
 
     def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        boundaries.append(boundary)
+        received.append((boundary, spool.read()))
         return 0
 
     monkeypatch.setattr(factory, "_codex_run", handoff)
@@ -54,7 +177,7 @@ def test_discovery_stays_inside_nested_repository(
     monkeypatch.chdir(nested)
 
     assert factory.main() == 0
-    assert boundaries == [inner]
+    assert received == [(inner, b"# Run Request\n\n## Instruction\n\nFix")]
 
 
 @pytest.mark.parametrize("kind", ["linked", "submodule"])

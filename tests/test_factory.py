@@ -276,6 +276,131 @@ def test_project_add_directory_sync_failure_warns_update_may_have_committed(
     }
 
 
+def test_project_remove_preserves_other_registration_and_inspection(tmp_path: Path) -> None:
+    git("init", "-q", cwd=tmp_path)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    config, registry = show_registry(tmp_path, json.dumps({
+        "version": 1, "projects": {"Api": str(first), "other": str(second)},
+    }))
+    env = {"XDG_CONFIG_HOME": str(config)}
+
+    result = invoke("project", "remove", "Api", env=env)
+
+    assert result.returncode == 0
+    assert result.stdout == f'Removed project "Api" from "{first}".\n'.encode()
+    assert result.stderr == b""
+    assert registry.read_bytes() == (
+        '{\n  "version": 1,\n  "projects": {\n    "other": "' + str(second) + '"\n  }\n}\n'
+    ).encode()
+    assert invoke("project", "list", env=env).stdout == (
+        f'NAME\tSTATUS\tPATH\n"other"\tvalid\t"{second}"\n'.encode()
+    )
+    assert invoke("project", "show", "other", env=env).stdout == (
+        f'Name: "other"\nPath: "{second}"\nStatus: valid\n'.encode()
+    )
+
+
+def test_project_remove_unknown_name_keeps_registry_unchanged(tmp_path: Path) -> None:
+    config, registry = show_registry(tmp_path, json.dumps({
+        "version": 1, "projects": {"Api": str(tmp_path)},
+    }))
+    before = registry.read_bytes()
+    before_stat = registry.stat()
+
+    result = invoke("project", "remove", "api", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr == b'factory: error: Project "api" is not registered.\n'
+    assert registry.read_bytes() == before
+    assert registry.stat().st_ino == before_stat.st_ino
+    assert registry.stat().st_mtime_ns == before_stat.st_mtime_ns
+
+
+def test_project_remove_last_registration_writes_valid_empty_registry(tmp_path: Path) -> None:
+    config, registry = show_registry(tmp_path, json.dumps({
+        "version": 1, "projects": {"api": str(tmp_path)},
+    }))
+    env = {"XDG_CONFIG_HOME": str(config)}
+
+    result = invoke("project", "remove", "--", "api", env=env)
+
+    assert result.returncode == 0
+    assert result.stdout == f'Removed project "api" from "{tmp_path}".\n'.encode()
+    assert result.stderr == b""
+    assert registry.read_bytes() == b'{\n  "version": 1,\n  "projects": {}\n}\n'
+    assert invoke("project", "list", env=env).stdout == b"No projects registered.\n"
+    show = invoke("project", "show", "api", env=env)
+    assert show.returncode == 1
+    assert show.stdout == b""
+    assert show.stderr == b'factory: error: Project "api" is not registered.\n'
+
+
+def test_project_remove_unknown_from_missing_registry_creates_no_state(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+
+    result = invoke("project", "remove", "api", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr == b'factory: error: Project "api" is not registered.\n'
+    assert not config.exists()
+
+
+def test_project_remove_replace_failure_keeps_previous_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, registry = show_registry(tmp_path, json.dumps({
+        "version": 1, "projects": {"api": str(tmp_path)},
+    }))
+    before = registry.read_bytes()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "remove", "api"])
+
+    def fail_replace(*_: object) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(factory.os, "replace", fail_replace)
+
+    result = factory.main()
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.out == ""
+    assert "Project Registry cannot be updated" in output.err
+    assert registry.read_bytes() == before
+    assert list(registry.parent.glob(".projects-*")) == []
+
+
+def test_project_remove_directory_sync_failure_warns_update_may_have_committed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, registry = show_registry(tmp_path, json.dumps({
+        "version": 1, "projects": {"api": str(tmp_path)},
+    }))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "remove", "api"])
+    actual_fsync = os.fsync
+
+    def fail_directory_sync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("directory sync failed")
+        actual_fsync(descriptor)
+
+    monkeypatch.setattr(factory.os, "fsync", fail_directory_sync)
+
+    result = factory.main()
+    output = capsys.readouterr()
+
+    assert result == 1
+    assert output.out == ""
+    assert "factory: warning: Project Registry update may have committed" in output.err
+    assert registry.read_bytes() == b'{\n  "version": 1,\n  "projects": {}\n}\n'
+
+
 def test_project_list_missing_registry_is_empty_without_creating_state(tmp_path: Path) -> None:
     config = tmp_path / "config"
 

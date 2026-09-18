@@ -733,6 +733,71 @@ def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
     )
 
 
+def test_default_context_threshold_accepts_equality_and_force_only_oversize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
+    context = tmp_path / "context"
+    context.write_bytes(b"\xef\xbb\xbf" + b"x" * 1_048_576)
+    monkeypatch.delenv("FACTORY_CONTEXT_WARN_BYTES", raising=False)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 17
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    arguments = ["factory", "--path", str(tmp_path), "--file", "context"]
+    monkeypatch.setattr(sys, "argv", [*arguments, "Fix"])
+    assert factory.main() == 17
+    assert capsys.readouterr().err == ""
+    assert len(received) == 1
+    assert received[0].startswith(b"# Project Guidance\n\nProject Guidance")
+
+    context.write_bytes(b"\xef\xbb\xbf" + b"x" * 1_048_577)
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        "factory: error: Context is 1048577 bytes; the warning threshold is 1048576 bytes. "
+        "Re-run with --force to continue.\n"
+    )
+    assert len(received) == 1
+
+    monkeypatch.setattr(sys, "argv", [*arguments, "--force", "Fix"])
+    assert factory.main() == 17
+    assert capsys.readouterr().err == (
+        "factory: warning: Context is 1048577 bytes; the warning threshold is 1048576 bytes. "
+        "Continuing because --force was supplied.\n"
+    )
+    assert len(received) == 2
+
+
+@pytest.mark.parametrize("threshold,payload,expected", [
+    ("0", b"", "factory: error: Codex Compatibility Set is empty; no Run is supported.\n"),
+    ("0", b"x", "factory: error: Context is 1 bytes; the warning threshold is 0 bytes. "
+                   "Re-run with --force to continue.\n"),
+    ("0002", b"xy", "factory: error: Codex Compatibility Set is empty; no Run is supported.\n"),
+])
+def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    threshold: str, payload: bytes, expected: str,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "context").write_bytes(payload)
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", threshold)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "context", "Fix",
+    ])
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err == expected
+
+
 def test_spool_is_private_rewound_and_closed_after_admission_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -896,7 +961,9 @@ def test_directory_context_source_refuses_before_admission(
     assert 'Context file "directory" is not a regular file' in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("setting", ["", "-1", "+1", " 1", "1 ", "１２", "1.0"])
+@pytest.mark.parametrize("setting", [
+    "", "-1", "+1", " 1", "1 ", "1\n", "１２", "١", "1.0", "1_0", "0x10",
+])
 def test_malformed_context_threshold_refuses_even_empty_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str], setting: str,
@@ -911,6 +978,35 @@ def test_malformed_context_threshold_refuses_even_empty_context(
 
     assert factory.main() == 1
     assert "unsigned ASCII decimal integer" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("failure,expected", [
+    ("project", "cannot be resolved"),
+    ("context", 'Context file "context" is not valid UTF-8'),
+    ("threshold", "FACTORY_CONTEXT_WARN_BYTES must be an unsigned ASCII decimal integer"),
+    ("admission", "Codex Compatibility Set is empty"),
+])
+def test_force_preserves_project_context_threshold_and_run_admission_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    failure: str, expected: str,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "context").write_bytes(b"\xff")
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "invalid" if failure == "threshold" else "0")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+    path = str(tmp_path / "missing") if failure == "project" else str(tmp_path)
+    file_args = ["--file", "context"] if failure == "context" else []
+    diagnostics = []
+
+    for force in ([], ["--force"]):
+        monkeypatch.setattr(sys, "argv", ["factory", "--path", path,
+                                          *file_args, *force, "Fix"])
+        assert factory.main() == 1
+        diagnostic = capsys.readouterr().err
+        assert expected in diagnostic
+        diagnostics.append(diagnostic)
+    assert diagnostics[0] == diagnostics[1]
 
 
 def test_repeated_file_context_uses_original_json_labels_and_preserves_payload(

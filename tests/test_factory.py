@@ -184,6 +184,27 @@ def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:
     assert result.stderr == b"factory: error: Codex Compatibility Set is empty; no Run is supported.\n"
 
 
+@pytest.mark.parametrize("case", ["outside", "bare", "missing-git", "inspection-failure"])
+def test_discovery_refuses_unusable_git_context(tmp_path: Path, case: str) -> None:
+    env: dict[str, str] = {}
+    if case == "bare":
+        git("init", "--bare", "-q", cwd=tmp_path)
+    elif case != "outside":
+        git("init", "-q", cwd=tmp_path)
+    if case == "missing-git":
+        env["PATH"] = ""
+    elif case == "inspection-failure":
+        env["GIT_DIR"] = str(tmp_path / "missing-git-dir")
+
+    result = invoke("Fix", cwd=tmp_path, env=env)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    expected = b"Git inspection failed" if case == "missing-git" else b"non-bare Git worktree"
+    assert expected in result.stderr
+    assert b"Traceback" not in result.stderr
+
+
 def test_explicit_root_help_is_stable_stdout() -> None:
     wide = invoke("--help", columns="200")
     narrow = invoke("-h", columns="20")
@@ -299,12 +320,20 @@ def test_valid_grammar_reaches_operational_stage(args: tuple[str, ...]) -> None:
         "repeatable-files", "lone-dash-instruction",
     ],
 )
-def test_run_accepts_documented_forms_through_cli(args: tuple[str, ...]) -> None:
-    result = invoke(*args)
+def test_run_accepts_documented_forms_through_cli(args: tuple[str, ...], tmp_path: Path) -> None:
+    git("init", "-q", cwd=tmp_path)
+    (tmp_path / "-log").write_text("context")
+    (tmp_path / "next.log").write_text("context")
+    result = invoke(*args, cwd=tmp_path)
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == b"factory: error: Run execution is not yet available.\n"
+    expected = (
+        b"factory: error: Run execution is not yet available.\n"
+        if "--project" in args or "--project=api" in args else
+        b"factory: error: Codex Compatibility Set is empty; no Run is supported.\n"
+    )
+    assert result.stderr == expected
 
 
 def test_run_parser_returns_instruction_selector_context_sources_and_force() -> None:
@@ -357,5 +386,5 @@ def test_only_exact_first_project_enters_administration() -> None:
 
     assert administration.returncode == run.returncode == escaped.returncode == 1
     assert b"Project administration is not yet available" in administration.stderr
-    assert b"Run execution is not yet available" in run.stderr
-    assert b"Run execution is not yet available" in escaped.stderr
+    assert b"Codex Compatibility Set is empty" in run.stderr
+    assert b"Codex Compatibility Set is empty" in escaped.stderr

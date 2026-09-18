@@ -1,6 +1,7 @@
 """Run Request behavior at the Factory command boundary."""
 
 import io
+import subprocess
 import sys
 from pathlib import Path
 
@@ -8,6 +9,94 @@ import pytest
 
 import factory
 from _codex import RunAdmissionError
+
+
+def test_run_without_selector_uses_containing_worktree_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    nested = tmp_path / "service" / "src"
+    nested.mkdir(parents=True)
+    boundaries: list[Path] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        boundaries.append(boundary)
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(nested)
+
+    assert factory.main() == 0
+    assert boundaries == [tmp_path]
+
+
+def test_discovery_stays_inside_nested_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    inner.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=inner, check=True)
+    nested = inner / "service"
+    nested.mkdir()
+    boundaries: list[Path] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        boundaries.append(boundary)
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(nested)
+
+    assert factory.main() == 0
+    assert boundaries == [inner]
+
+
+@pytest.mark.parametrize("kind", ["linked", "submodule"])
+def test_discovery_uses_linked_worktree_or_submodule_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "--allow-empty", "-m", "initial", "-q",
+    ], cwd=source, check=True)
+    if kind == "linked":
+        root = tmp_path / "linked"
+        subprocess.run([
+            "git", "worktree", "add", "-q", "-b", "linked", str(root),
+        ], cwd=source, check=True)
+    else:
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=parent, check=True)
+        subprocess.run([
+            "git", "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+            str(source), "module",
+        ], cwd=parent, check=True)
+        root = parent / "module"
+    nested = root / "service"
+    nested.mkdir()
+    boundaries: list[Path] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        boundaries.append(boundary)
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(nested)
+
+    assert factory.main() == 0
+    assert boundaries == [root]
 
 
 def test_explicit_run_hands_off_exact_request_bytes(

@@ -631,6 +631,40 @@ def _add_project(name: str, supplied_path: str) -> None:
         raise
 
 
+def _remove_project(name: str) -> None:
+    from platformdirs import user_config_path
+
+    directory = user_config_path("factory", appauthor=False)
+    registry = directory / "projects.json"
+    if not directory.exists():
+        raise RegistryError(f"Project {_quoted(name)} is not registered")
+    changed = False
+    try:
+        descriptor = os.open(directory / "projects.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "rb+") as lock:
+            if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+                raise RegistryError("Project Registry lock is not a regular file")
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            projects = _read_registry()
+            if name not in projects:
+                raise RegistryError(f"Project {_quoted(name)} is not registered")
+            path = projects.pop(name)
+            _write_registry(registry, projects)
+            changed = True
+            sys.stdout.write(
+                f'Removed project {json.dumps(name, ensure_ascii=False)} '
+                f'from {json.dumps(path, ensure_ascii=False)}.\n'
+            )
+    except OSError as error:
+        if changed:
+            raise RegistryCommitUncertain(f"Project Registry update may have committed: output failed: {error}") from error
+        raise RegistryError(f"Project Registry cannot be updated: {error}") from error
+    except UnicodeError as error:
+        if changed:
+            raise RegistryCommitUncertain(f"Project Registry update may have committed: output failed: {error}") from error
+        raise
+
+
 def _project_status(path: str) -> str:
     selected = Path(path)
     try:
@@ -710,6 +744,9 @@ def _dispatch() -> int:
                 return 0
             if command == "add":
                 _add_project(values[0], values[1])
+                return 0
+            if command == "remove":
+                _remove_project(values[0])
                 return 0
             sys.stderr.write("factory: error: Project administration is not yet available.\n")
         else:

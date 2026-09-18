@@ -178,6 +178,38 @@ def _containing_worktree_root(path: Path, label: str) -> Path:
     return top_level
 
 
+def _discover_project_boundary(invocation_dir: Path) -> Path:
+    """Select the nearest Project Marker within the containing worktree."""
+
+    root = _containing_worktree_root(invocation_dir, "invocation directory")
+    candidate = invocation_dir
+    while True:
+        marker = candidate / ".agent"
+        try:
+            marker.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise ProjectSelectionError(
+                f"Project Marker at {_quoted(str(marker))} cannot be inspected: {error}"
+            ) from error
+        else:
+            try:
+                resolved = marker.resolve(strict=True)
+                if not resolved.is_relative_to(candidate) or not resolved.is_dir():
+                    raise ProjectSelectionError(
+                        f"Project Marker at {_quoted(str(marker))} is not a contained directory"
+                    )
+            except (OSError, RuntimeError) as error:
+                raise ProjectSelectionError(
+                    f"Project Marker at {_quoted(str(marker))} cannot be resolved: {error}"
+                ) from error
+            return candidate
+        if candidate == root:
+            return root
+        candidate = candidate.parent
+
+
 def _project_spec(boundary: Path) -> Path | None:
     marker = boundary / ".agent"
     try:
@@ -430,7 +462,7 @@ def _dispatch() -> int:
             if run.selector is None or run.selector[0] == "path":
                 invocation_dir = Path.cwd()
                 boundary = (
-                    _containing_worktree_root(invocation_dir, "invocation directory")
+                    _discover_project_boundary(invocation_dir)
                     if run.selector is None else
                     _resolve_explicit_path(run.selector[1], invocation_dir)
                 )

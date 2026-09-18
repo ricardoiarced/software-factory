@@ -280,7 +280,7 @@ def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int
                 decoder.decode(chunk)
                 try:
                     target.write(chunk)
-                except OSError as error:
+                except (OSError, ValueError) as error:
                     raise RunInputError(f"Run Request spool failed: {error}") from error
                 size += len(chunk)
                 trailing_lfs = _terminal_lfs(chunk, trailing_lfs)
@@ -290,7 +290,7 @@ def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int
         decoder.decode(b"", final=True)
     except UnicodeError as error:
         raise RunInputError(f"{label} is not valid UTF-8") from error
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise RunInputError(f"{label} could not be read: {error}") from error
     return size, trailing_lfs
 
@@ -392,7 +392,11 @@ def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
             size, trailing_lfs, context_started = _append_context(
                 source, spool, heading, label, trailing_lfs, context_started)
             context_bytes += size
-    if not sys.stdin.isatty():
+    try:
+        terminal_input = sys.stdin.isatty()
+    except (OSError, ValueError) as error:
+        raise RunInputError(f"standard input could not be read: {error}") from error
+    if not terminal_input:
         size, trailing_lfs, context_started = _append_context(
             sys.stdin.buffer, spool, b"### Standard Input\n\n", "standard input",
             trailing_lfs, context_started)

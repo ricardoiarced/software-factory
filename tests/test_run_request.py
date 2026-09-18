@@ -403,6 +403,209 @@ def test_explicit_run_hands_off_exact_request_bytes(
     assert capsys.readouterr().err == ""
 
 
+def test_standard_input_inspection_failure_refuses_before_run_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    class UnreadableStandardInput:
+        def isatty(self) -> bool:
+            raise OSError("descriptor unavailable")
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Run Admission must not start when standard input cannot be checked")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "stdin", UnreadableStandardInput())
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        "factory: error: standard input could not be read: descriptor unavailable.\n"
+    )
+
+
+def test_closed_standard_input_refuses_before_run_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    closed_input = io.TextIOWrapper(io.BytesIO(b"data"))
+    closed_input.close()
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Run Admission must not start when standard input is closed")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "stdin", closed_input)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err.startswith(
+        "factory: error: standard input could not be read: "
+    )
+
+
+def test_terminal_standard_input_is_never_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    class TerminalInput:
+        def isatty(self) -> bool:
+            return True
+
+        @property
+        def buffer(self) -> io.BytesIO:
+            pytest.fail("terminal standard input must not be read")
+
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "stdin", TerminalInput())
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [b"# Run Request\n\n## Instruction\n\nFix"]
+
+
+@pytest.mark.parametrize("payload,context", [
+    (b"line\r\nend", b"\n\n## Context\n\n### Standard Input\n\nline\r\nend"),
+    (b"", b""),
+    (b"\xef\xbb\xbf", b""),
+])
+def test_piped_and_redirected_standard_input_have_identical_context(
+    tmp_path: Path, payload: bytes, context: bytes,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    redirected = tmp_path / "redirected"
+    redirected.write_bytes(payload)
+    script = """import sys
+sys.path.insert(0, sys.argv[1])
+import factory
+sys.argv = ['factory', *sys.argv[2:]]
+def handoff(boundary, spool):
+    sys.stdout.buffer.write(spool.read())
+    return 0
+factory._codex_run = handoff
+raise SystemExit(factory.main())
+"""
+    command = [sys.executable, "-c", script, str(Path(factory.__file__).parent),
+               "--path", str(tmp_path), "Fix"]
+    piped = subprocess.run(command, cwd=tmp_path, input=payload, capture_output=True)
+    with redirected.open("rb") as source:
+        from_file = subprocess.run(
+            command, cwd=tmp_path, stdin=source, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    expected = b"# Run Request\n\n## Instruction\n\nFix" + context
+    for result in (piped, from_file):
+        assert result.returncode == 0
+        assert result.stdout == expected
+        assert result.stderr == b""
+
+
+def test_standard_input_follows_file_context_and_preserves_payload_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "notes").write_bytes(b"file\r\n")
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(
+        b"\xef\xbb\xbf\xc3\xa9\r\nlast\r")))
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "notes", "Fix",
+    ])
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [
+        b"# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n"
+        b"### File: \"notes\"\n\nfile\r\n\n"
+        b"### Standard Input\n\n\xc3\xa9\r\nlast\r"
+    ]
+
+
+@pytest.mark.parametrize("payload,reason", [
+    (b"\xff", "is not valid UTF-8"),
+    (b"\xef\xbb\xbf\x00", "contains NUL"),
+])
+def test_invalid_standard_input_refuses_before_run_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], payload: bytes, reason: str,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Run Admission must not start after invalid standard input")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(payload)))
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err == f"factory: error: standard input {reason}.\n"
+
+
+@pytest.mark.parametrize("failure", [OSError("broken pipe"), ValueError("closed pipe")])
+def test_standard_input_read_failure_refuses_before_run_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    failure: Exception,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    class FailingStream(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            raise failure
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Run Admission must not start after a standard input read failure")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(FailingStream()))
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        f"factory: error: standard input could not be read: {failure}.\n"
+    )
+
+
+def test_standard_input_payload_bytes_count_toward_context_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "notes").write_bytes(b"X")
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "2")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(
+        b"\xef\xbb\xbf\xc3\xa9")))
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "notes", "Fix",
+    ])
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        "factory: error: Context is 3 bytes; the warning threshold is 2 bytes. "
+        "Re-run with --force to continue.\n"
+    )
+
+
 def test_absent_spec_and_empty_context_keep_only_required_envelope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

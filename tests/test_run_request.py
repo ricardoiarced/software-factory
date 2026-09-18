@@ -738,6 +738,108 @@ def test_repeated_file_context_uses_original_json_labels_and_preserves_payload(
     ]
 
 
+def test_repeated_file_context_skips_empty_sources_and_preserves_each_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "empty").write_bytes(b"")
+    (tmp_path / "bom-only").write_bytes(b"\xef\xbb\xbf")
+    (tmp_path / "mixed").write_bytes(b"\xef\xbb\xbfA\r\nB\nC\r")
+    (tmp_path / "unicode").write_bytes(b"caf\xc3\xa9\r\n")
+    (tmp_path / "trailing").write_bytes(b"end\n\n")
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "empty", "--file", "mixed",
+        "--file", "bom-only", "--file", "unicode", "--file", "mixed",
+        "--file", "trailing", "--file", "empty", "Fix",
+    ])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [
+        b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
+        b'### File: "mixed"\n\nA\r\nB\nC\r\n\n'
+        b'### File: "unicode"\n\ncaf\xc3\xa9\r\n\n'
+        b'### File: "mixed"\n\nA\r\nB\nC\r\n\n'
+        b'### File: "trailing"\n\nend\n\n'
+    ]
+
+
+def test_only_empty_file_context_sources_leave_no_context_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "empty").write_bytes(b"")
+    (tmp_path / "bom-only").write_bytes(b"\xef\xbb\xbf")
+    received: list[bytes] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "empty",
+        "--file", "bom-only", "--file", "empty", "Fix",
+    ])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 0
+    assert received == [b"# Run Request\n\n## Instruction\n\nFix"]
+
+
+def test_repeated_file_context_counts_payload_bytes_from_each_occurrence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "unicode").write_bytes(b"\xef\xbb\xbf\xc3\xa9")
+    (tmp_path / "empty").write_bytes(b"")
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "3")
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "unicode", "--file", "empty",
+        "--file", "unicode", "Fix",
+    ])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        "factory: error: Context is 4 bytes; the warning threshold is 3 bytes. "
+        "Re-run with --force to continue.\n"
+    )
+
+
+def test_later_file_context_source_is_validated_before_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "valid").write_bytes(b"first")
+    (tmp_path / "invalid").write_bytes(b"\xff")
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Codex must not receive Context after any source fails validation")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "valid", "--file", "invalid", "Fix",
+    ])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert 'Context file "invalid" is not valid UTF-8' in capsys.readouterr().err
+
+
 def test_crlf_blank_lines_need_no_added_separator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

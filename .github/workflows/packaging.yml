@@ -17,5 +17,5 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           check-latest: true
-      - run: python -m pip install build pytest
+      - run: python -m pip install build pytest .
       - run: python -m pytest -q

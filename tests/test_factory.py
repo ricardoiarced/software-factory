@@ -1115,12 +1115,12 @@ def test_run_accepts_documented_forms_through_cli(args: tuple[str, ...], tmp_pat
     git("init", "-q", cwd=tmp_path)
     (tmp_path / "-log").write_text("context")
     (tmp_path / "next.log").write_text("context")
-    result = invoke(*args, cwd=tmp_path)
+    result = invoke(*args, cwd=tmp_path, env={"XDG_CONFIG_HOME": str(tmp_path / "config")})
 
     assert result.returncode == 1
     assert result.stdout == b""
     expected = (
-        b"factory: error: Run execution is not yet available.\n"
+        b'factory: error: Project "api" is not registered.\n'
         if "--project" in args or "--project=api" in args else
         b"factory: error: Codex Compatibility Set is empty; no Run is supported.\n"
     )

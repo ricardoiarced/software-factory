@@ -1,6 +1,7 @@
 """Run Request behavior at the Factory command boundary."""
 
 import io
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,130 @@ import pytest
 
 import factory
 from _codex import RunAdmissionError
+
+
+def test_registered_run_uses_exact_boundary_and_only_its_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    (project / ".agent").mkdir()
+    (project / ".agent" / "spec.md").write_text("parent guidance")
+    service = project / "service"
+    (service / ".agent").mkdir(parents=True)
+    (service / ".agent" / "spec.md").write_text("service guidance")
+    other = project / "other"
+    other.mkdir()
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps({"version": 1, "projects": {
+        "Api": str(service), "api": str(other),
+    }}))
+    before = registry.read_bytes()
+    received: list[tuple[Path, bytes]] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        received.append((boundary, spool.read()))
+        return 0
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.chdir(project)
+    for name in ("Api", "api"):
+        monkeypatch.setattr(sys, "argv", ["factory", "--project", name, "Fix"])
+        monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+        assert factory.main() == 0
+
+    assert received == [
+        (service, b"# Project Guidance\n\nservice guidance\n\n"
+         b"# Run Request\n\n## Instruction\n\nFix"),
+        (other, b"# Run Request\n\n## Instruction\n\nFix"),
+    ]
+    assert registry.read_bytes() == before
+    assert not (registry.parent / "projects.lock").exists()
+
+
+def test_registered_run_revalidates_stale_boundary_without_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    service = project / "service"
+    service.mkdir()
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps({"version": 1, "projects": {"api": str(service)}}))
+    before = registry.read_bytes()
+    boundaries: list[Path] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        boundaries.append(boundary)
+        return 0
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--project=api", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(project)
+
+    assert factory.main() == 0
+    service.rename(project / "moved")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    assert factory.main() == 1
+    assert boundaries == [service]
+    assert 'Project "api" is stale: path does not exist' in capsys.readouterr().err
+    assert registry.read_bytes() == before
+    assert not (registry.parent / "projects.lock").exists()
+
+
+@pytest.mark.parametrize("kind", ["unknown", "invalid-name", "malformed", "symlink"])
+def test_registered_run_rejects_invalid_selection_before_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], kind: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    service = project / "service"
+    service.mkdir()
+    alias = project / "alias"
+    alias.symlink_to(service, target_is_directory=True)
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        '{"version":1,"projects":{"api":"/one","api":"/two"}}'
+        if kind == "malformed" else
+        json.dumps({"version": 1, "projects": {"Api": str(alias)}})
+    )
+    before = registry.read_bytes()
+    name = {"unknown": "api", "invalid-name": "bad name",
+            "malformed": "Api", "symlink": "Api"}[kind]
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Run Admission must not start after registered selection fails")
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--project", name, "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(project)
+
+    assert factory.main() == 1
+    error = capsys.readouterr().err
+    assert {
+        "unknown": 'Project "api" is not registered',
+        "invalid-name": "invalid Project Name",
+        "malformed": "malformed Project Registry",
+        "symlink": "stale: path is not canonical",
+    }[kind] in error
+    assert registry.read_bytes() == before
+    assert not (registry.parent / "projects.lock").exists()
 
 
 def test_run_without_selector_uses_containing_worktree_root(

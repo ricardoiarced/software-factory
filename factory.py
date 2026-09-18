@@ -4,6 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 from dataclasses import dataclass
 import codecs
 import errno
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -112,6 +113,10 @@ class RunInputError(Exception):
 
 class RegistryError(Exception):
     """The Project Registry cannot be read or inspected."""
+
+
+class RegistryCommitUncertain(RegistryError):
+    """The registry was replaced, but durable completion is uncertain."""
 
 
 @dataclass(frozen=True)
@@ -532,6 +537,100 @@ def _read_registry() -> dict[str, str]:
     return projects
 
 
+def _create_config_directory(directory: Path) -> None:
+    missing: list[Path] = []
+    candidate = directory
+    while not candidate.exists():
+        missing.append(candidate)
+        candidate = candidate.parent
+    for candidate in reversed(missing):
+        candidate.mkdir(mode=0o700, exist_ok=True)
+
+
+def _write_registry(registry: Path, projects: dict[str, str]) -> None:
+    document = {"version": 1, "projects": dict(sorted(projects.items()))}
+    payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        previous_mode = stat.S_IMODE(registry.stat(follow_symlinks=False).st_mode)
+    except FileNotFoundError:
+        previous_mode = None
+
+    temporary: str | None = None
+    replaced = False
+    try:
+        descriptor, temporary = tempfile.mkstemp(prefix=".projects-", dir=registry.parent)
+        with os.fdopen(descriptor, "wb") as target:
+            if previous_mode is not None:
+                os.fchmod(target.fileno(), previous_mode)
+            target.write(payload)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, registry)
+        replaced = True
+        directory_fd = os.open(registry.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as error:
+        if replaced:
+            raise RegistryCommitUncertain(f"Project Registry update may have committed: {error}") from error
+        raise RegistryError(f"Project Registry cannot be updated: {error}") from error
+    finally:
+        if temporary is not None and not replaced:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def _add_project(name: str, supplied_path: str) -> None:
+    if not _PROJECT_NAME.fullmatch(name):
+        raise RegistryError(f"invalid Project Name {_quoted(name)}")
+    boundary = _resolve_explicit_path(supplied_path, Path.cwd())
+    path = str(boundary)
+    try:
+        path.encode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise RegistryError("Project Boundary cannot be encoded as UTF-8") from error
+
+    from platformdirs import user_config_path
+
+    directory = user_config_path("factory", appauthor=False)
+    registry = directory / "projects.json"
+    changed = False
+    try:
+        _create_config_directory(directory)
+        descriptor = os.open(directory / "projects.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "rb+") as lock:
+            if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+                raise RegistryError("Project Registry lock is not a regular file")
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            projects = _read_registry()
+            old_path = projects.get(name)
+            if old_path is None:
+                message = f'Added project {json.dumps(name, ensure_ascii=False)} at {json.dumps(path, ensure_ascii=False)}.\n'
+            elif old_path == path:
+                message = f'Project {json.dumps(name, ensure_ascii=False)} is already registered at {json.dumps(path, ensure_ascii=False)}.\n'
+                sys.stdout.write(message)
+                return
+            else:
+                message = (f'Updated project {json.dumps(name, ensure_ascii=False)} from '
+                           f'{json.dumps(old_path, ensure_ascii=False)} to {json.dumps(path, ensure_ascii=False)}.\n')
+            projects[name] = path
+            _write_registry(registry, projects)
+            changed = True
+            sys.stdout.write(message)
+    except OSError as error:
+        if changed:
+            raise RegistryCommitUncertain(f"Project Registry update may have committed: output failed: {error}") from error
+        raise RegistryError(f"Project Registry cannot be updated: {error}") from error
+    except UnicodeError as error:
+        if changed:
+            raise RegistryCommitUncertain(f"Project Registry update may have committed: output failed: {error}") from error
+        raise
+
+
 def _project_status(path: str) -> str:
     selected = Path(path)
     try:
@@ -609,6 +708,9 @@ def _dispatch() -> int:
             if command == "show":
                 _show_project(values[0])
                 return 0
+            if command == "add":
+                _add_project(values[0], values[1])
+                return 0
             sys.stderr.write("factory: error: Project administration is not yet available.\n")
         else:
             run = _parse_run(sys.argv[1:])
@@ -646,6 +748,9 @@ def _dispatch() -> int:
         return _usage(error)
     except ProjectSelectionError as error:
         sys.stderr.write(f"factory: error: {error}.\n")
+        return 1
+    except RegistryCommitUncertain as error:
+        sys.stderr.write(f"factory: warning: {error}.\n")
         return 1
     except (RunInputError, RunAdmissionError, RegistryError) as error:
         sys.stderr.write(f"factory: error: {error}.\n")

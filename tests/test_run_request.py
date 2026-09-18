@@ -597,6 +597,102 @@ def test_invalid_context_refuses_before_admission(
     assert "Context file" in capsys.readouterr().err
 
 
+def test_context_path_with_nul_refuses_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Codex must not receive Context from an invalid file path")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--file", "bad\x00path", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert "Context file" in capsys.readouterr().err
+
+
+def test_external_context_file_expands_from_invocation_and_keeps_original_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    boundary = project / "service"
+    boundary.mkdir()
+    invocation = project / "runner"
+    invocation.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"\xef\xbb\xbf\xef\xbb\xbfA\r\nB\r")
+    (invocation / "linked.txt").symlink_to(outside)
+    received: list[bytes] = []
+
+    def handoff(selected: Path, spool: io.BufferedRandom) -> int:
+        assert selected == boundary
+        received.append(spool.read())
+        return 0
+
+    monkeypatch.setenv("CONTEXT_FILE", "../../outside.txt")
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "16")
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(boundary),
+                                      "--file", "$CONTEXT_FILE", "--file", "linked.txt", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(invocation)
+
+    assert factory.main() == 0
+    assert received == [
+        b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
+        b'### File: "$CONTEXT_FILE"\n\n\xef\xbb\xbfA\r\nB\r\n\n'
+        b'### File: "linked.txt"\n\n\xef\xbb\xbfA\r\nB\r'
+    ]
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_context_file_rejects_unset_or_empty_environment_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], value: str | None,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    if value is None:
+        monkeypatch.delenv("CONTEXT_FILE", raising=False)
+    else:
+        monkeypatch.setenv("CONTEXT_FILE", value)
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Codex must not receive Context from an invalid path")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--file", "${CONTEXT_FILE}", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert 'environment variable "CONTEXT_FILE" is unset or empty' in capsys.readouterr().err
+
+
+def test_directory_context_source_refuses_before_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "directory").mkdir()
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Codex must not receive a non-file Context Source")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--file", "directory", "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert 'Context file "directory" is not a regular file' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("setting", ["", "-1", "+1", " 1", "1 ", "１２", "1.0"])
 def test_malformed_context_threshold_refuses_even_empty_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

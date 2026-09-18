@@ -440,7 +440,7 @@ def _parse_run(args: list[str]) -> RunArguments:
     return RunArguments(instruction, selector, tuple(files), seen_force)
 
 
-def _parse_project(args: list[str]) -> None:
+def _parse_project(args: list[str]) -> tuple[str, list[str]]:
     if not args:
         raise UsageError("a Project command is required", project=True)
     command, *values = args
@@ -453,6 +453,7 @@ def _parse_project(args: list[str]) -> None:
         raise UsageError("Project options are not accepted here", project=True)
     if len(values) != arities[command]:
         raise UsageError(f"project {command} expects {arities[command]} argument(s)", project=True)
+    return command, values
 
 
 _PROJECT_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?\Z")
@@ -547,6 +548,19 @@ def _list_projects() -> None:
     sys.stdout.write(output)
 
 
+def _show_project(name: str) -> None:
+    projects = _read_registry()
+    if name not in projects:
+        raise RegistryError(f"Project {_quoted(name)} is not registered")
+    path = projects[name]
+    status = _project_status(path)
+    sys.stdout.write(
+        f"Name: {json.dumps(name, ensure_ascii=False)}\n"
+        f"Path: {json.dumps(path, ensure_ascii=False)}\n"
+        f"Status: {status}\n"
+    )
+
+
 def _usage(error: UsageError) -> int:
     synopsis = PROJECT_SYNOPSIS if error.project else ROOT_SYNOPSIS
     help_command = "factory project --help" if error.project else "factory --help"
@@ -566,9 +580,12 @@ def _dispatch() -> int:
             sys.stdout.write(f"factory {version('software-factory')}\n")
             return 0
         if sys.argv[1:2] == ["project"]:
-            _parse_project(sys.argv[2:])
-            if sys.argv[2] == "list":
+            command, values = _parse_project(sys.argv[2:])
+            if command == "list":
                 _list_projects()
+                return 0
+            if command == "show":
+                _show_project(values[0])
                 return 0
             sys.stderr.write("factory: error: Project administration is not yet available.\n")
         else:

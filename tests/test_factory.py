@@ -30,6 +30,14 @@ def git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
+def show_registry(tmp_path: Path, document: str) -> tuple[Path, Path]:
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(document)
+    return config, registry
+
+
 def test_project_list_missing_registry_is_empty_without_creating_state(tmp_path: Path) -> None:
     config = tmp_path / "config"
 
@@ -52,6 +60,112 @@ def test_project_list_valid_empty_registry_prints_empty_message(tmp_path: Path) 
     assert result.returncode == 0
     assert result.stdout == b"No projects registered.\n"
     assert result.stderr == b""
+
+
+def test_project_show_prints_exact_registered_name_path_and_valid_status(tmp_path: Path) -> None:
+    project = tmp_path / "café\nproject"
+    project.mkdir()
+    git("init", "-q", cwd=project)
+    config, registry = show_registry(
+        tmp_path, json.dumps({"version": 1, "projects": {"Api": str(project)}}),
+    )
+    before = registry.read_bytes()
+
+    result = invoke("project", "show", "Api", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 0
+    assert result.stdout == (
+        b'Name: "Api"\nPath: "' + str(project).replace("\n", "\\n").encode()
+        + b'"\nStatus: valid\n'
+    )
+    assert result.stderr == b""
+    assert registry.read_bytes() == before
+    assert not (registry.parent / "projects.lock").exists()
+
+
+def test_project_show_distinguishes_each_stale_status_without_repair(tmp_path: Path) -> None:
+    file_path = tmp_path / "file"
+    file_path.write_text("data")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    missing = tmp_path / "missing"
+    paths = {"missing": missing, "file": file_path, "outside": outside}
+    config, registry = show_registry(tmp_path, json.dumps({"version": 1, "projects": {
+        name: str(path) for name, path in paths.items()
+    }}))
+    before = registry.read_bytes()
+    statuses = {
+        "missing": "stale: path does not exist",
+        "file": "stale: path is not a directory",
+        "outside": "stale: path is not inside a non-bare Git worktree",
+    }
+
+    for name, path in paths.items():
+        result = invoke("project", "show", name, env={"XDG_CONFIG_HOME": str(config)})
+        assert result.returncode == 0
+        assert result.stdout == (
+            f'Name: "{name}"\nPath: "{path}"\nStatus: {statuses[name]}\n'.encode()
+        )
+        assert result.stderr == b""
+    assert registry.read_bytes() == before
+    assert not (registry.parent / "projects.lock").exists()
+
+
+def test_project_show_unknown_name_fails_operationally_and_case_sensitively(tmp_path: Path) -> None:
+    config, _ = show_registry(
+        tmp_path, json.dumps({"version": 1, "projects": {"Api": str(tmp_path)}}),
+    )
+
+    for name in ("api", "missing"):
+        result = invoke("project", "show", name, env={"XDG_CONFIG_HOME": str(config)})
+        assert result.returncode == 1
+        assert result.stdout == b""
+        assert f'Project "{name}" is not registered'.encode() in result.stderr
+        assert b"Traceback" not in result.stderr
+
+
+def test_project_show_rejects_malformed_registry_without_stdout(tmp_path: Path) -> None:
+    config, _ = show_registry(
+        tmp_path, '{"version":1,"projects":{"api":"/one","api":"/two"}}',
+    )
+
+    result = invoke("project", "show", "api", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"malformed Project Registry" in result.stderr
+
+
+def test_project_show_accepts_separator_before_name(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    git("init", "-q", cwd=project)
+    config, _ = show_registry(
+        tmp_path, json.dumps({"version": 1, "projects": {"Api": str(project)}}),
+    )
+
+    result = invoke("project", "show", "--", "Api", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 0
+    assert result.stdout == f'Name: "Api"\nPath: "{project}"\nStatus: valid\n'.encode()
+    assert result.stderr == b""
+
+
+def test_project_show_validation_failure_emits_no_partial_stdout(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    git("init", "-q", cwd=project)
+    config, _ = show_registry(
+        tmp_path, json.dumps({"version": 1, "projects": {"api": str(project)}}),
+    )
+
+    result = invoke("project", "show", "api", env={
+        "XDG_CONFIG_HOME": str(config), "PATH": "",
+    })
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"Git inspection failed" in result.stderr
 
 
 def test_project_list_sorts_and_reports_stale_entries_without_writing(tmp_path: Path) -> None:

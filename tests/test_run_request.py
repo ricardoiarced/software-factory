@@ -153,6 +153,29 @@ def test_discovery_accepts_contained_symlinked_marker_and_its_spec(
     )]
 
 
+def test_explicit_path_refuses_escaping_project_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (project / ".agent").symlink_to(outside, target_is_directory=True)
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Codex must not run with an escaping Project Marker")
+
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(project), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(project)
+
+    assert factory.main() == 1
+    assert "Project Spec marker is not a contained directory" in capsys.readouterr().err
+
+
 def test_discovery_stays_inside_nested_repository(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -316,6 +339,41 @@ def test_project_spec_symlink_outside_boundary_refuses(
 
     assert factory.main() == 1
     assert "outside the Project Boundary" in capsys.readouterr().err
+
+
+def test_project_spec_parent_swap_refuses_before_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    guidance = tmp_path / "guidance"
+    guidance.mkdir()
+    (guidance / "spec.md").write_text("inside")
+    marker = tmp_path / ".agent"
+    marker.mkdir()
+    (marker / "spec.md").symlink_to(guidance / "spec.md")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (outside / "spec.md").write_text("outside")
+    original_project_spec = factory._project_spec
+
+    def swap_after_check(boundary: Path) -> Path | None:
+        spec = original_project_spec(boundary)
+        guidance.rename(tmp_path / "old-guidance")
+        guidance.symlink_to(outside, target_is_directory=True)
+        return spec
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Codex must not receive Project Guidance after a path swap")
+
+    monkeypatch.setattr(factory, "_project_spec", swap_after_check)
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert "Project Spec cannot be opened" in capsys.readouterr().err
 
 
 def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
@@ -509,6 +567,33 @@ def test_spool_creation_failure_identifies_spool_and_cause(
     assert capsys.readouterr().err == (
         "factory: error: Run Request spool failed: temporary storage unavailable.\n"
     )
+
+
+def test_spool_write_failure_identifies_spool_and_refuses_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "spec.md").write_text("guidance")
+
+    class FailingSpool(io.BytesIO):
+        def write(self, data: bytes) -> int:
+            if data == b"gui":
+                raise OSError("disk full")
+            return super().write(data)
+
+    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        pytest.fail("Codex must not run after a spool write failure")
+
+    monkeypatch.setattr(factory.tempfile, "TemporaryFile", lambda **kwargs: FailingSpool())
+    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert capsys.readouterr().err == "factory: error: Run Request spool failed: disk full.\n"
 
 
 def test_instruction_crlf_blank_line_needs_no_added_separator(

@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -97,6 +96,10 @@ class UsageError(Exception):
 
 class ProjectSelectionError(Exception):
     """An explicit Project Boundary could not be selected."""
+
+
+class ProjectMarkerError(Exception):
+    """A Project Marker is malformed or inaccessible."""
 
 
 class GitInspectionError(ProjectSelectionError):
@@ -197,50 +200,48 @@ def _containing_worktree_root(path: Path, label: str) -> Path:
     return top_level
 
 
-def _discover_project_boundary(invocation_dir: Path) -> Path:
-    """Select the nearest Project Marker within the containing worktree."""
-
-    root = _containing_worktree_root(invocation_dir, "invocation directory")
-    candidate = invocation_dir
-    while True:
-        marker = candidate / ".agent"
-        try:
-            marker.lstat()
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            raise ProjectSelectionError(
-                f"Project Marker at {_quoted(str(marker))} cannot be inspected: {error}"
-            ) from error
-        else:
-            try:
-                resolved = marker.resolve(strict=True)
-                if not resolved.is_relative_to(candidate) or not resolved.is_dir():
-                    raise ProjectSelectionError(
-                        f"Project Marker at {_quoted(str(marker))} is not a contained directory"
-                    )
-            except (OSError, RuntimeError) as error:
-                raise ProjectSelectionError(
-                    f"Project Marker at {_quoted(str(marker))} cannot be resolved: {error}"
-                ) from error
-            return candidate
-        if candidate == root:
-            return root
-        candidate = candidate.parent
-
-
-def _project_spec(boundary: Path) -> Path | None:
+def _project_marker(boundary: Path) -> Path | None:
     marker = boundary / ".agent"
     try:
         marker.lstat()
     except FileNotFoundError:
         return None
     except OSError as error:
-        raise RunInputError(f"Project Spec marker cannot be inspected: {error}") from error
+        raise ProjectMarkerError(f"cannot be inspected: {error}") from error
     try:
-        resolved_marker = marker.resolve(strict=True)
-        if not resolved_marker.is_relative_to(boundary) or not resolved_marker.is_dir():
-            raise RunInputError("Project Spec marker is not a contained directory")
+        resolved = marker.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ProjectMarkerError(f"cannot be resolved: {error}") from error
+    if not resolved.is_relative_to(boundary) or not resolved.is_dir():
+        raise ProjectMarkerError("is not a contained directory")
+    return marker
+
+
+def _discover_project_boundary(invocation_dir: Path) -> Path:
+    """Select the nearest Project Marker within the containing worktree."""
+
+    root = _containing_worktree_root(invocation_dir, "invocation directory")
+    candidate = invocation_dir
+    while True:
+        try:
+            marker = _project_marker(candidate)
+        except ProjectMarkerError as error:
+            raise ProjectSelectionError(
+                f"Project Marker at {_quoted(str(candidate / '.agent'))} {error}"
+            ) from error
+        if marker is not None or candidate == root:
+            return candidate
+        candidate = candidate.parent
+
+
+def _project_spec(boundary: Path) -> Path | None:
+    try:
+        marker = _project_marker(boundary)
+    except ProjectMarkerError as error:
+        raise RunInputError(f"Project Spec marker {error}") from error
+    if marker is None:
+        return None
+    try:
         spec = marker / "spec.md"
         try:
             spec.lstat()
@@ -272,7 +273,10 @@ def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int
                 if b"\x00" in chunk:
                     raise RunInputError(f"{label} contains NUL")
                 decoder.decode(chunk)
-                target.write(chunk)
+                try:
+                    target.write(chunk)
+                except OSError as error:
+                    raise RunInputError(f"Run Request spool failed: {error}") from error
                 size += len(chunk)
                 trailing_lfs = _terminal_lfs(chunk, trailing_lfs)
             chunk = source.read(65536)
@@ -296,20 +300,6 @@ def _separator(spool: BinaryIO, trailing_lfs: int) -> None:
     spool.write(b"\n" * (2 - trailing_lfs))
 
 
-def _read_source(source: BinaryIO, spool: BinaryIO, heading: bytes | None,
-                 label: str, trailing_lfs: int) -> tuple[int, int]:
-    with tempfile.TemporaryFile(mode="w+b") as staged:
-        size, payload_lfs = _copy_utf8(source, staged, label)
-        if not size and heading is not None:
-            return 0, trailing_lfs
-        if heading is not None:
-            _separator(spool, trailing_lfs)
-            spool.write(heading)
-        staged.seek(0)
-        shutil.copyfileobj(staged, spool, 65536)
-        return size, payload_lfs if size else 2
-
-
 def _open_regular(path: Path, label: str) -> BinaryIO:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
@@ -319,6 +309,41 @@ def _open_regular(path: Path, label: str) -> BinaryIO:
         return os.fdopen(descriptor, "rb")
     except OSError as error:
         raise RunInputError(f"{label} cannot be opened: {error}") from error
+
+
+def _open_project_spec(boundary: Path, spec: Path) -> BinaryIO:
+    """Open a checked Project Spec beneath the selected directory descriptor."""
+
+    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or
+            os.open not in os.supports_dir_fd):
+        raise RunInputError("Project Spec cannot be opened safely on this platform")
+    directory = -1
+    try:
+        directory = os.open(boundary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        parts = spec.relative_to(boundary).parts
+        for part in parts[:-1]:
+            next_directory = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+            os.close(directory)
+            directory = next_directory
+        descriptor = os.open(
+            parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=directory,
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise RunInputError("Project Spec is not a regular file")
+            return os.fdopen(descriptor, "rb")
+        except Exception:
+            os.close(descriptor)
+            raise
+    except OSError as error:
+        raise RunInputError(f"Project Spec cannot be opened: {error}") from error
+    finally:
+        if directory != -1:
+            os.close(directory)
 
 
 def _context_path(supplied: str, invocation_dir: Path) -> Path:
@@ -335,8 +360,8 @@ def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
     trailing_lfs = 2
     if spec is not None:
         spool.write(b"# Project Guidance\n\n")
-        with _open_regular(spec, "Project Spec") as source:
-            _, trailing_lfs = _read_source(source, spool, None, "Project Spec", 2)
+        with _open_project_spec(boundary, spec) as source:
+            _, trailing_lfs = _copy_utf8(source, spool, "Project Spec")
         _separator(spool, trailing_lfs)
     spool.write(b"# Run Request\n\n## Instruction\n\n")
     try:
@@ -364,20 +389,17 @@ def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
 
 def _append_context(source: BinaryIO, spool: BinaryIO, heading: bytes, label: str,
                     trailing_lfs: int, started: bool) -> tuple[int, int, bool]:
-    with tempfile.TemporaryFile(mode="w+b") as staged:
-        size, payload_lfs = _copy_utf8(source, staged, label)
-        if not size:
-            return 0, trailing_lfs, started
-        if not started:
-            _separator(spool, trailing_lfs)
-            spool.write(b"## Context\n\n")
-            started = True
-        else:
-            _separator(spool, trailing_lfs)
-        spool.write(heading)
-        staged.seek(0)
-        shutil.copyfileobj(staged, spool, 65536)
-        return size, payload_lfs, started
+    checkpoint = spool.tell()
+    _separator(spool, trailing_lfs)
+    if not started:
+        spool.write(b"## Context\n\n")
+    spool.write(heading)
+    size, payload_lfs = _copy_utf8(source, spool, label)
+    if not size:
+        spool.seek(checkpoint)
+        spool.truncate()
+        return 0, trailing_lfs, started
+    return size, payload_lfs, True
 
 
 def _context_threshold() -> int:

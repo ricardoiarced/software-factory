@@ -508,9 +508,15 @@ def _read_registry() -> dict[str, str]:
             raise RegistryError("malformed Project Registry: not a regular file") from error
         raise RegistryError(f"Project Registry cannot be read: {error}") from error
     try:
+        mode = os.fstat(descriptor).st_mode
+    except OSError as error:
+        os.close(descriptor)
+        raise RegistryError(f"Project Registry cannot be read: {error}") from error
+    if not stat.S_ISREG(mode):
+        os.close(descriptor)
+        raise RegistryError("malformed Project Registry: not a regular file")
+    try:
         with os.fdopen(descriptor, "rb") as source:
-            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
-                raise RegistryError("malformed Project Registry: not a regular file")
             document: object = json.loads(
                 source.read().decode("utf-8", errors="strict"),
                 object_pairs_hook=_unique_json_object,
@@ -545,6 +551,15 @@ def _create_config_directory(directory: Path) -> None:
         candidate = candidate.parent
     for candidate in reversed(missing):
         candidate.mkdir(mode=0o700, exist_ok=True)
+        _sync_directory(candidate.parent)
+
+
+def _sync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _write_registry(registry: Path, projects: dict[str, str]) -> None:
@@ -567,11 +582,7 @@ def _write_registry(registry: Path, projects: dict[str, str]) -> None:
             os.fsync(target.fileno())
         os.replace(temporary, registry)
         replaced = True
-        directory_fd = os.open(registry.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _sync_directory(registry.parent)
     except OSError as error:
         if replaced:
             raise RegistryCommitUncertain(f"Project Registry update may have committed: {error}") from error

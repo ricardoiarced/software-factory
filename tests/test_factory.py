@@ -154,6 +154,30 @@ def test_project_list_git_failure_emits_no_partial_stdout(tmp_path: Path) -> Non
     assert b"Git inspection failed" in result.stderr
 
 
+def test_project_list_rejects_git_command_failure_as_a_whole(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    project = tmp_path / "project"
+    project.mkdir()
+    registry.write_text(json.dumps({"version": 1, "projects": {
+        "a": str(tmp_path / "missing"), "b": str(project),
+    }}))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text("#!/bin/sh\necho 'fatal: bad config' >&2\nexit 128\n")
+    fake_git.chmod(0o755)
+
+    result = invoke("project", "list", env={
+        "XDG_CONFIG_HOME": str(config), "PATH": str(fake_bin),
+    })
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"Git inspection failed" in result.stderr
+
+
 def test_explicit_path_preserves_canonical_subdirectory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     git("init", "-q", cwd=tmp_path)
     boundary = tmp_path / "service"
@@ -325,7 +349,8 @@ def test_discovery_refuses_unusable_git_context(tmp_path: Path, case: str) -> No
 
     assert result.returncode == 1
     assert result.stdout == b""
-    expected = b"Git inspection failed" if case == "missing-git" else b"non-bare Git worktree"
+    expected = (b"Git inspection failed" if case in ("missing-git", "inspection-failure")
+                else b"non-bare Git worktree")
     assert expected in result.stderr
     assert b"Traceback" not in result.stderr
 

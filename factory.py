@@ -99,6 +99,10 @@ class ProjectSelectionError(Exception):
     """An explicit Project Boundary could not be selected."""
 
 
+class GitInspectionError(ProjectSelectionError):
+    """Git could not reliably determine a Project's worktree."""
+
+
 class RunInputError(Exception):
     """A Project Spec or Context Source cannot be used for this Run."""
 
@@ -165,21 +169,31 @@ def _containing_worktree_root(path: Path, label: str) -> Path:
         result = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree",
              "--is-bare-repository", "--show-toplevel"],
-            capture_output=True, check=False,
+            capture_output=True, check=False, env={**os.environ, "LC_ALL": "C"},
         )
     except OSError as error:
-        raise ProjectSelectionError(f"Git inspection failed for {label}: {error}") from error
+        raise GitInspectionError(f"Git inspection failed for {label}: {error}") from error
+    if result.returncode:
+        if (result.stdout == b"false\ntrue\n" and
+                b"this operation must be run in a work tree" in result.stderr):
+            raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
+        if (b"not a git repository" in result.stderr and
+                not os.environ.get("GIT_DIR")):
+            raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
+        raise GitInspectionError(f"Git inspection failed for {label}: Git returned {result.returncode}")
     lines = result.stdout.split(b"\n", 2)
-    if result.returncode or len(lines) != 3 or lines[0] != b"true" or lines[1] != b"false":
+    if len(lines) != 3:
+        raise GitInspectionError(f"Git inspection failed for {label}: invalid Git output")
+    if lines[0] != b"true" or lines[1] != b"false":
         raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
     try:
         top_level = Path(os.fsdecode(lines[2].removesuffix(b"\n"))).resolve(strict=True)
     except (OSError, RuntimeError) as error:
-        raise ProjectSelectionError(
+        raise GitInspectionError(
             f"Git inspection failed for {label}: invalid worktree path"
         ) from error
     if not path.is_relative_to(top_level):
-        raise ProjectSelectionError(f"Git inspection failed for {label}: worktree does not contain path")
+        raise GitInspectionError(f"Git inspection failed for {label}: worktree does not contain path")
     return top_level
 
 
@@ -510,9 +524,9 @@ def _project_status(path: str) -> str:
         _containing_worktree_root(canonical, f"path {_quoted(path)}")
     except (OSError, RuntimeError) as error:
         raise RegistryError(f"Project validation failed: {error}") from error
-    except ProjectSelectionError as error:
-        if str(error).startswith("Git inspection failed"):
-            raise RegistryError(str(error)) from error
+    except GitInspectionError as error:
+        raise RegistryError(str(error)) from error
+    except ProjectSelectionError:
         return "stale: path is not inside a non-bare Git worktree"
     return "valid"
 

@@ -306,14 +306,19 @@ def _separator(spool: BinaryIO, trailing_lfs: int) -> None:
 
 
 def _open_regular(path: Path, label: str) -> BinaryIO:
+    descriptor = -1
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            os.close(descriptor)
             raise RunInputError(f"{label} is not a regular file")
-        return os.fdopen(descriptor, "rb")
+        source = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        return source
     except OSError as error:
         raise RunInputError(f"{label} cannot be opened: {error}") from error
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
 
 
 def _open_project_spec(boundary: Path, spec: Path) -> BinaryIO:
@@ -353,7 +358,10 @@ def _open_project_spec(boundary: Path, spec: Path) -> BinaryIO:
 
 def _context_path(supplied: str, invocation_dir: Path) -> Path:
     try:
-        expanded = Path(_expand_path(supplied))
+        expanded_text = _expand_path(supplied)
+        if "\x00" in expanded_text:
+            raise RunInputError(f"Context file {_quoted(supplied)} path contains NUL")
+        expanded = Path(expanded_text)
         return expanded if expanded.is_absolute() else invocation_dir / expanded
     except ProjectSelectionError as error:
         raise RunInputError(str(error)) from error

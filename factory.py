@@ -688,6 +688,8 @@ def _project_status(path: str) -> str:
         return "stale: path is not a directory"
     try:
         canonical = selected.resolve(strict=True)
+        if str(canonical) != path:
+            return "stale: path is not canonical"
         _containing_worktree_root(canonical, f"path {_quoted(path)}")
     except (OSError, RuntimeError) as error:
         raise RegistryError(f"Project validation failed: {error}") from error
@@ -696,6 +698,19 @@ def _project_status(path: str) -> str:
     except ProjectSelectionError:
         return "stale: path is not inside a non-bare Git worktree"
     return "valid"
+
+
+def _select_registered_project(name: str) -> Path:
+    if not _PROJECT_NAME.fullmatch(name):
+        raise RegistryError(f"invalid Project Name {_quoted(name)}")
+    projects = _read_registry()
+    if name not in projects:
+        raise RegistryError(f"Project {_quoted(name)} is not registered")
+    path = projects[name]
+    status = _project_status(path)
+    if status != "valid":
+        raise RegistryError(f"Project {_quoted(name)} is {status}")
+    return Path(path)
 
 
 def _list_projects() -> None:
@@ -762,35 +777,34 @@ def _dispatch() -> int:
             sys.stderr.write("factory: error: Project administration is not yet available.\n")
         else:
             run = _parse_run(sys.argv[1:])
-            if run.selector is None or run.selector[0] == "path":
-                invocation_dir = Path.cwd()
-                boundary = (
-                    _discover_project_boundary(invocation_dir)
-                    if run.selector is None else
-                    _resolve_explicit_path(run.selector[1], invocation_dir)
-                )
+            invocation_dir = Path.cwd()
+            if run.selector is None:
+                boundary = _discover_project_boundary(invocation_dir)
+            elif run.selector[0] == "path":
+                boundary = _resolve_explicit_path(run.selector[1], invocation_dir)
+            else:
+                boundary = _select_registered_project(run.selector[1])
+            try:
+                spool = tempfile.TemporaryFile(mode="w+b")
+            except OSError as error:
+                raise RunInputError(f"Run Request spool failed: {error}") from error
+            with spool:
                 try:
-                    spool = tempfile.TemporaryFile(mode="w+b")
+                    context_bytes = _compose_run(run, boundary, invocation_dir, spool)
                 except OSError as error:
                     raise RunInputError(f"Run Request spool failed: {error}") from error
-                with spool:
-                    try:
-                        context_bytes = _compose_run(run, boundary, invocation_dir, spool)
-                    except OSError as error:
-                        raise RunInputError(f"Run Request spool failed: {error}") from error
-                    threshold = _context_threshold()
-                    if context_bytes > threshold:
-                        message = f"Context is {context_bytes} bytes; the warning threshold is {threshold} bytes."
-                        if not run.force:
-                            sys.stderr.write(f"factory: error: {message} Re-run with --force to continue.\n")
-                            return 1
-                        sys.stderr.write(f"factory: warning: {message} Continuing because --force was supplied.\n")
-                    try:
-                        spool.seek(0)
-                    except OSError as error:
-                        raise RunInputError(f"Run Request spool failed: {error}") from error
-                    return _codex_run(boundary, spool)
-            sys.stderr.write("factory: error: Run execution is not yet available.\n")
+                threshold = _context_threshold()
+                if context_bytes > threshold:
+                    message = f"Context is {context_bytes} bytes; the warning threshold is {threshold} bytes."
+                    if not run.force:
+                        sys.stderr.write(f"factory: error: {message} Re-run with --force to continue.\n")
+                        return 1
+                    sys.stderr.write(f"factory: warning: {message} Continuing because --force was supplied.\n")
+                try:
+                    spool.seek(0)
+                except OSError as error:
+                    raise RunInputError(f"Run Request spool failed: {error}") from error
+                return _codex_run(boundary, spool)
         return 1
     except UsageError as error:
         return _usage(error)

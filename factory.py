@@ -149,6 +149,13 @@ def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
     if not path.is_dir():
         raise ProjectSelectionError(f"path {_quoted(supplied)} is not a directory")
 
+    _containing_worktree_root(path, f"path {_quoted(supplied)}")
+    return path
+
+
+def _containing_worktree_root(path: Path, label: str) -> Path:
+    """Ask Git for the canonical root containing a directory in a worktree."""
+
     try:
         result = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree",
@@ -156,19 +163,19 @@ def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
             capture_output=True, check=False,
         )
     except OSError as error:
-        raise ProjectSelectionError(f"Git inspection failed for {_quoted(supplied)}: {error}") from error
+        raise ProjectSelectionError(f"Git inspection failed for {label}: {error}") from error
     lines = result.stdout.split(b"\n", 2)
     if result.returncode or len(lines) != 3 or lines[0] != b"true" or lines[1] != b"false":
-        raise ProjectSelectionError(f"path {_quoted(supplied)} is not inside a non-bare Git worktree")
+        raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
     try:
         top_level = Path(os.fsdecode(lines[2].removesuffix(b"\n"))).resolve(strict=True)
     except (OSError, RuntimeError) as error:
         raise ProjectSelectionError(
-            f"Git inspection failed for {_quoted(supplied)}: invalid worktree path"
+            f"Git inspection failed for {label}: invalid worktree path"
         ) from error
     if not path.is_relative_to(top_level):
-        raise ProjectSelectionError(f"Git inspection failed for {_quoted(supplied)}: worktree does not contain path")
-    return path
+        raise ProjectSelectionError(f"Git inspection failed for {label}: worktree does not contain path")
+    return top_level
 
 
 def _project_spec(boundary: Path) -> Path | None:
@@ -420,9 +427,13 @@ def _dispatch() -> int:
             sys.stderr.write("factory: error: Project administration is not yet available.\n")
         else:
             run = _parse_run(sys.argv[1:])
-            if run.selector and run.selector[0] == "path":
+            if run.selector is None or run.selector[0] == "path":
                 invocation_dir = Path.cwd()
-                boundary = _resolve_explicit_path(run.selector[1], invocation_dir)
+                boundary = (
+                    _containing_worktree_root(invocation_dir, "invocation directory")
+                    if run.selector is None else
+                    _resolve_explicit_path(run.selector[1], invocation_dir)
+                )
                 try:
                     spool = tempfile.TemporaryFile(mode="w+b")
                 except OSError as error:

@@ -2,10 +2,12 @@
 
 import os
 import json
+import fcntl
 from pathlib import Path
 import stat
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -150,6 +152,71 @@ def test_project_add_creates_private_files_and_preserves_registry_mode(tmp_path:
     assert registry.stat().st_mode & 0o777 == 0o640
 
 
+def test_project_lock_persists_across_mutations(tmp_path: Path) -> None:
+    git("init", "-q", cwd=tmp_path)
+    config = tmp_path / "config"
+    env = {"XDG_CONFIG_HOME": str(config)}
+    assert invoke("project", "add", "api", str(tmp_path), env=env).returncode == 0
+    lock = config / "factory" / "projects.lock"
+    first = lock.stat()
+
+    assert invoke("project", "remove", "api", env=env).returncode == 0
+    assert invoke("project", "add", "api", str(tmp_path), env=env).returncode == 0
+
+    last = lock.stat()
+    assert (last.st_dev, last.st_ino) == (first.st_dev, first.st_ino)
+    assert lock.stat().st_mode & 0o777 == 0o600
+
+
+def test_project_add_syncs_new_configuration_directory_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git("init", "-q", cwd=tmp_path)
+    config = tmp_path / "config"
+    actual_fsync = os.fsync
+    synced: list[tuple[int, int]] = []
+
+    def record_sync(descriptor: int) -> None:
+        info = os.fstat(descriptor)
+        if stat.S_ISDIR(info.st_mode):
+            synced.append((info.st_dev, info.st_ino))
+        actual_fsync(descriptor)
+
+    monkeypatch.setattr(factory.os, "fsync", record_sync)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+
+    assert factory.main() == 0
+    for directory in (tmp_path, config, config / "factory"):
+        info = directory.stat()
+        assert (info.st_dev, info.st_ino) in synced
+
+
+def test_project_add_parent_sync_failure_stops_before_registry_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    git("init", "-q", cwd=tmp_path)
+    config = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+    parent = tmp_path.stat()
+    actual_fsync = os.fsync
+
+    def fail_parent_sync(descriptor: int) -> None:
+        info = os.fstat(descriptor)
+        if (info.st_dev, info.st_ino) == (parent.st_dev, parent.st_ino):
+            raise OSError("parent directory sync failed")
+        actual_fsync(descriptor)
+
+    monkeypatch.setattr(factory.os, "fsync", fail_parent_sync)
+
+    assert factory.main() == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "factory: error: Project Registry cannot be updated" in output.err
+    assert not (config / "factory" / "projects.json").exists()
+
+
 def test_project_add_concurrent_writers_keep_every_mapping(tmp_path: Path) -> None:
     git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
@@ -169,6 +236,103 @@ def test_project_add_concurrent_writers_keep_every_mapping(tmp_path: Path) -> No
     assert json.loads(registry.read_text())["projects"] == {
         f"p{index}": str(tmp_path) for index in range(8)
     }
+
+
+def test_concurrent_add_and_remove_keep_complete_registry_generations(tmp_path: Path) -> None:
+    git("init", "-q", cwd=tmp_path)
+    original = {f"old{index}": str(tmp_path) for index in range(8)}
+    config, registry = show_registry(tmp_path, json.dumps({
+        "version": 1, "projects": original,
+    }))
+    env = {**os.environ, "XDG_CONFIG_HOME": str(config)}
+    commands = [
+        ("remove", f"old{index}") for index in range(8)
+    ] + [
+        ("add", f"new{index}", str(tmp_path)) for index in range(8)
+    ]
+    writers = [
+        subprocess.Popen([sys.executable, str(FACTORY), "project", *command],
+                         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        for command in commands
+    ]
+
+    deadline = time.monotonic() + 20
+    while True:
+        document = json.loads(registry.read_bytes())
+        assert document["version"] == 1
+        assert set(document) == {"version", "projects"}
+        assert all(path == str(tmp_path) for path in document["projects"].values())
+        if all(writer.poll() is not None for writer in writers):
+            break
+        assert time.monotonic() < deadline, "concurrent registry writers did not finish"
+        time.sleep(0.001)
+
+    for writer in writers:
+        _, stderr = writer.communicate(timeout=10)
+        assert writer.returncode == 0, stderr
+    assert json.loads(registry.read_bytes())["projects"] == {
+        f"new{index}": str(tmp_path) for index in range(8)
+    }
+
+
+@pytest.mark.parametrize("command", ["add", "remove"])
+def test_project_mutation_rereads_strict_registry_after_acquiring_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], command: str,
+) -> None:
+    git("init", "-q", cwd=tmp_path)
+    config, registry = show_registry(tmp_path, json.dumps({
+        "version": 1, "projects": {"old": str(tmp_path)},
+    }))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    args = ["factory", "project", command, "old"]
+    if command == "add":
+        args.append(str(tmp_path))
+    monkeypatch.setattr(sys, "argv", args)
+    actual_flock = fcntl.flock
+
+    def change_registry_at_lock(descriptor: int, operation: int) -> None:
+        actual_flock(descriptor, operation)
+        registry.write_text('{"version":2,"projects":{}}')
+
+    monkeypatch.setattr(factory.fcntl, "flock", change_registry_at_lock)
+
+    assert factory.main() == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "malformed Project Registry: unsupported version" in output.err
+    assert registry.read_text() == '{"version":2,"projects":{}}'
+
+
+@pytest.mark.parametrize("command", ["add", "remove"])
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_project_mutation_refuses_nonregular_registry_state(
+    tmp_path: Path, command: str, kind: str,
+) -> None:
+    git("init", "-q", cwd=tmp_path)
+    config, registry = show_registry(tmp_path, json.dumps({
+        "version": 1, "projects": {"old": str(tmp_path)},
+    }))
+    registry.unlink()
+    if kind == "symlink":
+        target = tmp_path / "target.json"
+        target.write_text('{"version":1,"projects":{}}')
+        registry.symlink_to(target)
+    else:
+        registry.mkdir()
+    args = ("project", command, "old", str(tmp_path)) if command == "add" else (
+        "project", command, "old",
+    )
+
+    result = invoke(*args, env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"malformed Project Registry: not a regular file" in result.stderr
+    if kind == "symlink":
+        assert registry.is_symlink()
+    else:
+        assert registry.is_dir()
 
 
 def test_project_add_replace_failure_keeps_previous_generation(
@@ -254,12 +418,13 @@ def test_project_add_directory_sync_failure_warns_update_may_have_committed(
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
     actual_fsync = os.fsync
 
     def fail_directory_sync(descriptor: int) -> None:
-        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        if registry.exists() and stat.S_ISDIR(os.fstat(descriptor).st_mode):
             raise OSError("directory sync failed")
         actual_fsync(descriptor)
 

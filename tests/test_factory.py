@@ -1,6 +1,7 @@
 """Public command-line behavior before a Run or registry operation begins."""
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -27,6 +28,154 @@ def invoke(
 
 def git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_project_list_missing_registry_is_empty_without_creating_state(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+
+    result = invoke("project", "list", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 0
+    assert result.stdout == b"No projects registered.\n"
+    assert result.stderr == b""
+    assert not config.exists()
+
+
+def test_project_list_valid_empty_registry_prints_empty_message(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text('{"version":1,"projects":{}}')
+
+    result = invoke("project", "list", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 0
+    assert result.stdout == b"No projects registered.\n"
+    assert result.stderr == b""
+
+
+def test_project_list_sorts_and_reports_stale_entries_without_writing(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    valid = tmp_path / "café\nproject"
+    valid.mkdir()
+    git("init", "-q", cwd=valid)
+    file_path = tmp_path / "file"
+    file_path.write_text("data")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    missing = tmp_path / "missing"
+    registry.write_text(json.dumps({"version": 1, "projects": {
+        "z": str(outside), "a": str(file_path), "Alpha": str(valid),
+        "b": str(missing),
+    }}))
+    before = registry.read_bytes()
+
+    result = invoke("project", "list", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 0
+    assert result.stdout == (
+        b'NAME\tSTATUS\tPATH\n'
+        + b'"Alpha"\tvalid\t"' + str(valid).replace("\n", "\\n").encode() + b'"\n'
+        + b'"a"\tstale: path is not a directory\t"' + str(file_path).encode() + b'"\n'
+        + b'"b"\tstale: path does not exist\t"' + str(missing).encode() + b'"\n'
+        + b'"z"\tstale: path is not inside a non-bare Git worktree\t"'
+        + str(outside).encode() + b'"\n'
+    )
+    assert result.stderr == b""
+    assert registry.read_bytes() == before
+    assert not (registry.parent / "projects.lock").exists()
+
+
+@pytest.mark.parametrize("document", [
+    '{"version":1,"version":1,"projects":{}}',
+    '{"version":1,"projects":{"a":"/one","a":"/two"}}',
+    '{"version":1,"projects":{},"extra":0}',
+    '{"version":2,"projects":{}}',
+    '{"version":true,"projects":{}}',
+    '{"version":1,"projects":[]}',
+    '{"version":1,"projects":{"bad name":"/tmp"}}',
+    '{"version":1,"projects":{"a":"relative"}}',
+    '{"version":1,"projects":{"a":12}}',
+    '{"version":1,"projects":{"a":"/bad\\u0000path"}}',
+    '{"version":1,"projects":{"a":"/bad\\ud800path"}}',
+    '{"version":1,"projects":{}} trailing',
+])
+def test_project_list_rejects_malformed_registry_as_a_whole(tmp_path: Path, document: str) -> None:
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(document)
+
+    result = invoke("project", "list", env={"XDG_CONFIG_HOME": str(config)})
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"malformed Project Registry" in result.stderr
+    assert b"Traceback" not in result.stderr
+
+
+def test_project_list_rejects_symlink_and_invalid_utf8_registry(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    target = tmp_path / "target"
+    target.write_text('{"version":1,"projects":{}}')
+    registry.symlink_to(target)
+    env = {"XDG_CONFIG_HOME": str(config)}
+
+    linked = invoke("project", "list", env=env)
+    registry.unlink()
+    registry.write_bytes(b"\xff")
+    invalid = invoke("project", "list", env=env)
+
+    for result in (linked, invalid):
+        assert result.returncode == 1
+        assert result.stdout == b""
+        assert b"malformed Project Registry" in result.stderr
+
+
+def test_project_list_git_failure_emits_no_partial_stdout(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    project = tmp_path / "project"
+    project.mkdir()
+    git("init", "-q", cwd=project)
+    registry.write_text(json.dumps({"version": 1, "projects": {
+        "a": str(tmp_path / "missing"), "b": str(project),
+    }}))
+
+    result = invoke("project", "list", env={"XDG_CONFIG_HOME": str(config), "PATH": ""})
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"Git inspection failed" in result.stderr
+
+
+def test_project_list_rejects_git_command_failure_as_a_whole(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    project = tmp_path / "project"
+    project.mkdir()
+    registry.write_text(json.dumps({"version": 1, "projects": {
+        "a": str(tmp_path / "missing"), "b": str(project),
+    }}))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text("#!/bin/sh\necho 'fatal: bad config' >&2\nexit 128\n")
+    fake_git.chmod(0o755)
+
+    result = invoke("project", "list", env={
+        "XDG_CONFIG_HOME": str(config), "PATH": str(fake_bin),
+    })
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"Git inspection failed" in result.stderr
 
 
 def test_explicit_path_preserves_canonical_subdirectory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,7 +349,8 @@ def test_discovery_refuses_unusable_git_context(tmp_path: Path, case: str) -> No
 
     assert result.returncode == 1
     assert result.stdout == b""
-    expected = b"Git inspection failed" if case == "missing-git" else b"non-bare Git worktree"
+    expected = (b"Git inspection failed" if case in ("missing-git", "inspection-failure")
+                else b"non-bare Git worktree")
     assert expected in result.stderr
     assert b"Traceback" not in result.stderr
 
@@ -291,7 +441,6 @@ def test_malformed_commands_have_relevant_usage_and_no_traceback(
         ("--project=api", "Fix"),
         ("--file=-log", "Fix"),
         ("project", "add", "--", "api", "/some/path"),
-        ("project", "list"),
     ],
 )
 def test_valid_grammar_reaches_operational_stage(args: tuple[str, ...]) -> None:
@@ -379,12 +528,14 @@ def test_run_grammar_failures_exit_two(args: tuple[str, ...], reason: bytes) -> 
     assert b"Traceback" not in result.stderr
 
 
-def test_only_exact_first_project_enters_administration() -> None:
-    administration = invoke("project", "list")
+def test_only_exact_first_project_enters_administration(tmp_path: Path) -> None:
+    administration = invoke("project", "list", env={"XDG_CONFIG_HOME": str(tmp_path)})
     run = invoke("Project", "list")
     escaped = invoke("--", "project", "list")
 
-    assert administration.returncode == run.returncode == escaped.returncode == 1
-    assert b"Project administration is not yet available" in administration.stderr
+    assert administration.returncode == 0
+    assert administration.stdout == b"No projects registered.\n"
+    assert administration.stderr == b""
+    assert run.returncode == escaped.returncode == 1
     assert b"Codex Compatibility Set is empty" in run.stderr
     assert b"Codex Compatibility Set is empty" in escaped.stderr

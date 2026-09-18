@@ -3,6 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 from dataclasses import dataclass
 import codecs
+import errno
 import json
 import os
 from pathlib import Path
@@ -98,8 +99,16 @@ class ProjectSelectionError(Exception):
     """An explicit Project Boundary could not be selected."""
 
 
+class GitInspectionError(ProjectSelectionError):
+    """Git could not reliably determine a Project's worktree."""
+
+
 class RunInputError(Exception):
     """A Project Spec or Context Source cannot be used for this Run."""
+
+
+class RegistryError(Exception):
+    """The Project Registry cannot be read or inspected."""
 
 
 @dataclass(frozen=True)
@@ -160,21 +169,31 @@ def _containing_worktree_root(path: Path, label: str) -> Path:
         result = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree",
              "--is-bare-repository", "--show-toplevel"],
-            capture_output=True, check=False,
+            capture_output=True, check=False, env={**os.environ, "LC_ALL": "C"},
         )
     except OSError as error:
-        raise ProjectSelectionError(f"Git inspection failed for {label}: {error}") from error
+        raise GitInspectionError(f"Git inspection failed for {label}: {error}") from error
+    if result.returncode:
+        if (result.stdout == b"false\ntrue\n" and
+                b"this operation must be run in a work tree" in result.stderr):
+            raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
+        if (b"not a git repository" in result.stderr and
+                not os.environ.get("GIT_DIR")):
+            raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
+        raise GitInspectionError(f"Git inspection failed for {label}: Git returned {result.returncode}")
     lines = result.stdout.split(b"\n", 2)
-    if result.returncode or len(lines) != 3 or lines[0] != b"true" or lines[1] != b"false":
+    if len(lines) != 3:
+        raise GitInspectionError(f"Git inspection failed for {label}: invalid Git output")
+    if lines[0] != b"true" or lines[1] != b"false":
         raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
     try:
         top_level = Path(os.fsdecode(lines[2].removesuffix(b"\n"))).resolve(strict=True)
     except (OSError, RuntimeError) as error:
-        raise ProjectSelectionError(
+        raise GitInspectionError(
             f"Git inspection failed for {label}: invalid worktree path"
         ) from error
     if not path.is_relative_to(top_level):
-        raise ProjectSelectionError(f"Git inspection failed for {label}: worktree does not contain path")
+        raise GitInspectionError(f"Git inspection failed for {label}: worktree does not contain path")
     return top_level
 
 
@@ -436,6 +455,98 @@ def _parse_project(args: list[str]) -> None:
         raise UsageError(f"project {command} expects {arities[command]} argument(s)", project=True)
 
 
+_PROJECT_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?\Z")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RegistryError("malformed Project Registry: duplicate key")
+        result[key] = value
+    return result
+
+
+def _read_registry() -> dict[str, str]:
+    from platformdirs import user_config_path
+
+    registry = user_config_path("factory", appauthor=False) / "projects.json"
+    try:
+        descriptor = os.open(registry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise RegistryError("malformed Project Registry: not a regular file") from error
+        raise RegistryError(f"Project Registry cannot be read: {error}") from error
+    try:
+        with os.fdopen(descriptor, "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise RegistryError("malformed Project Registry: not a regular file")
+            document: object = json.loads(
+                source.read().decode("utf-8", errors="strict"),
+                object_pairs_hook=_unique_json_object,
+            )
+    except (UnicodeError, ValueError, RecursionError) as error:
+        raise RegistryError("malformed Project Registry: invalid JSON or UTF-8") from error
+    except OSError as error:
+        raise RegistryError(f"Project Registry cannot be read: {error}") from error
+    if not isinstance(document, dict) or set(document) != {"version", "projects"}:
+        raise RegistryError("malformed Project Registry: invalid schema")
+    if type(document["version"]) is not int or document["version"] != 1:
+        raise RegistryError("malformed Project Registry: unsupported version")
+    projects = document["projects"]
+    if not isinstance(projects, dict):
+        raise RegistryError("malformed Project Registry: invalid projects")
+    for name, path in projects.items():
+        if (not isinstance(name, str) or not _PROJECT_NAME.fullmatch(name) or
+                not isinstance(path, str) or not os.path.isabs(path) or "\x00" in path):
+            raise RegistryError("malformed Project Registry: invalid Project Name or path")
+        try:
+            path.encode("utf-8", errors="strict")
+        except UnicodeError as error:
+            raise RegistryError("malformed Project Registry: invalid path text") from error
+    return projects
+
+
+def _project_status(path: str) -> str:
+    selected = Path(path)
+    try:
+        mode = selected.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return "stale: path does not exist"
+    except OSError as error:
+        raise RegistryError(f"Project validation failed: {error}") from error
+    if not stat.S_ISDIR(mode):
+        return "stale: path is not a directory"
+    try:
+        canonical = selected.resolve(strict=True)
+        _containing_worktree_root(canonical, f"path {_quoted(path)}")
+    except (OSError, RuntimeError) as error:
+        raise RegistryError(f"Project validation failed: {error}") from error
+    except GitInspectionError as error:
+        raise RegistryError(str(error)) from error
+    except ProjectSelectionError:
+        return "stale: path is not inside a non-bare Git worktree"
+    return "valid"
+
+
+def _list_projects() -> None:
+    projects = _read_registry()
+    if not projects:
+        output = "No projects registered.\n"
+    else:
+        lines = ["NAME\tSTATUS\tPATH"]
+        for name in sorted(projects):
+            path = projects[name]
+            lines.append(
+                f"{json.dumps(name, ensure_ascii=False)}\t{_project_status(path)}\t"
+                f"{json.dumps(path, ensure_ascii=False)}"
+            )
+        output = "\n".join(lines) + "\n"
+    sys.stdout.write(output)
+
+
 def _usage(error: UsageError) -> int:
     synopsis = PROJECT_SYNOPSIS if error.project else ROOT_SYNOPSIS
     help_command = "factory project --help" if error.project else "factory --help"
@@ -456,6 +567,9 @@ def _dispatch() -> int:
             return 0
         if sys.argv[1:2] == ["project"]:
             _parse_project(sys.argv[2:])
+            if sys.argv[2] == "list":
+                _list_projects()
+                return 0
             sys.stderr.write("factory: error: Project administration is not yet available.\n")
         else:
             run = _parse_run(sys.argv[1:])
@@ -494,7 +608,7 @@ def _dispatch() -> int:
     except ProjectSelectionError as error:
         sys.stderr.write(f"factory: error: {error}.\n")
         return 1
-    except (RunInputError, RunAdmissionError) as error:
+    except (RunInputError, RunAdmissionError, RegistryError) as error:
         sys.stderr.write(f"factory: error: {error}.\n")
         return 1
     except PackageNotFoundError:

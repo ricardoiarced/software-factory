@@ -1,5 +1,6 @@
 """Run Request behavior at the Factory command boundary."""
 
+from collections.abc import Callable
 import io
 import json
 import subprocess
@@ -10,6 +11,60 @@ import pytest
 
 import factory
 from _codex import RunAdmissionError
+
+
+def run_arguments_for_selection(
+    selection: str, tmp_path: Path, project: Path,
+    monkeypatch: pytest.MonkeyPatch, *, explicit_path: Path | None = None,
+) -> list[str]:
+    if selection == "explicit":
+        return [
+            "factory", "--path", str(project if explicit_path is None else explicit_path),
+        ]
+    if selection == "registered":
+        config = tmp_path / "config"
+        registry = config / "factory" / "projects.json"
+        registry.parent.mkdir(parents=True)
+        registry.write_text(json.dumps({
+            "version": 1, "projects": {"api": str(project)},
+        }))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+        return ["factory", "--project", "api"]
+    return ["factory"]
+
+
+def track_named_spools(
+    monkeypatch: pytest.MonkeyPatch, *, fail_rewind: bool = False,
+) -> list[tuple[io.BufferedRandom, Path]]:
+    named_temporary_file = factory.tempfile.NamedTemporaryFile
+    created: list[tuple[io.BufferedRandom, Path]] = []
+
+    def create_named_spool(**_: object) -> io.BufferedRandom:
+        spool = named_temporary_file(mode="w+b")
+        if fail_rewind:
+            def fail_seek(offset: int, whence: int = 0) -> int:
+                if offset == 0 and whence == 0:
+                    raise OSError("rewind failed")
+                return spool.file.seek(offset, whence)
+
+            spool.seek = fail_seek
+        created.append((spool, Path(spool.name)))
+        return spool
+
+    monkeypatch.setattr(factory.tempfile, "TemporaryFile", create_named_spool)
+    return created
+
+
+def make_downstream_failure(
+    attempts: list[Path], kind: str,
+) -> Callable[[Path, io.BufferedRandom], int]:
+    def fail(boundary: Path, spool: io.BufferedRandom) -> int:
+        attempts.append(boundary)
+        if kind == "admission":
+            raise RunAdmissionError("simultaneous admission failure")
+        raise RuntimeError("simultaneous Codex failure")
+
+    return fail
 
 
 def test_registered_run_uses_exact_boundary_and_only_its_spec(
@@ -798,6 +853,150 @@ def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
     assert capsys.readouterr().err == expected
 
 
+@pytest.mark.parametrize("downstream_failure", ["admission", "codex"])
+@pytest.mark.parametrize("failure", ["parse", "explicit", "registered", "discovered"])
+def test_parse_and_project_failures_precede_spooling_and_downstream_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], failure: str, downstream_failure: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    missing = tmp_path / "missing"
+    spool_attempts: list[None] = []
+    admission_attempts: list[Path] = []
+
+    def create_spool(**kwargs: object) -> io.BytesIO:
+        spool_attempts.append(None)
+        return io.BytesIO()
+
+    if failure == "parse":
+        arguments = ["factory", "--unknown", "--path", str(missing), "Fix"]
+    elif failure == "explicit":
+        arguments = ["factory", "--path", str(missing), "Fix"]
+    elif failure == "registered":
+        config = tmp_path / "config"
+        registry = config / "factory" / "projects.json"
+        registry.parent.mkdir(parents=True)
+        registry.write_text(json.dumps({
+            "version": 1, "projects": {"api": str(missing)},
+        }))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+        arguments = ["factory", "--project", "api", "Fix"]
+    else:
+        (project / ".agent").symlink_to(missing, target_is_directory=True)
+        arguments = ["factory", "Fix"]
+
+    monkeypatch.setattr(factory.tempfile, "TemporaryFile", create_spool)
+    monkeypatch.setattr(
+        factory, "_codex_run", make_downstream_failure(
+            admission_attempts, downstream_failure))
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"\xff")))
+    monkeypatch.chdir(project)
+
+    expected_status = 2 if failure == "parse" else 1
+    assert factory.main() == expected_status
+    error = capsys.readouterr().err
+    assert {
+        "parse": 'unknown option "--unknown"',
+        "explicit": "cannot be resolved",
+        "registered": 'Project "api" is stale: path does not exist',
+        "discovered": "Project Marker",
+    }[failure] in error
+    assert "simultaneous admission failure" not in error
+    assert "simultaneous Codex failure" not in error
+    assert spool_attempts == []
+    assert admission_attempts == []
+
+
+@pytest.mark.parametrize("downstream_failure", ["admission", "codex"])
+@pytest.mark.parametrize("selection", ["explicit", "registered", "discovered"])
+@pytest.mark.parametrize("source", ["spec", "file", "stdin"])
+def test_project_selection_and_context_failures_precede_downstream_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], selection: str, source: str,
+    downstream_failure: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    marker = project / ".agent"
+    marker.mkdir()
+    (marker / "spec.md").write_bytes(b"\xff" if source == "spec" else b"guidance")
+    (project / "context").write_bytes(
+        b"\xff" if source in ("spec", "file") else b"context")
+    standard_input = b"\xff"
+    admission_attempts: list[Path] = []
+
+    arguments = run_arguments_for_selection(
+        selection, tmp_path, project, monkeypatch)
+    arguments.extend(["--file", "context", "Fix"])
+
+    monkeypatch.setattr(
+        factory, "_codex_run", make_downstream_failure(
+            admission_attempts, downstream_failure))
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "invalid")
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(standard_input)))
+    monkeypatch.chdir(project)
+
+    assert factory.main() == 1
+    error = capsys.readouterr().err
+    assert {
+        "spec": "Project Spec is not valid UTF-8",
+        "file": 'Context file "context" is not valid UTF-8',
+        "stdin": "standard input is not valid UTF-8",
+    }[source] in error
+    assert "simultaneous admission failure" not in error
+    assert "simultaneous Codex failure" not in error
+    assert admission_attempts == []
+
+
+@pytest.mark.parametrize("selection", ["explicit", "registered", "discovered"])
+def test_each_project_selection_hands_off_one_complete_rewound_binary_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    marker = project / ".agent"
+    marker.mkdir()
+    (marker / "spec.md").write_text("guidance")
+    context = tmp_path / "context"
+    context.write_text("file context")
+    invocation_dir = project / "src"
+    invocation_dir.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    handoffs: list[tuple[Path, bytes]] = []
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        assert not spool.closed
+        assert spool.tell() == 0
+        assert spool.read(0) == b""
+        handoffs.append((boundary, spool.read()))
+        return 23
+
+    arguments = run_arguments_for_selection(
+        selection, tmp_path, project, monkeypatch, explicit_path=alias)
+    arguments.extend(["--file", str(context), "Fix"])
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"standard input")))
+    monkeypatch.chdir(invocation_dir)
+
+    assert factory.main() == 23
+    assert handoffs == [(
+        project,
+        b"# Project Guidance\n\nguidance\n\n# Run Request\n\n"
+        b"## Instruction\n\nFix\n\n## Context\n\n"
+        + f"### File: {json.dumps(str(context))}\n\n".encode()
+        + b"file context\n\n### Standard Input\n\nstandard input",
+    )]
+
+
 def test_spool_is_private_rewound_and_closed_after_admission_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -819,6 +1018,111 @@ def test_spool_is_private_rewound_and_closed_after_admission_refusal(
 
     assert factory.main() == 1
     assert len(spools) == 1 and spools[0].closed
+
+
+@pytest.mark.parametrize("outcome", ["success", "refusal", "exception", "interruption"])
+def test_spool_lifetime_covers_every_codex_handoff_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    created = track_named_spools(monkeypatch)
+
+    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+        assert boundary == tmp_path
+        assert not spool.closed
+        assert spool.tell() == 0
+        assert Path(spool.name).is_file()
+        assert spool.read() == b"# Run Request\n\n## Instruction\n\nFix"
+        if outcome == "refusal":
+            raise RunAdmissionError("unsupported")
+        if outcome == "exception":
+            raise RuntimeError("unexpected")
+        if outcome == "interruption":
+            raise KeyboardInterrupt
+        return 31
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    if outcome == "success":
+        assert factory.main() == 31
+    elif outcome == "refusal":
+        assert factory.main() == 1
+    elif outcome == "exception":
+        with pytest.raises(RuntimeError, match="unexpected"):
+            factory.main()
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            factory.main()
+
+    assert len(created) == 1
+    spool, path = created[0]
+    assert spool.closed
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("failure", ["composition", "size gate"])
+def test_rejected_composed_spools_are_closed_and_removed_before_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    context = tmp_path / "context"
+    context.write_bytes(b"\xff" if failure == "composition" else b"x")
+    created = track_named_spools(monkeypatch)
+    admission_attempts: list[Path] = []
+
+    monkeypatch.setattr(
+        factory, "_codex_run", make_downstream_failure(
+            admission_attempts, "admission"))
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "0")
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "context", "Fix",
+    ])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    assert admission_attempts == []
+    assert len(created) == 1
+    spool, path = created[0]
+    assert spool.closed
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("failure", ["size gate", "rewind"])
+def test_size_gate_and_rewind_failures_precede_run_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], failure: str,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "context").write_bytes(b"x")
+    created = track_named_spools(monkeypatch, fail_rewind=True)
+    admission_attempts: list[Path] = []
+
+    monkeypatch.setattr(
+        factory, "_codex_run", make_downstream_failure(
+            admission_attempts, "admission"))
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "0" if failure == "size gate" else "1")
+    monkeypatch.setattr(sys, "argv", [
+        "factory", "--path", str(tmp_path), "--file", "context", "Fix",
+    ])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == 1
+    error = capsys.readouterr().err
+    assert (
+        "Context is 1 bytes; the warning threshold is 0 bytes"
+        if failure == "size gate" else "Run Request spool failed: rewind failed"
+    ) in error
+    assert "simultaneous admission failure" not in error
+    assert admission_attempts == []
+    assert len(created) == 1
+    spool, path = created[0]
+    assert spool.closed
+    assert not path.exists()
 
 
 def test_explicit_subdirectory_does_not_inherit_ancestor_spec(

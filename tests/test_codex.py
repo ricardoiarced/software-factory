@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 
 import pytest
@@ -100,8 +101,56 @@ elif [ "$1" = sandbox ]; then
       exit 91
     fi
   done
+  [ "$2" = -C ] || exit 92
+  [ "$4" = -c ] || exit 92
+  [ "$6:$7:$8" = '-P:factory-isolated:--' ] || exit 92
+  [ "$9:${10}" = '/bin/sh:-c' ] || exit 92
+  [ "${12}" = factory-host-admission-probe ] || exit 92
+  [ "${13}" = "$3" ] || exit 92
+  [ -f "${13}/inside-read" ] || exit 92
+  [ "$(cat "${13}/inside-read")" = inside-boundary ] || exit 92
+  [ -f "${13%/*}/parent-read" ] || exit 92
+  [ -f "${13%/*}/sibling/outside-read" ] || exit 92
+  case "${14}" in "${13}"/*) exit 92;; esac
+  case "${15}" in /tmp/*) :;; *) exit 92;; esac
+  [ "${16}" = "$0" ] || exit 92
+  case "$5" in
+    *'":root" = "deny"'*'":minimal" = "read"'*'":tmpdir" = "deny"'*) :;;
+    *) exit 92;;
+  esac
+  case "$5" in
+    *'":slash_tmp" = "deny"'*'":workspace_roots" = {"." = "write"}'*) :;;
+    *) exit 92;;
+  esac
+  case "${11}" in
+    *'read_exact "$inside_read"'*'can_write "$inside_write"'*) :;;
+    *) exit 93;;
+  esac
+  case "${11}" in
+    *'can_read "$parent_read"'*'can_write "$parent_write"'*) :;;
+    *) exit 93;;
+  esac
+  case "${11}" in
+    *'can_read "$sibling_read"'*'can_write "$sibling_write"'*) :;;
+    *) exit 93;;
+  esac
+  case "${11}" in
+    *'can_write "$temporary_write"'*'can_write "$slash_tmp_write"'*) :;;
+    *) exit 93;;
+  esac
+  case "${11}" in
+    *'can_read "/bin/sh"'*'can_read "$executable"'*) :;;
+    *) exit 93;;
+  esac
   : > "$FACTORY_PROBE_GATE"
-  if [ -n "${FACTORY_PROBE_SLEEP:-}" ]; then
+  if [ -n "${FACTORY_PROBE_DESCENDANT_SLEEP:-}" ]; then
+    (
+      trap '' HUP TERM
+      sleep "$FACTORY_PROBE_DESCENDANT_SLEEP"
+      : > "$FACTORY_PROBE_DESCENDANT_SURVIVED"
+    ) &
+    wait
+  elif [ -n "${FACTORY_PROBE_SLEEP:-}" ]; then
     sleep "$FACTORY_PROBE_SLEEP"
   fi
   if [ "${FACTORY_PROBE_STDOUT+x}" = x ]; then
@@ -124,6 +173,26 @@ elif [ "$1" = exec ]; then
 fi
 """)
     path.chmod(0o755)
+
+
+def prepare_probe_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, Path]:
+    boundary = tmp_path / "selected-project"
+    boundary.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_probe_executable(executable)
+    probe_gate = tmp_path / "probe-ran"
+    launch_gate = tmp_path / "run-launched"
+    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
+    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
+    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
+    monkeypatch.setenv("FACTORY_PROBE_GATE", str(probe_gate))
+    monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
+    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
+    return boundary, probe_gate, launch_gate
 
 
 def test_codex_0_155_1_permission_profile_is_deterministic_and_exact(tmp_path: Path) -> None:
@@ -263,24 +332,14 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
 def test_run_requires_a_successful_synthetic_probe_before_launching_codex(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    boundary = tmp_path / "selected-project"
-    boundary.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
-    executable = tmp_path / "bin" / "codex"
-    executable.parent.mkdir()
-    make_probe_executable(executable)
-    gate = tmp_path / "probe-succeeded"
-    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
-    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
-    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
-    monkeypatch.setenv("FACTORY_PROBE_GATE", str(gate))
-    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
+    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
 
     spool = tmp_path / "run-request"
     spool.write_bytes(b"# Run Request\n")
     with spool.open("rb") as request:
         assert run(boundary, request) == 23
-    assert gate.is_file()
+    assert probe_gate.is_file()
+    assert launch_gate.is_file()
 
 
 @pytest.mark.parametrize(("stdout", "stderr", "exit_status", "reason"), [
@@ -298,23 +357,10 @@ def test_run_refuses_partial_ambiguous_or_failed_host_probe_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     stdout: str, stderr: str, exit_status: str, reason: str,
 ) -> None:
-    boundary = tmp_path / "selected-project"
-    boundary.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
-    executable = tmp_path / "bin" / "codex"
-    executable.parent.mkdir()
-    make_probe_executable(executable)
-    probe_gate = tmp_path / "probe-ran"
-    launch_gate = tmp_path / "run-launched"
-    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
-    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
-    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
-    monkeypatch.setenv("FACTORY_PROBE_GATE", str(probe_gate))
-    monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
+    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     monkeypatch.setenv("FACTORY_PROBE_STDOUT", stdout)
     monkeypatch.setenv("FACTORY_PROBE_STDERR", stderr)
     monkeypatch.setenv("FACTORY_PROBE_EXIT", exit_status)
-    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
 
     with pytest.raises(RunAdmissionError, match=reason):
         run(boundary, io.BytesIO())
@@ -326,56 +372,37 @@ def test_run_refuses_partial_ambiguous_or_failed_host_probe_evidence(
 def test_run_refuses_a_timed_out_host_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    boundary = tmp_path / "selected-project"
-    boundary.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
-    executable = tmp_path / "bin" / "codex"
-    executable.parent.mkdir()
-    make_probe_executable(executable)
-    probe_gate = tmp_path / "probe-ran"
-    launch_gate = tmp_path / "run-launched"
-    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
-    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
-    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
-    monkeypatch.setenv("FACTORY_PROBE_GATE", str(probe_gate))
-    monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
-    monkeypatch.setenv("FACTORY_PROBE_SLEEP", "1")
+    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
+    descendant_survived = tmp_path / "probe-descendant-survived"
+    monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SLEEP", "0.1")
+    monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SURVIVED", str(descendant_survived))
     monkeypatch.setattr("_codex._HOST_PROBE_TIMEOUT_SECONDS", 0.01)
-    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
 
+    started = time.monotonic()
     with pytest.raises(RunAdmissionError, match="Host Admission Probe failed: timed out"):
         run(boundary, io.BytesIO())
 
+    assert time.monotonic() - started < 0.5
+    time.sleep(0.2)
     assert probe_gate.is_file()
     assert not launch_gate.exists()
+    assert not descendant_survived.exists()
 
 
 def test_run_refuses_when_synthetic_probe_data_cannot_be_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    boundary = tmp_path / "selected-project"
-    boundary.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
-    executable = tmp_path / "bin" / "codex"
-    executable.parent.mkdir()
-    make_probe_executable(executable)
-    launch_gate = tmp_path / "run-launched"
-    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
-    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
-    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
-    monkeypatch.setenv("FACTORY_PROBE_GATE", str(tmp_path / "probe-ran"))
-    monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
+    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "_codex.tempfile.TemporaryDirectory",
         lambda **kwargs: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left")),
     )
-    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
-
     with pytest.raises(
         RunAdmissionError, match="Host Admission Probe failed: No space left",
     ):
         run(boundary, io.BytesIO())
 
+    assert not probe_gate.exists()
     assert not launch_gate.exists()
 
 
@@ -397,10 +424,6 @@ def test_run_requires_complete_strict_configuration_inspection(
     inspected: list[list[str]] = []
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if command[1] == "sandbox":
-            return subprocess.CompletedProcess(
-                command, 0, b"factory-host-admission-probe-v1\n", b"",
-            )
         inspected.append(command)
         if command[1:3] == ["features", "list"]:
             return subprocess.CompletedProcess(command, 0, (
@@ -420,6 +443,7 @@ def test_run_requires_complete_strict_configuration_inspection(
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
     monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex._run_host_admission_probe", lambda *args: None)
     monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
         "Process", (), {"wait": lambda self: 0},
     )())

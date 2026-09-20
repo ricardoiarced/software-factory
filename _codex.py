@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import signal
 import stat
 import subprocess
 import tempfile
@@ -59,6 +60,18 @@ _HOST_PROBE_TIMEOUT_SECONDS = 10
 _HOST_PROBE_SCRIPT = r"""
 set -u
 
+boundary=$1
+temporary_write=$2
+slash_tmp_write=$3
+executable=$4
+root=${boundary%/*}
+inside_read=$boundary/inside-read
+inside_write=$boundary/inside-write
+parent_read=$root/parent-read
+parent_write=$root/parent-write
+sibling_read=$root/sibling/outside-read
+sibling_write=$root/sibling/outside-write
+
 read_exact() {
   IFS= read -r value < "$1" && [ "$value" = "$2" ]
 }
@@ -69,17 +82,17 @@ can_write() {
   ( umask 077; printf '%s\n' 'probe-write' > "$1" ) 2>/dev/null
 }
 
-read_exact "$1" 'inside-boundary' || exit 10
-can_write "$2" || exit 11
-read_exact "$2" 'probe-write' || exit 12
-can_read "$3" && exit 13
-can_write "$4" && exit 14
-can_read "$5" && exit 15
-can_write "$6" && exit 16
-can_write "$7" && exit 17
-can_write "$8" && exit 18
-can_read "$9" || exit 19
-can_read "${10}" || exit 20
+read_exact "$inside_read" 'inside-boundary' || exit 10
+can_write "$inside_write" || exit 11
+read_exact "$inside_write" 'probe-write' || exit 12
+can_read "$parent_read" && exit 13
+can_write "$parent_write" && exit 14
+can_read "$sibling_read" && exit 15
+can_write "$sibling_write" && exit 16
+can_write "$temporary_write" && exit 17
+can_write "$slash_tmp_write" && exit 18
+can_read "/bin/sh" || exit 19
+can_read "$executable" || exit 20
 printf '%s\n' 'factory-host-admission-probe-v1'
 """.strip()
 
@@ -228,11 +241,8 @@ def _execute_host_admission_probe(executable: Path) -> None:
         boundary.mkdir()
         sibling.mkdir()
         inside_read = boundary / "inside-read"
-        inside_write = boundary / "inside-write"
         parent_read = root / "parent-read"
-        parent_write = root / "parent-write"
         sibling_read = sibling / "outside-read"
-        sibling_write = sibling / "outside-write"
         temporary_write = temporary_root / f".{root.name}-temporary-write"
         slash_tmp_write = Path("/tmp") / f".{root.name}-slash-tmp-write"
         inside_read.write_text("inside-boundary\n")
@@ -248,40 +258,40 @@ def _execute_host_admission_probe(executable: Path) -> None:
             "-P", "factory-isolated",
             "--",
             "/bin/sh", "-c", _HOST_PROBE_SCRIPT, "factory-host-admission-probe",
-            os.fspath(inside_read),
-            os.fspath(inside_write),
-            os.fspath(parent_read),
-            os.fspath(parent_write),
-            os.fspath(sibling_read),
-            os.fspath(sibling_write),
+            os.fspath(boundary),
             os.fspath(temporary_write),
             os.fspath(slash_tmp_write),
-            "/bin/sh",
             os.fspath(executable),
         ]
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 invocation,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=False,
-                timeout=_HOST_PROBE_TIMEOUT_SECONDS,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired as error:
-            raise _host_probe_failure(executable, "timed out") from error
         except OSError as error:
             raise _host_probe_failure(
                 executable, error.strerror or str(error),
             ) from error
+        try:
+            stdout, stderr = process.communicate(timeout=_HOST_PROBE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise _host_probe_failure(executable, "timed out") from error
         finally:
             temporary_write.unlink(missing_ok=True)
             if slash_tmp_write != temporary_write:
                 slash_tmp_write.unlink(missing_ok=True)
 
-        if result.returncode:
-            raise _host_probe_failure(executable, f"exit status {result.returncode}")
-        if result.stdout != _HOST_PROBE_SUCCESS or result.stderr:
+        if process.returncode:
+            raise _host_probe_failure(executable, f"exit status {process.returncode}")
+        if stdout != _HOST_PROBE_SUCCESS or stderr:
             raise _host_probe_failure(executable, "unexpected output")
 
 

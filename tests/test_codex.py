@@ -30,6 +30,21 @@ def make_executable(path: Path, version: str = "0.154.0") -> None:
     path.chmod(0o755)
 
 
+def make_inspector_executable(path: Path) -> None:
+    path.write_text("""#!/bin/sh
+if [ "$1" = --version ]; then
+  echo 'codex 0.155.1'
+elif [ "$1:$2" = 'features:list' ]; then
+  printf '%s' "$FACTORY_FEATURES"
+  exit "${FACTORY_FEATURE_EXIT:-0}"
+elif [ "$1:$2" = 'mcp:list' ]; then
+  printf '%s' "$FACTORY_MCP"
+  exit "${FACTORY_MCP_EXIT:-0}"
+fi
+""")
+    path.chmod(0o755)
+
+
 def certify(executable: Path) -> _CompatibilityEntry:
     metadata = executable.stat()
     with executable.open("rb") as artifact:
@@ -163,6 +178,7 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", (certify(executable),))
     monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
     monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
+    monkeypatch.setattr("_codex._inspect_strict_configuration", lambda *args: None)
 
     calls: list[tuple[list[str], Path, io.BytesIO]] = []
 
@@ -180,6 +196,204 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
     assert calls == [(
         _codex_0_155_1_invocation(executable, boundary, git_root), boundary, spool,
     )]
+
+
+def test_run_requires_complete_strict_configuration_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    git_root = tmp_path / "git-root"
+    git_root.mkdir()
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
+
+    inspected: list[list[str]] = []
+
+    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        inspected.append(command)
+        if command[1:3] == ["features", "list"]:
+            return subprocess.CompletedProcess(command, 0, (
+                b"apps                         stable             false\n"
+                b"plugins                      stable             false\n"
+                b"remote_plugin                stable             false\n"
+                b"browser_use                  stable             false\n"
+                b"browser_use_external         stable             false\n"
+                b"browser_use_full_cdp         stable             false\n"
+                b"computer_use                 stable             false\n"
+                b"multi_agent                  stable             false\n"
+                b"memories                     stable             false\n"
+                b"skip_host_skill_discovery    under development  true\n"
+            ), b"")
+        if command[1:3] == ["mcp", "list"]:
+            return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
+        "Process", (), {"wait": lambda self: 0},
+    )())
+
+    assert run(boundary, io.BytesIO()) == 0
+    assert inspected == [
+        [
+            os.fspath(executable), "features", "list",
+            "-c", 'approval_policy="never"',
+            "-c", "project_doc_max_bytes=0",
+            "-c", "project_root_markers=[]",
+            "-c", "allow_login_shell=false",
+            "-c", 'shell_environment_policy.inherit="core"',
+            "-c", "shell_environment_policy.ignore_default_excludes=false",
+            "-c", "features.apps=false",
+            "-c", "features.plugins=false",
+            "-c", "features.remote_plugin=false",
+            "-c", "features.browser_use=false",
+            "-c", "features.browser_use_external=false",
+            "-c", "features.browser_use_full_cdp=false",
+            "-c", "features.computer_use=false",
+            "-c", "features.multi_agent=false",
+            "-c", "features.memories=false",
+            "-c", "features.skip_host_skill_discovery=true",
+            "-c", "default_permissions=\"factory-isolated\"",
+            "-c", "permissions.factory-isolated="
+            + _codex_0_155_1_permission_profile(executable),
+            "-c", "projects."
+            + json.dumps(os.fspath(git_root), ensure_ascii=False)
+            + ".trust_level=\"untrusted\"",
+        ],
+        [
+            os.fspath(executable), "mcp", "list", "--json",
+            "-c", 'approval_policy="never"',
+            "-c", "project_doc_max_bytes=0",
+            "-c", "project_root_markers=[]",
+            "-c", "allow_login_shell=false",
+            "-c", "shell_environment_policy.inherit=\"core\"",
+            "-c", "shell_environment_policy.ignore_default_excludes=false",
+            "-c", "features.apps=false",
+            "-c", "features.plugins=false",
+            "-c", "features.remote_plugin=false",
+            "-c", "features.browser_use=false",
+            "-c", "features.browser_use_external=false",
+            "-c", "features.browser_use_full_cdp=false",
+            "-c", "features.computer_use=false",
+            "-c", "features.multi_agent=false",
+            "-c", "features.memories=false",
+            "-c", "features.skip_host_skill_discovery=true",
+            "-c", "default_permissions=\"factory-isolated\"",
+            "-c", "permissions.factory-isolated="
+            + _codex_0_155_1_permission_profile(executable),
+            "-c", "projects."
+            + json.dumps(os.fspath(git_root), ensure_ascii=False)
+            + ".trust_level=\"untrusted\"",
+        ],
+    ]
+
+
+@pytest.mark.parametrize("features, mcp", [
+    (b"apps stable false\n", b"[]\n"),
+    (b"apps                         stable             true\n", b"[]\n"),
+    (b"apps                         stable             false unexpected\n", b"[]\n"),
+    (b"apps                         stable             false\n" * 2, b"[]\n"),
+    (b"apps                         stable             false\n", b"{}\n"),
+    (b"apps                         stable             false\n", b"[{\"name\": \"unexpected\"}]\n"),
+])
+def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, features: bytes, mcp: bytes,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
+    launched = False
+
+    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        output = features if command[1:3] == ["features", "list"] else mcp
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    def launch(*args: object, **kwargs: object) -> None:
+        nonlocal launched
+        launched = True
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    with pytest.raises(RunAdmissionError, match="strict configuration"):
+        run(tmp_path, io.BytesIO())
+
+    assert not launched
+
+
+@pytest.mark.parametrize("features, mcp, environment", [
+    (
+        b"apps                         stable             false\n"
+        b"plugins                      stable             false\n"
+        b"remote_plugin                stable             false\n"
+        b"browser_use                  stable             false\n"
+        b"browser_use_external         stable             false\n"
+        b"browser_use_full_cdp         stable             false\n"
+        b"computer_use                 stable             false\n"
+        b"multi_agent                  stable             false\n"
+        b"memories                     stable             false\n"
+        b"skip_host_skill_discovery    under development  true\n",
+        b"[]\n", {},
+    ),
+    (
+        b"apps                         stable             false\n"
+        b"plugins                      stable             false\n"
+        b"remote_plugin                stable             false\n"
+        b"browser_use                  stable             false\n"
+        b"browser_use_external         stable             false\n"
+        b"browser_use_full_cdp         stable             false\n"
+        b"computer_use                 stable             false\n"
+        b"multi_agent                  stable             false\n"
+        b"memories                     stable             false\n"
+        b"skip_host_skill_discovery    under development  true\n"
+        b"future_feature               stable             true\n",
+        b"[]\n", {},
+    ),
+    (b"apps                         stable             true\n", b"[]\n", {}),
+    (b"apps                         stable             false\n", b"[]\n", {"FACTORY_FEATURE_EXIT": "1"}),
+    (b"apps                         stable             false\n", b"not json\n", {}),
+])
+def test_run_uses_executable_fakes_for_strict_inspector_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, features: bytes, mcp: bytes,
+    environment: dict[str, str],
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_inspector_executable(executable)
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setenv("FACTORY_FEATURES", features.decode("ascii"))
+    monkeypatch.setenv("FACTORY_MCP", mcp.decode("ascii"))
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
+
+    if environment:
+        with pytest.raises(RunAdmissionError, match="strict configuration"):
+            run(tmp_path, io.BytesIO())
+    elif (
+        features.startswith(b"apps                         stable             false\n")
+        and b"future_feature" not in features
+        and mcp == b"[]\n"
+    ):
+        spool = tmp_path / "request"
+        spool.write_bytes(b"# Run Request\n")
+        with spool.open("rb") as request:
+            assert run(tmp_path, request) == 0
+    else:
+        with pytest.raises(RunAdmissionError, match="strict configuration"):
+            run(tmp_path, io.BytesIO())
 
 
 def test_identity_matches_an_exact_private_compatibility_fixture(

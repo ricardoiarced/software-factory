@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import platform
 import re
+import signal
 import stat
 import subprocess
+import tempfile
 from typing import BinaryIO
 
 
@@ -53,6 +55,46 @@ _REQUIRED_FEATURE_STATES = {
     "memories": False,
     "skip_host_skill_discovery": True,
 }
+_HOST_PROBE_SUCCESS = b"factory-host-admission-probe-v1\n"
+_HOST_PROBE_TIMEOUT_SECONDS = 10
+_HOST_PROBE_SCRIPT = r"""
+set -u
+
+boundary=$1
+temporary_write=$2
+slash_tmp_write=$3
+executable=$4
+root=${boundary%/*}
+inside_read=$boundary/inside-read
+inside_write=$boundary/inside-write
+parent_read=$root/parent-read
+parent_write=$root/parent-write
+sibling_read=$root/sibling/outside-read
+sibling_write=$root/sibling/outside-write
+
+read_exact() {
+  IFS= read -r value < "$1" && [ "$value" = "$2" ]
+}
+can_read() {
+  ( : < "$1" ) 2>/dev/null
+}
+can_write() {
+  ( umask 077; printf '%s\n' 'probe-write' > "$1" ) 2>/dev/null
+}
+
+read_exact "$inside_read" 'inside-boundary' || exit 10
+can_write "$inside_write" || exit 11
+read_exact "$inside_write" 'probe-write' || exit 12
+can_read "$parent_read" && exit 13
+can_write "$parent_write" && exit 14
+can_read "$sibling_read" && exit 15
+can_write "$sibling_write" && exit 16
+can_write "$temporary_write" && exit 17
+can_write "$slash_tmp_write" && exit 18
+can_read "/bin/sh" || exit 19
+can_read "$executable" || exit 20
+printf '%s\n' 'factory-host-admission-probe-v1'
+""".strip()
 
 
 def _quoted_absolute_path(path: Path) -> str:
@@ -180,6 +222,79 @@ def _inspect_strict_configuration(executable: Path, enclosing_git_root: Path) ->
         raise _strict_configuration_failure(executable, "unrecognized MCP output") from error
     if configured_mcp != []:
         raise _strict_configuration_failure(executable, "active MCP servers")
+
+
+def _host_probe_failure(executable: Path, reason: str) -> RunAdmissionError:
+    return RunAdmissionError(
+        f"Codex executable {_quoted_absolute_path(executable)} Host Admission Probe "
+        f"failed: {reason}; this host cannot enforce Project Data Isolation",
+        executable=executable,
+    )
+
+
+def _run_host_admission_probe(executable: Path) -> None:
+    """Prove the candidate sandbox against disposable synthetic filesystem data."""
+
+    try:
+        temporary_root = Path(tempfile.gettempdir()).resolve()
+        with tempfile.TemporaryDirectory(prefix="factory-host-admission-probe-") as raw_root:
+            root = Path(raw_root)
+            boundary = root / "project"
+            sibling = root / "sibling"
+            boundary.mkdir()
+            sibling.mkdir()
+            inside_read = boundary / "inside-read"
+            parent_read = root / "parent-read"
+            sibling_read = sibling / "outside-read"
+            temporary_write = temporary_root / f".{root.name}-temporary-write"
+            slash_tmp_write = Path("/tmp") / f".{root.name}-slash-tmp-write"
+            inside_read.write_text("inside-boundary\n")
+            parent_read.write_text("outside-boundary\n")
+            sibling_read.write_text("outside-boundary\n")
+
+            invocation = [
+                os.fspath(executable),
+                "sandbox",
+                "-C", os.fspath(boundary),
+                "-c", "permissions.factory-isolated="
+                + _codex_0_155_1_permission_profile(executable),
+                "-P", "factory-isolated",
+                "--",
+                "/bin/sh", "-c", _HOST_PROBE_SCRIPT, "factory-host-admission-probe",
+                os.fspath(boundary),
+                os.fspath(temporary_write),
+                os.fspath(slash_tmp_write),
+                os.fspath(executable),
+            ]
+            process = subprocess.Popen(
+                invocation,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+            try:
+                stdout, stderr = process.communicate(timeout=_HOST_PROBE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as error:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise _host_probe_failure(executable, "timed out") from error
+            finally:
+                temporary_write.unlink(missing_ok=True)
+                if slash_tmp_write != temporary_write:
+                    slash_tmp_write.unlink(missing_ok=True)
+
+            if process.returncode:
+                raise _host_probe_failure(executable, f"exit status {process.returncode}")
+            if stdout != _HOST_PROBE_SUCCESS or stderr:
+                raise _host_probe_failure(executable, "unexpected output")
+    except OSError as error:
+        raise _host_probe_failure(
+            executable, error.strerror or str(error),
+        ) from error
 
 
 def _enclosing_git_root(project_boundary: Path) -> Path:
@@ -366,6 +481,7 @@ def run(project_boundary: Path, run_request_spool: BinaryIO) -> int:
     _match_compatibility(executable)
     enclosing_git_root = _enclosing_git_root(project_boundary)
     _inspect_strict_configuration(executable, enclosing_git_root)
+    _run_host_admission_probe(executable)
     invocation = _codex_0_155_1_invocation(
         executable, project_boundary, enclosing_git_root,
     )

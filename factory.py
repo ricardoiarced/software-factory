@@ -18,15 +18,14 @@ from _codex import RunAdmissionError, run as _codex_run
 from _project import (
     GitInspectionError,
     Project,
-    ProjectMarkerError,
     ProjectSelectionError,
     StaleProjectError,
     discover_project,
     expand_path,
     inspect_registered_project,
-    project_marker,
     select_explicit_project,
 )
+from _project_guidance import ProjectGuidanceError, open_project_spec
 
 
 ROOT_SYNOPSIS = """Usage:
@@ -130,27 +129,6 @@ def _quoted(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
-def _project_spec(boundary: Path) -> Path | None:
-    try:
-        marker = project_marker(boundary)
-    except ProjectMarkerError as error:
-        raise RunInputError(f"Project Spec marker {error}") from error
-    if marker is None:
-        return None
-    try:
-        spec = marker / "spec.md"
-        try:
-            spec.lstat()
-        except FileNotFoundError:
-            return None
-        resolved = spec.resolve(strict=True)
-        if not resolved.is_relative_to(boundary):
-            raise RunInputError("Project Spec is outside the Project Boundary")
-        return resolved
-    except (OSError, RuntimeError) as error:
-        raise RunInputError(f"Project Spec cannot be resolved: {error}") from error
-
-
 def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int]:
     """Copy one source, validating bytes and counting terminal line feeds."""
     decoder = codecs.getincrementaldecoder("utf-8")("strict")
@@ -212,41 +190,6 @@ def _open_regular(path: Path, label: str) -> BinaryIO:
             os.close(descriptor)
 
 
-def _open_project_spec(boundary: Path, spec: Path) -> BinaryIO:
-    """Open a checked Project Spec beneath the selected directory descriptor."""
-
-    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or
-            os.open not in os.supports_dir_fd):
-        raise RunInputError("Project Spec cannot be opened safely on this platform")
-    directory = -1
-    try:
-        directory = os.open(boundary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        parts = spec.relative_to(boundary).parts
-        for part in parts[:-1]:
-            next_directory = os.open(
-                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=directory,
-            )
-            os.close(directory)
-            directory = next_directory
-        descriptor = os.open(
-            parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
-            dir_fd=directory,
-        )
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise RunInputError("Project Spec is not a regular file")
-            return os.fdopen(descriptor, "rb")
-        except Exception:
-            os.close(descriptor)
-            raise
-    except OSError as error:
-        raise RunInputError(f"Project Spec cannot be opened: {error}") from error
-    finally:
-        if directory != -1:
-            os.close(directory)
-
-
 def _context_path(supplied: str, invocation_dir: Path) -> Path:
     try:
         expanded_text = expand_path(supplied)
@@ -260,11 +203,14 @@ def _context_path(supplied: str, invocation_dir: Path) -> Path:
 
 def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
                  spool: BinaryIO) -> int:
-    spec = _project_spec(boundary)
+    try:
+        project_spec = open_project_spec(boundary)
+    except ProjectGuidanceError as error:
+        raise RunInputError(str(error)) from error
     trailing_lfs = 2
-    if spec is not None:
-        spool.write(b"# Project Guidance\n\n")
-        with _open_project_spec(boundary, spec) as source:
+    if project_spec is not None:
+        with project_spec as source:
+            spool.write(b"# Project Guidance\n\n")
             _, trailing_lfs = _copy_utf8(source, spool, "Project Spec")
         _separator(spool, trailing_lfs)
     spool.write(b"# Run Request\n\n## Instruction\n\n")

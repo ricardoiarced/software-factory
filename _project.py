@@ -8,13 +8,11 @@ import re
 import stat
 import subprocess
 
+from _project_guidance import ProjectMarkerError, has_project_marker
+
 
 class ProjectSelectionError(Exception):
     """A Project could not be selected."""
-
-
-class ProjectMarkerError(Exception):
-    """A Project Marker is malformed or inaccessible."""
 
 
 class GitInspectionError(ProjectSelectionError):
@@ -123,25 +121,6 @@ def select_explicit_project(supplied: str, invocation_dir: Path) -> Project:
     return Project(boundary=boundary, enclosing_git_root=enclosing_git_root)
 
 
-def project_marker(boundary: Path) -> Path | None:
-    """Return a contained Project Marker or reject malformed marker state."""
-
-    marker = boundary / ".agent"
-    try:
-        marker.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise ProjectMarkerError(f"cannot be inspected: {error}") from error
-    try:
-        resolved = marker.resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        raise ProjectMarkerError(f"cannot be resolved: {error}") from error
-    if not resolved.is_relative_to(boundary) or not resolved.is_dir():
-        raise ProjectMarkerError("is not a contained directory")
-    return marker
-
-
 def discover_project(invocation_dir: Path) -> Project:
     """Select the nearest Project Marker within the containing worktree."""
 
@@ -149,12 +128,12 @@ def discover_project(invocation_dir: Path) -> Project:
     candidate = invocation_dir
     while True:
         try:
-            marker = project_marker(candidate)
+            marker_present = has_project_marker(candidate)
         except ProjectMarkerError as error:
             raise ProjectSelectionError(
                 f"Project Marker at {_quoted(str(candidate / '.agent'))} {error}",
             ) from error
-        if marker is not None or candidate == root:
+        if marker_present or candidate == root:
             return Project(boundary=candidate, enclosing_git_root=root)
         candidate = candidate.parent
 

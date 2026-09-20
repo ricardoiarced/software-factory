@@ -3,17 +3,25 @@
 import errno
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import platform
 import shutil
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
 import factory
-from _codex import _CompatibilityEntry, _match_compatibility, RunAdmissionError, run
+from _codex import (
+    _codex_0_155_1_permission_profile,
+    _CompatibilityEntry,
+    _match_compatibility,
+    RunAdmissionError,
+    run,
+)
 
 
 def make_executable(path: Path, version: str = "0.154.0") -> None:
@@ -39,6 +47,61 @@ def install_compatibility_fixture(
     executable: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", (certify(executable),))
+
+
+def test_codex_0_155_1_permission_profile_is_deterministic_and_exact(tmp_path: Path) -> None:
+    executable = tmp_path / "Codex Runtime" / "codex"
+
+    profile = _codex_0_155_1_permission_profile(executable)
+
+    assert profile == (
+        '{extends = ":workspace", filesystem = {":root" = "deny", '
+        '":minimal" = "read", ":tmpdir" = "deny", ":slash_tmp" = "deny", '
+        f'{json.dumps(str(executable.parent.absolute()), ensure_ascii=False)} = "read", '
+        '":workspace_roots" = {"." = "write"}}, network = {enabled = false}}'
+    )
+    assert _codex_0_155_1_permission_profile(executable) == profile
+
+
+def test_codex_0_155_1_permission_profile_allows_only_the_required_access(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "runtime" / "codex"
+
+    profile = tomllib.loads(
+        "profile = " + _codex_0_155_1_permission_profile(executable),
+    )["profile"]
+
+    assert profile == {
+        "extends": ":workspace",
+        "filesystem": {
+            ":root": "deny",
+            ":minimal": "read",
+            ":tmpdir": "deny",
+            ":slash_tmp": "deny",
+            str(executable.parent.absolute()): "read",
+            ":workspace_roots": {".": "write"},
+        },
+        "network": {"enabled": False},
+    }
+
+
+def test_codex_0_155_1_permission_profile_reopens_the_canonical_executable_directory(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "installation" / "codex"
+    executable.parent.mkdir()
+    executable.write_text("codex")
+    linked_executable = tmp_path / "bin" / "codex"
+    linked_executable.parent.mkdir()
+    linked_executable.symlink_to(executable)
+
+    profile = tomllib.loads(
+        "profile = " + _codex_0_155_1_permission_profile(linked_executable),
+    )["profile"]
+
+    assert profile["filesystem"][str(executable.parent)] == "read"
+    assert str(linked_executable.parent) not in profile["filesystem"]
 
 
 def test_identity_matches_an_exact_private_compatibility_fixture(

@@ -40,6 +40,8 @@ elif [ "$1:$2" = 'features:list' ]; then
 elif [ "$1:$2" = 'mcp:list' ]; then
   printf '%s' "$FACTORY_MCP"
   exit "${FACTORY_MCP_EXIT:-0}"
+elif [ "$1" = sandbox ]; then
+  printf 'factory-host-admission-probe-v1\n'
 fi
 """)
     path.chmod(0o755)
@@ -64,12 +66,12 @@ def safe_feature_output(active_feature: str | None = None) -> bytes:
     )
 
 
-def certify(executable: Path) -> _CompatibilityEntry:
+def certify(executable: Path, version: str = "0.154.0") -> _CompatibilityEntry:
     metadata = executable.stat()
     with executable.open("rb") as artifact:
         digest = hashlib.file_digest(artifact, "sha256").hexdigest()
     return _CompatibilityEntry(
-        version="0.154.0",
+        version=version,
         sha256=digest,
         operating_system=platform.system(),
         architecture=platform.machine(),
@@ -79,9 +81,49 @@ def certify(executable: Path) -> _CompatibilityEntry:
 
 
 def install_compatibility_fixture(
-    executable: Path, monkeypatch: pytest.MonkeyPatch,
+    executable: Path, monkeypatch: pytest.MonkeyPatch, version: str = "0.154.0",
 ) -> None:
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (certify(executable),))
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (certify(executable, version),))
+
+
+def make_probe_executable(path: Path) -> None:
+    path.write_text("""#!/bin/sh
+if [ "$1" = --version ]; then
+  echo 'codex 0.155.1'
+elif [ "$1:$2" = 'features:list' ]; then
+  printf '%s' "$FACTORY_FEATURES"
+elif [ "$1:$2" = 'mcp:list' ]; then
+  printf '[]\n'
+elif [ "$1" = sandbox ]; then
+  for argument in "$@"; do
+    if [ "$argument" = "$FACTORY_SELECTED_PROJECT" ]; then
+      exit 91
+    fi
+  done
+  : > "$FACTORY_PROBE_GATE"
+  if [ -n "${FACTORY_PROBE_SLEEP:-}" ]; then
+    sleep "$FACTORY_PROBE_SLEEP"
+  fi
+  if [ "${FACTORY_PROBE_STDOUT+x}" = x ]; then
+    printf '%s' "$FACTORY_PROBE_STDOUT"
+  else
+    printf 'factory-host-admission-probe-v1\n'
+  fi
+  if [ "${FACTORY_PROBE_STDERR+x}" = x ]; then
+    printf '%s' "$FACTORY_PROBE_STDERR" >&2
+  fi
+  exit "${FACTORY_PROBE_EXIT:-0}"
+elif [ "$1" = exec ]; then
+  if [ -n "${FACTORY_LAUNCH_GATE:-}" ]; then
+    : > "$FACTORY_LAUNCH_GATE"
+  fi
+  if [ -f "$FACTORY_PROBE_GATE" ]; then
+    exit 23
+  fi
+  exit 99
+fi
+""")
+    path.chmod(0o755)
 
 
 def test_codex_0_155_1_permission_profile_is_deterministic_and_exact(tmp_path: Path) -> None:
@@ -198,6 +240,7 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
     monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
     monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
     monkeypatch.setattr("_codex._inspect_strict_configuration", lambda *args: None)
+    monkeypatch.setattr("_codex._run_host_admission_probe", lambda *args: None)
 
     calls: list[tuple[list[str], Path, io.BytesIO]] = []
 
@@ -215,6 +258,125 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
     assert calls == [(
         _codex_0_155_1_invocation(executable, boundary, git_root), boundary, spool,
     )]
+
+
+def test_run_requires_a_successful_synthetic_probe_before_launching_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = tmp_path / "selected-project"
+    boundary.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_probe_executable(executable)
+    gate = tmp_path / "probe-succeeded"
+    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
+    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
+    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
+    monkeypatch.setenv("FACTORY_PROBE_GATE", str(gate))
+    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
+
+    spool = tmp_path / "run-request"
+    spool.write_bytes(b"# Run Request\n")
+    with spool.open("rb") as request:
+        assert run(boundary, request) == 23
+    assert gate.is_file()
+
+
+@pytest.mark.parametrize(("stdout", "stderr", "exit_status", "reason"), [
+    ("", "", "0", "unexpected output"),
+    ("factory-host-admission-probe-v1", "", "0", "unexpected output"),
+    (
+        "factory-host-admission-probe-v1\nfactory-host-admission-probe-v1\n",
+        "", "0", "unexpected output",
+    ),
+    ("unexpected\n", "", "0", "unexpected output"),
+    ("factory-host-admission-probe-v1\n", "warning\n", "0", "unexpected output"),
+    ("factory-host-admission-probe-v1\n", "", "7", "exit status 7"),
+])
+def test_run_refuses_partial_ambiguous_or_failed_host_probe_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    stdout: str, stderr: str, exit_status: str, reason: str,
+) -> None:
+    boundary = tmp_path / "selected-project"
+    boundary.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_probe_executable(executable)
+    probe_gate = tmp_path / "probe-ran"
+    launch_gate = tmp_path / "run-launched"
+    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
+    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
+    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
+    monkeypatch.setenv("FACTORY_PROBE_GATE", str(probe_gate))
+    monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
+    monkeypatch.setenv("FACTORY_PROBE_STDOUT", stdout)
+    monkeypatch.setenv("FACTORY_PROBE_STDERR", stderr)
+    monkeypatch.setenv("FACTORY_PROBE_EXIT", exit_status)
+    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
+
+    with pytest.raises(RunAdmissionError, match=reason):
+        run(boundary, io.BytesIO())
+
+    assert probe_gate.is_file()
+    assert not launch_gate.exists()
+
+
+def test_run_refuses_a_timed_out_host_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = tmp_path / "selected-project"
+    boundary.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_probe_executable(executable)
+    probe_gate = tmp_path / "probe-ran"
+    launch_gate = tmp_path / "run-launched"
+    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
+    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
+    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
+    monkeypatch.setenv("FACTORY_PROBE_GATE", str(probe_gate))
+    monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
+    monkeypatch.setenv("FACTORY_PROBE_SLEEP", "1")
+    monkeypatch.setattr("_codex._HOST_PROBE_TIMEOUT_SECONDS", 0.01)
+    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
+
+    with pytest.raises(RunAdmissionError, match="Host Admission Probe failed: timed out"):
+        run(boundary, io.BytesIO())
+
+    assert probe_gate.is_file()
+    assert not launch_gate.exists()
+
+
+def test_run_refuses_when_synthetic_probe_data_cannot_be_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary = tmp_path / "selected-project"
+    boundary.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_probe_executable(executable)
+    launch_gate = tmp_path / "run-launched"
+    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
+    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
+    monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
+    monkeypatch.setenv("FACTORY_PROBE_GATE", str(tmp_path / "probe-ran"))
+    monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
+    monkeypatch.setattr(
+        "_codex.tempfile.TemporaryDirectory",
+        lambda **kwargs: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left")),
+    )
+    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
+
+    with pytest.raises(
+        RunAdmissionError, match="Host Admission Probe failed: No space left",
+    ):
+        run(boundary, io.BytesIO())
+
+    assert not launch_gate.exists()
 
 
 def test_run_requires_complete_strict_configuration_inspection(
@@ -235,6 +397,10 @@ def test_run_requires_complete_strict_configuration_inspection(
     inspected: list[list[str]] = []
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if command[1] == "sandbox":
+            return subprocess.CompletedProcess(
+                command, 0, b"factory-host-admission-probe-v1\n", b"",
+            )
         inspected.append(command)
         if command[1:3] == ["features", "list"]:
             return subprocess.CompletedProcess(command, 0, (

@@ -54,6 +54,70 @@ def _codex_0_155_1_permission_profile(executable: Path) -> str:
     )
 
 
+def _codex_0_155_1_invocation(
+    executable: Path, project_boundary: Path, enclosing_git_root: Path,
+) -> list[str]:
+    """Build the complete strict invocation certified for Codex 0.155.1."""
+
+    return [
+        os.fspath(executable.resolve()),
+        "exec",
+        "--ephemeral",
+        "--strict-config",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "-C",
+        os.fspath(project_boundary),
+        "-c", "approval_policy=\"never\"",
+        "-c", "project_doc_max_bytes=0",
+        "-c", "project_root_markers=[]",
+        "-c", "allow_login_shell=false",
+        "-c", "shell_environment_policy.inherit=\"core\"",
+        "-c", "shell_environment_policy.ignore_default_excludes=false",
+        "-c", "features.apps=false",
+        "-c", "features.plugins=false",
+        "-c", "features.remote_plugin=false",
+        "-c", "features.browser_use=false",
+        "-c", "features.browser_use_external=false",
+        "-c", "features.browser_use_full_cdp=false",
+        "-c", "features.computer_use=false",
+        "-c", "features.multi_agent=false",
+        "-c", "features.memories=false",
+        "-c", "features.skip_host_skill_discovery=true",
+        "-c", "default_permissions=\"factory-isolated\"",
+        "-c", "permissions.factory-isolated=" + _codex_0_155_1_permission_profile(executable),
+        "-c", (
+            "projects."
+            + json.dumps(os.fspath(enclosing_git_root), ensure_ascii=False)
+            + ".trust_level=\"untrusted\""
+        ),
+        "-",
+    ]
+
+
+def _enclosing_git_root(project_boundary: Path) -> Path:
+    """Find the trusted-for-discovery Git root that Codex must treat as untrusted."""
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.fspath(project_boundary), "rev-parse", "--show-toplevel"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise RunAdmissionError(
+            f"Git could not identify the enclosing root: {error.strerror or error}",
+        ) from error
+    if result.returncode or not result.stdout.endswith(b"\n"):
+        raise RunAdmissionError("Git could not identify the enclosing root")
+    try:
+        return Path(result.stdout[:-1].decode("utf-8")).resolve(strict=True)
+    except (OSError, UnicodeError) as error:
+        raise RunAdmissionError("Git reported an unusable enclosing root") from error
+
+
 def _inspection_failure(path: Path, error: OSError) -> RunAdmissionError:
     cause = error.strerror or str(error)
     return RunAdmissionError(
@@ -213,7 +277,22 @@ def run(project_boundary: Path, run_request_spool: BinaryIO) -> int:
             executable=executable,
         )
     _match_compatibility(executable)
-    raise RunAdmissionError(
-        "Codex launch configuration has not been certified",
-        executable=executable,
+    enclosing_git_root = _enclosing_git_root(project_boundary)
+    invocation = _codex_0_155_1_invocation(
+        executable, project_boundary, enclosing_git_root,
     )
+    # Invocation construction can inspect the filesystem; close that TOCTOU window.
+    _match_compatibility(executable)
+    try:
+        process = subprocess.Popen(
+            invocation,
+            cwd=project_boundary,
+            stdin=run_request_spool,
+        )
+    except OSError as error:
+        raise RunAdmissionError(
+            f"Codex executable {_quoted_absolute_path(executable)} could not start: "
+            f"{error.strerror or error}",
+            executable=executable,
+        ) from error
+    return process.wait()

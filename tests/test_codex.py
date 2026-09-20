@@ -16,6 +16,7 @@ import pytest
 
 import factory
 from _codex import (
+    _codex_0_155_1_invocation,
     _codex_0_155_1_permission_profile,
     _CompatibilityEntry,
     _match_compatibility,
@@ -102,6 +103,83 @@ def test_codex_0_155_1_permission_profile_reopens_the_canonical_executable_direc
 
     assert profile["filesystem"][str(executable.parent)] == "read"
     assert str(linked_executable.parent) not in profile["filesystem"]
+
+
+def test_codex_0_155_1_invocation_is_strict_and_version_specific(tmp_path: Path) -> None:
+    executable = tmp_path / "Codex Runtime" / "codex"
+    boundary = tmp_path / "Project Boundary"
+    git_root = tmp_path / "Git Root"
+
+    invocation = _codex_0_155_1_invocation(executable, boundary, git_root)
+
+    assert invocation == [
+        os.fspath(executable.resolve()),
+        "exec",
+        "--ephemeral",
+        "--strict-config",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "-C",
+        os.fspath(boundary),
+        "-c", "approval_policy=\"never\"",
+        "-c", "project_doc_max_bytes=0",
+        "-c", "project_root_markers=[]",
+        "-c", "allow_login_shell=false",
+        "-c", "shell_environment_policy.inherit=\"core\"",
+        "-c", "shell_environment_policy.ignore_default_excludes=false",
+        "-c", "features.apps=false",
+        "-c", "features.plugins=false",
+        "-c", "features.remote_plugin=false",
+        "-c", "features.browser_use=false",
+        "-c", "features.browser_use_external=false",
+        "-c", "features.browser_use_full_cdp=false",
+        "-c", "features.computer_use=false",
+        "-c", "features.multi_agent=false",
+        "-c", "features.memories=false",
+        "-c", "features.skip_host_skill_discovery=true",
+        "-c", "default_permissions=\"factory-isolated\"",
+        "-c", "permissions.factory-isolated=" + _codex_0_155_1_permission_profile(executable),
+        "-c", (
+            "projects."
+            + json.dumps(os.fspath(git_root), ensure_ascii=False)
+            + ".trust_level=\"untrusted\""
+        ),
+        "-",
+    ]
+
+
+def test_run_launches_the_certified_codex_with_matching_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    git_root = tmp_path / "git root"
+    git_root.mkdir()
+    spool = io.BytesIO(b"# Run Request\n")
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (certify(executable),))
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
+
+    calls: list[tuple[list[str], Path, io.BytesIO]] = []
+
+    class Process:
+        def wait(self) -> int:
+            return 17
+
+    def launch(command: list[str], *, cwd: Path, stdin: io.BytesIO) -> Process:
+        calls.append((command, cwd, stdin))
+        return Process()
+
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    assert run(boundary, spool) == 17
+    assert calls == [(
+        _codex_0_155_1_invocation(executable, boundary, git_root), boundary, spool,
+    )]
 
 
 def test_identity_matches_an_exact_private_compatibility_fixture(

@@ -102,6 +102,32 @@ def test_run_refuses_a_codex_symlink_loop(
     )
 
 
+def test_run_refuses_a_codex_symlink_loop_reported_as_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path_directory = tmp_path / "bin"
+    path_directory.mkdir()
+    candidate = path_directory / "codex"
+    make_executable(candidate)
+    original_resolve = Path.resolve
+
+    def looped_resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == candidate and strict:
+            raise OSError(errno.ELOOP, "Too many levels of symbolic links", os.fspath(path))
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setenv("PATH", os.fspath(path_directory))
+    monkeypatch.setattr(Path, "resolve", looped_resolve)
+
+    with pytest.raises(RunAdmissionError) as raised:
+        run(tmp_path, io.BytesIO())
+
+    assert str(raised.value) == (
+        f'Codex executable "{candidate}" contains a symlink loop; '
+        "repair or remove it from PATH"
+    )
+
+
 @pytest.mark.parametrize("kind", ["non-regular", "non-executable"])
 def test_run_refuses_an_unusable_codex_path_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,

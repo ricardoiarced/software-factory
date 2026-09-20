@@ -1,5 +1,6 @@
 """Codex Run Admission and lifecycle boundary."""
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -54,7 +55,13 @@ def _resolve_executable() -> Path:
                 "repair or remove it from PATH"
             )
         except OSError as error:
-            failure = _inspection_failure(candidate, error)
+            if error.errno == errno.ELOOP:
+                failure = RunAdmissionError(
+                    f"Codex executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
+                    "repair or remove it from PATH"
+                )
+            else:
+                failure = _inspection_failure(candidate, error)
         else:
             if not stat.S_ISREG(metadata.st_mode):
                 failure = RunAdmissionError(

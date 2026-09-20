@@ -3,6 +3,7 @@
 from collections.abc import Callable
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -743,24 +744,35 @@ def test_project_spec_parent_swap_refuses_before_codex(
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir()
     (outside / "spec.md").write_text("outside")
-    original_project_spec = factory._project_spec
+    original_open = os.open
+    swapped = False
 
-    def swap_after_check(boundary: Path) -> Path | None:
-        spec = original_project_spec(boundary)
-        guidance.rename(tmp_path / "old-guidance")
-        guidance.symlink_to(outside, target_is_directory=True)
-        return spec
+    def swap_before_use(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == "guidance" and dir_fd is not None and not swapped:
+            guidance.rename(tmp_path / "old-guidance")
+            guidance.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
 
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Codex must not receive Project Guidance after a path swap")
 
-    monkeypatch.setattr(factory, "_project_spec", swap_after_check)
+    monkeypatch.setattr(os, "open", swap_before_use)
+    monkeypatch.setattr(os, "supports_dir_fd", {*os.supports_dir_fd, swap_before_use})
     monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
     assert factory.main() == 1
+    assert swapped
     assert "Project Spec cannot be opened" in capsys.readouterr().err
 
 

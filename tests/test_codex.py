@@ -17,16 +17,14 @@ import pytest
 
 import factory
 from _codex import (
-    _codex_0_155_1_invocation,
-    _codex_0_155_1_permission_profile,
-    _CompatibilityEntry,
+    _Codex01551Policy,
     _match_compatibility,
     RunAdmissionError,
     run,
 )
 
 
-def make_executable(path: Path, version: str = "0.154.0") -> None:
+def make_executable(path: Path, version: str = "0.155.1") -> None:
     path.write_text(f"#!/bin/sh\nif [ \"$1\" = --version ]; then\n  echo 'codex {version}'\nfi\n")
     path.chmod(0o755)
 
@@ -67,24 +65,148 @@ def safe_feature_output(active_feature: str | None = None) -> bytes:
     )
 
 
-def certify(executable: Path, version: str = "0.154.0") -> _CompatibilityEntry:
+def certify(
+    executable: Path, *, host_probe_timeout_seconds: float = 10,
+) -> _Codex01551Policy:
     metadata = executable.stat()
     with executable.open("rb") as artifact:
         digest = hashlib.file_digest(artifact, "sha256").hexdigest()
-    return _CompatibilityEntry(
-        version=version,
+    return _Codex01551Policy(
         sha256=digest,
         operating_system=platform.system(),
         architecture=platform.machine(),
         canonical_path=executable,
         filesystem_identity=(metadata.st_dev, metadata.st_ino),
+        host_probe_timeout_seconds=host_probe_timeout_seconds,
     )
 
 
+def policy_for(executable: Path) -> _Codex01551Policy:
+    """Build a policy when its identity is irrelevant to the behavior under test."""
+
+    return _Codex01551Policy(
+        sha256="unused",
+        operating_system="unused",
+        architecture="unused",
+        canonical_path=executable,
+        filesystem_identity=(0, 0),
+    )
+
+
+def expected_permission_profile(executable: Path) -> str:
+    return (
+        '{extends = ":workspace", filesystem = {":root" = "deny", '
+        '":minimal" = "read", ":tmpdir" = "deny", ":slash_tmp" = "deny", '
+        f'{json.dumps(str(executable.parent.absolute()), ensure_ascii=False)} = "read", '
+        '":workspace_roots" = {"." = "write"}}, network = {enabled = false}}'
+    )
+
+
+def expected_configuration(executable: Path, git_root: Path) -> list[str]:
+    return [
+        "-c", "approval_policy=\"never\"",
+        "-c", "project_doc_max_bytes=0",
+        "-c", "project_root_markers=[]",
+        "-c", "allow_login_shell=false",
+        "-c", "shell_environment_policy.inherit=\"core\"",
+        "-c", "shell_environment_policy.ignore_default_excludes=false",
+        "-c", "features.apps=false",
+        "-c", "features.plugins=false",
+        "-c", "features.remote_plugin=false",
+        "-c", "features.browser_use=false",
+        "-c", "features.browser_use_external=false",
+        "-c", "features.browser_use_full_cdp=false",
+        "-c", "features.computer_use=false",
+        "-c", "features.multi_agent=false",
+        "-c", "features.memories=false",
+        "-c", "features.skip_host_skill_discovery=true",
+        "-c", "default_permissions=\"factory-isolated\"",
+        "-c", "permissions.factory-isolated=" + expected_permission_profile(executable),
+        "-c", (
+            "projects."
+            + json.dumps(os.fspath(git_root), ensure_ascii=False)
+            + ".trust_level=\"untrusted\""
+        ),
+    ]
+
+
+def expected_invocation(executable: Path, boundary: Path, git_root: Path) -> list[str]:
+    return [
+        os.fspath(executable),
+        "exec",
+        "--ephemeral",
+        "--strict-config",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "-C",
+        os.fspath(boundary),
+        *expected_configuration(executable, git_root),
+        "-",
+    ]
+
+
+def permission_profile_from(arguments: list[str]) -> dict[str, object]:
+    prefix = "permissions.factory-isolated="
+    serialized = next(
+        argument.removeprefix(prefix)
+        for argument in arguments
+        if argument.startswith(prefix)
+    )
+    return tomllib.loads("profile = " + serialized)["profile"]
+
+
+def successful_inspection(
+    command: list[str], **kwargs: object,
+) -> subprocess.CompletedProcess[bytes]:
+    output = safe_feature_output() if command[1:3] == ["features", "list"] else b"[]\n"
+    return subprocess.CompletedProcess(command, 0, output, b"")
+
+
+class SuccessfulProbeProcess:
+    returncode = 0
+
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        return b"factory-host-admission-probe-v1\n", b""
+
+
+def capture_policy_preparation(
+    policy: _Codex01551Policy,
+    boundary: Path,
+    git_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[str], list[list[str]], list[list[str]]]:
+    inspections: list[list[str]] = []
+    probes: list[list[str]] = []
+
+    def inspect(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        inspections.append(command)
+        return successful_inspection(command, **kwargs)
+
+    def probe(command: list[str], **kwargs: object) -> SuccessfulProbeProcess:
+        probes.append(command)
+        return SuccessfulProbeProcess()
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", probe)
+    invocation = policy.prepare_run(boundary, git_root)
+    return invocation, inspections, probes
+
+
 def install_compatibility_fixture(
-    executable: Path, monkeypatch: pytest.MonkeyPatch, version: str = "0.154.0",
-) -> None:
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (certify(executable, version),))
+    executable: Path, monkeypatch: pytest.MonkeyPatch, *,
+    host_probe_timeout_seconds: float = 10,
+) -> _Codex01551Policy:
+    policy = certify(
+        executable,
+        host_probe_timeout_seconds=host_probe_timeout_seconds,
+    )
+    monkeypatch.setattr(
+        "_codex._COMPATIBILITY_SET",
+        (policy,),
+    )
+    return policy
 
 
 def make_probe_executable(path: Path) -> None:
@@ -167,7 +289,8 @@ fi
 
 
 def prepare_probe_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *,
+    host_probe_timeout_seconds: float = 10,
 ) -> tuple[Path, Path, Path]:
     boundary = tmp_path / "selected-project"
     boundary.mkdir()
@@ -182,34 +305,40 @@ def prepare_probe_run(
     monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
     monkeypatch.setenv("FACTORY_PROBE_GATE", str(probe_gate))
     monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
-    install_compatibility_fixture(executable, monkeypatch, version="0.155.1")
+    install_compatibility_fixture(
+        executable,
+        monkeypatch,
+        host_probe_timeout_seconds=host_probe_timeout_seconds,
+    )
     return boundary, probe_gate, launch_gate
 
 
-def test_codex_0_155_1_permission_profile_is_deterministic_and_exact(tmp_path: Path) -> None:
+def test_codex_0_155_1_policy_preparation_is_deterministic_and_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     executable = tmp_path / "Codex Runtime" / "codex"
+    boundary = tmp_path / "Project Boundary"
+    git_root = tmp_path / "Git Root"
+    policy = policy_for(executable)
 
-    profile = _codex_0_155_1_permission_profile(executable)
+    first, _, _ = capture_policy_preparation(policy, boundary, git_root, monkeypatch)
+    second, _, _ = capture_policy_preparation(policy, boundary, git_root, monkeypatch)
 
-    assert profile == (
-        '{extends = ":workspace", filesystem = {":root" = "deny", '
-        '":minimal" = "read", ":tmpdir" = "deny", ":slash_tmp" = "deny", '
-        f'{json.dumps(str(executable.parent.absolute()), ensure_ascii=False)} = "read", '
-        '":workspace_roots" = {"." = "write"}}, network = {enabled = false}}'
-    )
-    assert _codex_0_155_1_permission_profile(executable) == profile
+    assert first == expected_invocation(executable, boundary, git_root)
+    assert second == first
 
 
 def test_codex_0_155_1_permission_profile_allows_only_the_required_access(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "runtime" / "codex"
+    policy = policy_for(executable)
 
-    profile = tomllib.loads(
-        "profile = " + _codex_0_155_1_permission_profile(executable),
-    )["profile"]
+    invocation, _, _ = capture_policy_preparation(
+        policy, tmp_path / "boundary", tmp_path / "git-root", monkeypatch,
+    )
 
-    assert profile == {
+    assert permission_profile_from(invocation) == {
         "extends": ":workspace",
         "filesystem": {
             ":root": "deny",
@@ -224,7 +353,7 @@ def test_codex_0_155_1_permission_profile_allows_only_the_required_access(
 
 
 def test_codex_0_155_1_permission_profile_reopens_the_canonical_executable_directory(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "installation" / "codex"
     executable.parent.mkdir()
@@ -232,55 +361,38 @@ def test_codex_0_155_1_permission_profile_reopens_the_canonical_executable_direc
     linked_executable = tmp_path / "bin" / "codex"
     linked_executable.parent.mkdir()
     linked_executable.symlink_to(executable)
+    policy = policy_for(executable)
 
-    profile = tomllib.loads(
-        "profile = " + _codex_0_155_1_permission_profile(linked_executable),
-    )["profile"]
+    invocation, _, _ = capture_policy_preparation(
+        policy, tmp_path / "boundary", tmp_path / "git-root", monkeypatch,
+    )
+    profile = permission_profile_from(invocation)
 
     assert profile["filesystem"][str(executable.parent)] == "read"
     assert str(linked_executable.parent) not in profile["filesystem"]
 
 
-def test_codex_0_155_1_invocation_is_strict_and_version_specific(tmp_path: Path) -> None:
+def test_codex_0_155_1_policy_uses_one_configuration_for_evidence_and_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     executable = tmp_path / "Codex Runtime" / "codex"
     boundary = tmp_path / "Project Boundary"
     git_root = tmp_path / "Git Root"
+    policy = policy_for(executable)
 
-    invocation = _codex_0_155_1_invocation(executable, boundary, git_root)
+    invocation, inspections, probes = capture_policy_preparation(
+        policy, boundary, git_root, monkeypatch,
+    )
 
-    assert invocation == [
-        os.fspath(executable.resolve()),
-        "exec",
-        "--ephemeral",
-        "--strict-config",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "-C",
-        os.fspath(boundary),
-        "-c", "approval_policy=\"never\"",
-        "-c", "project_doc_max_bytes=0",
-        "-c", "project_root_markers=[]",
-        "-c", "allow_login_shell=false",
-        "-c", "shell_environment_policy.inherit=\"core\"",
-        "-c", "shell_environment_policy.ignore_default_excludes=false",
-        "-c", "features.apps=false",
-        "-c", "features.plugins=false",
-        "-c", "features.remote_plugin=false",
-        "-c", "features.browser_use=false",
-        "-c", "features.browser_use_external=false",
-        "-c", "features.browser_use_full_cdp=false",
-        "-c", "features.computer_use=false",
-        "-c", "features.multi_agent=false",
-        "-c", "features.memories=false",
-        "-c", "features.skip_host_skill_discovery=true",
-        "-c", "default_permissions=\"factory-isolated\"",
-        "-c", "permissions.factory-isolated=" + _codex_0_155_1_permission_profile(executable),
-        "-c", (
-            "projects."
-            + json.dumps(os.fspath(git_root), ensure_ascii=False)
-            + ".trust_level=\"untrusted\""
-        ),
-        "-",
+    configuration = expected_configuration(executable, git_root)
+    assert invocation == expected_invocation(executable, boundary, git_root)
+    assert inspections == [
+        [os.fspath(executable), "features", "list", *configuration],
+        [os.fspath(executable), "mcp", "list", "--json", *configuration],
+    ]
+    assert probes[0][:3] == [os.fspath(executable), "sandbox", "-C"]
+    assert probes[0][4:6] == [
+        "-c", "permissions.factory-isolated=" + expected_permission_profile(executable),
     ]
 
 
@@ -295,12 +407,11 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
     git_root = tmp_path / "git root"
     git_root.mkdir()
     spool = io.BytesIO(b"# Run Request\n")
+    policy = certify(executable)
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (certify(executable),))
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
-    monkeypatch.setattr("_codex._inspect_strict_configuration", lambda *args: None)
-    monkeypatch.setattr("_codex._run_host_admission_probe", lambda *args: None)
 
     calls: list[tuple[list[str], Path, io.BytesIO]] = []
 
@@ -308,16 +419,90 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
         def wait(self) -> int:
             return 17
 
-    def launch(command: list[str], *, cwd: Path, stdin: io.BytesIO) -> Process:
-        calls.append((command, cwd, stdin))
+    def launch(command: list[str], **kwargs: object) -> SuccessfulProbeProcess | Process:
+        if command[1] == "sandbox":
+            return SuccessfulProbeProcess()
+        calls.append((command, kwargs["cwd"], kwargs["stdin"]))
         return Process()
 
+    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
     assert run(boundary, spool) == 17
     assert calls == [(
-        _codex_0_155_1_invocation(executable, boundary, git_root), boundary, spool,
+        expected_invocation(executable, boundary, git_root), boundary, spool,
     )]
+
+
+def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    git_root = tmp_path / "git-root"
+    git_root.mkdir()
+    invocation = [os.fspath(executable), "exec", "-"]
+    calls: list[tuple[Path, Path]] = []
+
+    class MatchedPolicy:
+        def prepare_run(
+            self, project_boundary: Path, enclosing_git_root: Path,
+        ) -> list[str]:
+            calls.append((project_boundary, enclosing_git_root))
+            return invocation
+
+    policy = MatchedPolicy()
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
+    monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
+        "Process", (), {"wait": lambda self: 17},
+    )())
+
+    assert run(boundary, io.BytesIO()) == 17
+    assert calls == [(boundary, git_root)]
+
+
+def test_run_refuses_if_the_certified_policy_changes_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    git_root = tmp_path / "git-root"
+    git_root.mkdir()
+
+    initial_policy = certify(executable)
+    changed_policy = certify(executable)
+    assert changed_policy == initial_policy
+    assert changed_policy is not initial_policy
+    matches = iter((initial_policy, changed_policy))
+    launched = False
+
+    def launch(command: list[str], **kwargs: object) -> SuccessfulProbeProcess | None:
+        nonlocal launched
+        if command[1] == "sandbox":
+            return SuccessfulProbeProcess()
+        launched = True
+        return None
+
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (initial_policy,))
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: next(matches))
+    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
+    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    with pytest.raises(RunAdmissionError, match="matched a different certified policy"):
+        run(boundary, io.BytesIO())
+
+    assert not launched
 
 
 def test_run_requires_a_successful_synthetic_probe_before_launching_codex(
@@ -363,12 +548,12 @@ def test_run_refuses_partial_ambiguous_or_failed_host_probe_evidence(
 def test_run_refuses_a_timed_out_host_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
+    boundary, probe_gate, launch_gate = prepare_probe_run(
+        tmp_path, monkeypatch, host_probe_timeout_seconds=0.01,
+    )
     descendant_survived = tmp_path / "probe-descendant-survived"
     monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SLEEP", "0.1")
     monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SURVIVED", str(descendant_survived))
-    monkeypatch.setattr("_codex._HOST_PROBE_TIMEOUT_SECONDS", 0.01)
-
     started = time.monotonic()
     with pytest.raises(RunAdmissionError, match="Host Admission Probe failed: timed out"):
         run(boundary, io.BytesIO())
@@ -408,8 +593,8 @@ def test_run_requires_complete_strict_configuration_inspection(
     git_root = tmp_path / "git-root"
     git_root.mkdir()
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
 
     inspected: list[list[str]] = []
@@ -433,64 +618,18 @@ def test_run_requires_complete_strict_configuration_inspection(
             return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
+    class Process(SuccessfulProbeProcess):
+        def wait(self) -> int:
+            return 0
+
     monkeypatch.setattr("_codex.subprocess.run", inspect)
-    monkeypatch.setattr("_codex._run_host_admission_probe", lambda *args: None)
-    monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
-        "Process", (), {"wait": lambda self: 0},
-    )())
+    monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: Process())
 
     assert run(boundary, io.BytesIO()) == 0
+    configuration = expected_configuration(executable, git_root)
     assert inspected == [
-        [
-            os.fspath(executable), "features", "list",
-            "-c", 'approval_policy="never"',
-            "-c", "project_doc_max_bytes=0",
-            "-c", "project_root_markers=[]",
-            "-c", "allow_login_shell=false",
-            "-c", 'shell_environment_policy.inherit="core"',
-            "-c", "shell_environment_policy.ignore_default_excludes=false",
-            "-c", "features.apps=false",
-            "-c", "features.plugins=false",
-            "-c", "features.remote_plugin=false",
-            "-c", "features.browser_use=false",
-            "-c", "features.browser_use_external=false",
-            "-c", "features.browser_use_full_cdp=false",
-            "-c", "features.computer_use=false",
-            "-c", "features.multi_agent=false",
-            "-c", "features.memories=false",
-            "-c", "features.skip_host_skill_discovery=true",
-            "-c", "default_permissions=\"factory-isolated\"",
-            "-c", "permissions.factory-isolated="
-            + _codex_0_155_1_permission_profile(executable),
-            "-c", "projects."
-            + json.dumps(os.fspath(git_root), ensure_ascii=False)
-            + ".trust_level=\"untrusted\"",
-        ],
-        [
-            os.fspath(executable), "mcp", "list", "--json",
-            "-c", 'approval_policy="never"',
-            "-c", "project_doc_max_bytes=0",
-            "-c", "project_root_markers=[]",
-            "-c", "allow_login_shell=false",
-            "-c", "shell_environment_policy.inherit=\"core\"",
-            "-c", "shell_environment_policy.ignore_default_excludes=false",
-            "-c", "features.apps=false",
-            "-c", "features.plugins=false",
-            "-c", "features.remote_plugin=false",
-            "-c", "features.browser_use=false",
-            "-c", "features.browser_use_external=false",
-            "-c", "features.browser_use_full_cdp=false",
-            "-c", "features.computer_use=false",
-            "-c", "features.multi_agent=false",
-            "-c", "features.memories=false",
-            "-c", "features.skip_host_skill_discovery=true",
-            "-c", "default_permissions=\"factory-isolated\"",
-            "-c", "permissions.factory-isolated="
-            + _codex_0_155_1_permission_profile(executable),
-            "-c", "projects."
-            + json.dumps(os.fspath(git_root), ensure_ascii=False)
-            + ".trust_level=\"untrusted\"",
-        ],
+        [os.fspath(executable), "features", "list", *configuration],
+        [os.fspath(executable), "mcp", "list", "--json", *configuration],
     ]
 
 
@@ -509,8 +648,8 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
     executable.parent.mkdir()
     make_executable(executable, version="0.155.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
     launched = False
 
@@ -549,8 +688,8 @@ def test_run_refuses_each_active_effective_capability(
     executable.parent.mkdir()
     make_executable(executable, version="0.155.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
     launched = False
     features = safe_feature_output(forbidden_feature)
@@ -590,8 +729,8 @@ def test_run_refuses_active_or_ambiguous_extension_evidence(
     executable.parent.mkdir()
     make_executable(executable, version="0.155.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
     monkeypatch.setattr(
         "_codex.subprocess.run",
@@ -617,8 +756,8 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output("apps").decode("ascii"))
     monkeypatch.setenv("FACTORY_MCP", "[]\n")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "0")
-    install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     (tmp_path / "context").write_text("context")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
@@ -674,8 +813,8 @@ def test_run_uses_executable_fakes_for_strict_inspector_evidence(
     monkeypatch.setenv("FACTORY_MCP", mcp.decode("ascii"))
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
-    install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
 
     if environment:
@@ -703,6 +842,19 @@ def test_identity_matches_an_exact_private_compatibility_fixture(
     install_compatibility_fixture(executable, monkeypatch)
 
     assert _match_compatibility(executable) == certify(executable)
+
+
+def test_identity_refuses_multiple_policies_for_one_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "codex"
+    make_executable(executable)
+    first = certify(executable)
+    second = certify(executable, host_probe_timeout_seconds=11)
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (first, second))
+
+    with pytest.raises(RunAdmissionError, match="matches multiple policies"):
+        _match_compatibility(executable)
 
 
 def test_identity_refuses_malformed_version_output(
@@ -741,8 +893,7 @@ def test_identity_refuses_another_platform(
     entry = certify(executable)
     monkeypatch.setattr(
         "_codex._COMPATIBILITY_SET",
-        (_CompatibilityEntry(
-            version=entry.version,
+        (_Codex01551Policy(
             sha256=entry.sha256,
             operating_system="other-os",
             architecture=entry.architecture,
@@ -763,8 +914,7 @@ def test_identity_refuses_another_architecture(
     entry = certify(executable)
     monkeypatch.setattr(
         "_codex._COMPATIBILITY_SET",
-        (_CompatibilityEntry(
-            version=entry.version,
+        (_Codex01551Policy(
             sha256=entry.sha256,
             operating_system=entry.operating_system,
             architecture="other-architecture",

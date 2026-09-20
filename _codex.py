@@ -37,6 +37,22 @@ class _CompatibilityEntry:
 # fail-closed until an artifact has passed the real-host certification suite.
 _COMPATIBILITY_SET: tuple[_CompatibilityEntry, ...] = ()
 _VERSION_OUTPUT = re.compile(rb"codex ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
+_FEATURE_OUTPUT = re.compile(
+    rb"([a-z][a-z0-9_]*) {2,}(stable|under development|experimental|deprecated|removed)"
+    rb" {2,}(true|false)\n"
+)
+_REQUIRED_FEATURE_STATES = {
+    "apps": False,
+    "plugins": False,
+    "remote_plugin": False,
+    "browser_use": False,
+    "browser_use_external": False,
+    "browser_use_full_cdp": False,
+    "computer_use": False,
+    "multi_agent": False,
+    "memories": False,
+    "skip_host_skill_discovery": True,
+}
 
 
 def _quoted_absolute_path(path: Path) -> str:
@@ -68,6 +84,15 @@ def _codex_0_155_1_invocation(
         "--ignore-rules",
         "-C",
         os.fspath(project_boundary),
+        *_codex_0_155_1_configuration(executable, enclosing_git_root),
+        "-",
+    ]
+
+
+def _codex_0_155_1_configuration(executable: Path, enclosing_git_root: Path) -> list[str]:
+    """Build the candidate-specific configuration shared by Runs and inspectors."""
+
+    return [
         "-c", "approval_policy=\"never\"",
         "-c", "project_doc_max_bytes=0",
         "-c", "project_root_markers=[]",
@@ -91,8 +116,65 @@ def _codex_0_155_1_invocation(
             + json.dumps(os.fspath(enclosing_git_root), ensure_ascii=False)
             + ".trust_level=\"untrusted\""
         ),
-        "-",
     ]
+
+
+def _strict_configuration_failure(executable: Path, reason: str) -> RunAdmissionError:
+    return RunAdmissionError(
+        f"Codex executable {_quoted_absolute_path(executable)} strict configuration "
+        f"inspection failed: {reason}; install the certified artifact",
+        executable=executable,
+    )
+
+
+def _run_inspector(executable: Path, command: list[str]) -> bytes:
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise _strict_configuration_failure(
+            executable, error.strerror or str(error),
+        ) from error
+    if result.returncode:
+        raise _strict_configuration_failure(executable, f"exit status {result.returncode}")
+    return result.stdout
+
+
+def _inspect_strict_configuration(executable: Path, enclosing_git_root: Path) -> None:
+    """Require candidate-certified feature and MCP evidence before every Run."""
+
+    configuration = _codex_0_155_1_configuration(executable, enclosing_git_root)
+    features = _run_inspector(
+        executable, [os.fspath(executable), "features", "list", *configuration],
+    )
+    states: dict[str, bool] = {}
+    for line in features.splitlines(keepends=True):
+        match = _FEATURE_OUTPUT.fullmatch(line)
+        if match is None:
+            raise _strict_configuration_failure(executable, "unrecognized feature output")
+        name = match.group(1).decode("ascii")
+        if name not in _REQUIRED_FEATURE_STATES:
+            raise _strict_configuration_failure(executable, "unrecognized feature output")
+        if name in states:
+            raise _strict_configuration_failure(executable, "contradictory feature output")
+        states[name] = match.group(3) == b"true"
+    if states != _REQUIRED_FEATURE_STATES:
+        raise _strict_configuration_failure(executable, "incomplete feature output")
+
+    mcp = _run_inspector(
+        executable, [os.fspath(executable), "mcp", "list", "--json", *configuration],
+    )
+    try:
+        configured_mcp = json.loads(mcp)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _strict_configuration_failure(executable, "unrecognized MCP output") from error
+    if configured_mcp != []:
+        raise _strict_configuration_failure(executable, "unrecognized MCP output")
 
 
 def _enclosing_git_root(project_boundary: Path) -> Path:
@@ -278,6 +360,7 @@ def run(project_boundary: Path, run_request_spool: BinaryIO) -> int:
         )
     _match_compatibility(executable)
     enclosing_git_root = _enclosing_git_root(project_boundary)
+    _inspect_strict_configuration(executable, enclosing_git_root)
     invocation = _codex_0_155_1_invocation(
         executable, project_boundary, enclosing_git_root,
     )

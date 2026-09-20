@@ -16,6 +16,7 @@ import tempfile
 from typing import BinaryIO
 
 from _codex import RunAdmissionError, run as _codex_run
+from _project import Project
 
 
 ROOT_SYNOPSIS = """Usage:
@@ -149,7 +150,7 @@ def _expand_path(supplied: str) -> str:
     return expanded_home
 
 
-def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
+def _select_explicit_project(supplied: str, invocation_dir: Path) -> Project:
     """Resolve and validate an exact explicit Project Boundary."""
 
     expanded_home = _expand_path(supplied)
@@ -166,8 +167,8 @@ def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
     if not path.is_dir():
         raise ProjectSelectionError(f"path {_quoted(supplied)} is not a directory")
 
-    _containing_worktree_root(path, f"path {_quoted(supplied)}")
-    return path
+    enclosing_git_root = _containing_worktree_root(path, f"path {_quoted(supplied)}")
+    return Project(boundary=path, enclosing_git_root=enclosing_git_root)
 
 
 def _containing_worktree_root(path: Path, label: str) -> Path:
@@ -222,7 +223,7 @@ def _project_marker(boundary: Path) -> Path | None:
     return marker
 
 
-def _discover_project_boundary(invocation_dir: Path) -> Path:
+def _discover_project(invocation_dir: Path) -> Project:
     """Select the nearest Project Marker within the containing worktree."""
 
     root = _containing_worktree_root(invocation_dir, "invocation directory")
@@ -235,7 +236,7 @@ def _discover_project_boundary(invocation_dir: Path) -> Path:
                 f"Project Marker at {_quoted(str(candidate / '.agent'))} {error}"
             ) from error
         if marker is not None or candidate == root:
-            return candidate
+            return Project(boundary=candidate, enclosing_git_root=root)
         candidate = candidate.parent
 
 
@@ -610,8 +611,8 @@ def _write_registry(registry: Path, projects: dict[str, str]) -> None:
 def _add_project(name: str, supplied_path: str) -> None:
     if not _PROJECT_NAME.fullmatch(name):
         raise RegistryError(f"invalid Project Name {_quoted(name)}")
-    boundary = _resolve_explicit_path(supplied_path, Path.cwd())
-    path = str(boundary)
+    project = _select_explicit_project(supplied_path, Path.cwd())
+    path = str(project.boundary)
     try:
         path.encode("utf-8", errors="strict")
     except UnicodeError as error:
@@ -688,7 +689,7 @@ def _remove_project(name: str) -> None:
         raise
 
 
-def _project_status(path: str) -> str:
+def _inspect_registered_project(path: str) -> Project | str:
     selected = Path(path)
     try:
         mode = selected.stat().st_mode
@@ -702,27 +703,34 @@ def _project_status(path: str) -> str:
         canonical = selected.resolve(strict=True)
         if str(canonical) != path:
             return "stale: path is not canonical"
-        _containing_worktree_root(canonical, f"path {_quoted(path)}")
+        enclosing_git_root = _containing_worktree_root(
+            canonical, f"path {_quoted(path)}",
+        )
     except (OSError, RuntimeError) as error:
         raise RegistryError(f"Project validation failed: {error}") from error
     except GitInspectionError as error:
         raise RegistryError(str(error)) from error
     except ProjectSelectionError:
         return "stale: path is not inside a non-bare Git worktree"
-    return "valid"
+    return Project(boundary=canonical, enclosing_git_root=enclosing_git_root)
 
 
-def _select_registered_project(name: str) -> Path:
+def _project_status(path: str) -> str:
+    inspected = _inspect_registered_project(path)
+    return inspected if isinstance(inspected, str) else "valid"
+
+
+def _select_registered_project(name: str) -> Project:
     if not _PROJECT_NAME.fullmatch(name):
         raise RegistryError(f"invalid Project Name {_quoted(name)}")
     projects = _read_registry()
     if name not in projects:
         raise RegistryError(f"Project {_quoted(name)} is not registered")
     path = projects[name]
-    status = _project_status(path)
-    if status != "valid":
-        raise RegistryError(f"Project {_quoted(name)} is {status}")
-    return Path(path)
+    inspected = _inspect_registered_project(path)
+    if isinstance(inspected, str):
+        raise RegistryError(f"Project {_quoted(name)} is {inspected}")
+    return inspected
 
 
 def _list_projects() -> None:
@@ -791,18 +799,20 @@ def _dispatch() -> int:
             run = _parse_run(sys.argv[1:])
             invocation_dir = Path.cwd()
             if run.selector is None:
-                boundary = _discover_project_boundary(invocation_dir)
+                project = _discover_project(invocation_dir)
             elif run.selector[0] == "path":
-                boundary = _resolve_explicit_path(run.selector[1], invocation_dir)
+                project = _select_explicit_project(run.selector[1], invocation_dir)
             else:
-                boundary = _select_registered_project(run.selector[1])
+                project = _select_registered_project(run.selector[1])
             try:
                 spool = tempfile.TemporaryFile(mode="w+b")
             except OSError as error:
                 raise RunInputError(f"Run Request spool failed: {error}") from error
             with spool:
                 try:
-                    context_bytes = _compose_run(run, boundary, invocation_dir, spool)
+                    context_bytes = _compose_run(
+                        run, project.boundary, invocation_dir, spool,
+                    )
                 except OSError as error:
                     raise RunInputError(f"Run Request spool failed: {error}") from error
                 threshold = _context_threshold()
@@ -816,7 +826,7 @@ def _dispatch() -> int:
                     spool.seek(0)
                 except OSError as error:
                     raise RunInputError(f"Run Request spool failed: {error}") from error
-                return _codex_run(boundary, spool)
+                return _codex_run(project, spool)
         return 1
     except UsageError as error:
         return _usage(error)

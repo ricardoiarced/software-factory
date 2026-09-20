@@ -22,6 +22,7 @@ from _codex import (
     RunAdmissionError,
     run,
 )
+from _project import Project
 
 
 def make_executable(path: Path, version: str = "0.155.1") -> None:
@@ -291,7 +292,7 @@ fi
 def prepare_probe_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *,
     host_probe_timeout_seconds: float = 10,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Project, Path, Path]:
     boundary = tmp_path / "selected-project"
     boundary.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=boundary, check=True)
@@ -310,7 +311,7 @@ def prepare_probe_run(
         monkeypatch,
         host_probe_timeout_seconds=host_probe_timeout_seconds,
     )
-    return boundary, probe_gate, launch_gate
+    return Project(boundary, boundary), probe_gate, launch_gate
 
 
 def test_codex_0_155_1_policy_preparation_is_deterministic_and_exact(
@@ -411,7 +412,6 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
 
     calls: list[tuple[list[str], Path, io.BytesIO]] = []
 
@@ -428,10 +428,44 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
     monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
-    assert run(boundary, spool) == 17
+    assert run(Project(boundary, git_root), spool) == 17
     assert calls == [(
         expected_invocation(executable, boundary, git_root), boundary, spool,
     )]
+
+
+def test_run_uses_the_project_selection_git_root_without_rediscovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    selected_git_root = tmp_path / "selected-git-root"
+    selected_git_root.mkdir()
+    invocation = [os.fspath(executable), "exec", "-"]
+    prepared_with: list[tuple[Path, Path]] = []
+
+    class MatchedPolicy:
+        def prepare_run(
+            self, project_boundary: Path, enclosing_git_root: Path,
+        ) -> list[str]:
+            prepared_with.append((project_boundary, enclosing_git_root))
+            return invocation
+
+    policy = MatchedPolicy()
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
+        "Process", (), {"wait": lambda self: 17},
+    )())
+
+    project = Project(boundary=boundary, enclosing_git_root=selected_git_root)
+
+    assert run(project, io.BytesIO()) == 17
+    assert prepared_with == [(boundary, selected_git_root)]
 
 
 def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
@@ -458,12 +492,11 @@ def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
     monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
         "Process", (), {"wait": lambda self: 17},
     )())
 
-    assert run(boundary, io.BytesIO()) == 17
+    assert run(Project(boundary, git_root), io.BytesIO()) == 17
     assert calls == [(boundary, git_root)]
 
 
@@ -495,12 +528,11 @@ def test_run_refuses_if_the_certified_policy_changes_before_launch(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", (initial_policy,))
     monkeypatch.setattr("_codex._match_compatibility", lambda path: next(matches))
-    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
     monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
     with pytest.raises(RunAdmissionError, match="matched a different certified policy"):
-        run(boundary, io.BytesIO())
+        run(Project(boundary, git_root), io.BytesIO())
 
     assert not launched
 
@@ -595,7 +627,6 @@ def test_run_requires_complete_strict_configuration_inspection(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: git_root)
 
     inspected: list[list[str]] = []
 
@@ -625,7 +656,7 @@ def test_run_requires_complete_strict_configuration_inspection(
     monkeypatch.setattr("_codex.subprocess.run", inspect)
     monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: Process())
 
-    assert run(boundary, io.BytesIO()) == 0
+    assert run(Project(boundary, git_root), io.BytesIO()) == 0
     configuration = expected_configuration(executable, git_root)
     assert inspected == [
         [os.fspath(executable), "features", "list", *configuration],
@@ -650,7 +681,6 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
     launched = False
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
@@ -665,7 +695,7 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
     with pytest.raises(RunAdmissionError, match="strict configuration"):
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert not launched
 
@@ -690,7 +720,6 @@ def test_run_refuses_each_active_effective_capability(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
     launched = False
     features = safe_feature_output(forbidden_feature)
 
@@ -708,7 +737,7 @@ def test_run_refuses_each_active_effective_capability(
     with pytest.raises(
         RunAdmissionError, match=f"forbidden capability {forbidden_feature}",
     ):
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert not launched
 
@@ -731,7 +760,6 @@ def test_run_refuses_active_or_ambiguous_extension_evidence(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
     monkeypatch.setattr(
         "_codex.subprocess.run",
         lambda command, **kwargs: subprocess.CompletedProcess(
@@ -740,7 +768,7 @@ def test_run_refuses_active_or_ambiguous_extension_evidence(
     )
 
     with pytest.raises(RunAdmissionError, match=expected_reason):
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
 
 def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
@@ -815,11 +843,10 @@ def test_run_uses_executable_fakes_for_strict_inspector_evidence(
         monkeypatch.setenv(name, value)
     policy = install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
 
     if environment:
         with pytest.raises(RunAdmissionError, match="strict configuration"):
-            run(tmp_path, io.BytesIO())
+            run(Project(tmp_path, tmp_path), io.BytesIO())
     elif (
         features.startswith(b"apps                         stable             false\n")
         and b"future_feature" not in features
@@ -828,10 +855,10 @@ def test_run_uses_executable_fakes_for_strict_inspector_evidence(
         spool = tmp_path / "request"
         spool.write_bytes(b"# Run Request\n")
         with spool.open("rb") as request:
-            assert run(tmp_path, request) == 0
+            assert run(Project(tmp_path, tmp_path), request) == 0
     else:
         with pytest.raises(RunAdmissionError, match="strict configuration"):
-            run(tmp_path, io.BytesIO())
+            run(Project(tmp_path, tmp_path), io.BytesIO())
 
 
 def test_identity_matches_an_exact_private_compatibility_fixture(
@@ -989,7 +1016,7 @@ def test_run_refuses_when_codex_is_missing_from_path(
         RunAdmissionError,
         match=r'^Codex executable "codex" was not found on PATH; install Codex or add it to PATH$',
     ):
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
 
 def test_run_canonicalizes_a_direct_codex_executable(
@@ -1001,7 +1028,7 @@ def test_run_canonicalizes_a_direct_codex_executable(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
 
     with pytest.raises(RunAdmissionError) as raised:
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert str(raised.value) == "Codex Compatibility Set is empty; no Run is supported"
     assert raised.value.executable == executable
@@ -1019,7 +1046,7 @@ def test_run_canonicalizes_a_symlinked_codex_executable(
     monkeypatch.setenv("PATH", os.fspath(path_directory))
 
     with pytest.raises(RunAdmissionError) as raised:
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert str(raised.value) == "Codex Compatibility Set is empty; no Run is supported"
     assert raised.value.executable == executable
@@ -1035,7 +1062,7 @@ def test_run_refuses_a_dangling_codex_symlink(
     monkeypatch.setenv("PATH", os.fspath(path_directory))
 
     with pytest.raises(RunAdmissionError) as raised:
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert str(raised.value) == (
         f'Codex executable "{candidate}" is a dangling symlink; '
@@ -1053,7 +1080,7 @@ def test_run_refuses_a_codex_symlink_loop(
     monkeypatch.setenv("PATH", os.fspath(path_directory))
 
     with pytest.raises(RunAdmissionError) as raised:
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert str(raised.value) == (
         f'Codex executable "{candidate}" contains a symlink loop; '
@@ -1079,7 +1106,7 @@ def test_run_refuses_a_codex_symlink_loop_reported_as_os_error(
     monkeypatch.setattr(Path, "resolve", looped_resolve)
 
     with pytest.raises(RunAdmissionError) as raised:
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert str(raised.value) == (
         f'Codex executable "{candidate}" contains a symlink loop; '
@@ -1110,7 +1137,7 @@ def test_run_refuses_an_unusable_codex_path_entry(
     monkeypatch.setenv("PATH", os.fspath(path_directory))
 
     with pytest.raises(RunAdmissionError) as raised:
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert str(raised.value) == expected
 
@@ -1133,7 +1160,7 @@ def test_run_reports_an_inaccessible_codex_candidate(
     monkeypatch.setattr(Path, "lstat", inaccessible_lstat)
 
     with pytest.raises(RunAdmissionError) as raised:
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert str(raised.value) == (
         f'Codex executable "{candidate}" could not be inspected: '
@@ -1159,7 +1186,7 @@ def test_run_reports_an_inaccessible_resolved_codex_executable(
     monkeypatch.setattr(Path, "resolve", inaccessible_resolve)
 
     with pytest.raises(RunAdmissionError) as raised:
-        run(tmp_path, io.BytesIO())
+        run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert str(raised.value) == (
         f'Codex executable "{candidate}" could not be inspected: '

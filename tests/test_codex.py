@@ -156,6 +156,32 @@ def test_run_reports_an_inaccessible_codex_candidate(
     )
 
 
+def test_run_reports_an_inaccessible_resolved_codex_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path_directory = tmp_path / "bin"
+    path_directory.mkdir()
+    candidate = path_directory / "codex"
+    make_executable(candidate)
+    original_resolve = Path.resolve
+
+    def inaccessible_resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == candidate and strict:
+            raise PermissionError(errno.EACCES, "Permission denied", os.fspath(path))
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setenv("PATH", os.fspath(path_directory))
+    monkeypatch.setattr(Path, "resolve", inaccessible_resolve)
+
+    with pytest.raises(RunAdmissionError) as raised:
+        run(tmp_path, io.BytesIO())
+
+    assert str(raised.value) == (
+        f'Codex executable "{candidate}" could not be inspected: '
+        "Permission denied; check its permissions"
+    )
+
+
 def test_factory_reports_an_admission_failure_without_a_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

@@ -122,26 +122,19 @@ elif [ "$1" = sandbox ]; then
     *'":slash_tmp" = "deny"'*'":workspace_roots" = {"." = "write"}'*) :;;
     *) exit 92;;
   esac
-  case "${11}" in
-    *'read_exact "$inside_read"'*'can_write "$inside_write"'*) :;;
-    *) exit 93;;
-  esac
-  case "${11}" in
-    *'can_read "$parent_read"'*'can_write "$parent_write"'*) :;;
-    *) exit 93;;
-  esac
-  case "${11}" in
-    *'can_read "$sibling_read"'*'can_write "$sibling_write"'*) :;;
-    *) exit 93;;
-  esac
-  case "${11}" in
-    *'can_write "$temporary_write"'*'can_write "$slash_tmp_write"'*) :;;
-    *) exit 93;;
-  esac
-  case "${11}" in
-    *'can_read "/bin/sh"'*'can_read "$executable"'*) :;;
-    *) exit 93;;
-  esac
+  require_script_fragment() {
+    case "$1" in *"$2"*) :;; *) exit 93;; esac
+  }
+  require_script_fragment "${11}" 'read_exact "$inside_read"'
+  require_script_fragment "${11}" 'can_write "$inside_write"'
+  require_script_fragment "${11}" 'can_read "$parent_read"'
+  require_script_fragment "${11}" 'can_write "$parent_write"'
+  require_script_fragment "${11}" 'can_read "$sibling_read"'
+  require_script_fragment "${11}" 'can_write "$sibling_write"'
+  require_script_fragment "${11}" 'can_write "$temporary_write"'
+  require_script_fragment "${11}" 'can_write "$slash_tmp_write"'
+  require_script_fragment "${11}" 'can_read "/bin/sh"'
+  require_script_fragment "${11}" 'can_read "$executable"'
   : > "$FACTORY_PROBE_GATE"
   if [ -n "${FACTORY_PROBE_DESCENDANT_SLEEP:-}" ]; then
     (
@@ -150,8 +143,6 @@ elif [ "$1" = sandbox ]; then
       : > "$FACTORY_PROBE_DESCENDANT_SURVIVED"
     ) &
     wait
-  elif [ -n "${FACTORY_PROBE_SLEEP:-}" ]; then
-    sleep "$FACTORY_PROBE_SLEEP"
   fi
   if [ "${FACTORY_PROBE_STDOUT+x}" = x ]; then
     printf '%s' "$FACTORY_PROBE_STDOUT"

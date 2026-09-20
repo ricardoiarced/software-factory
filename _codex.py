@@ -232,38 +232,40 @@ def _host_probe_failure(executable: Path, reason: str) -> RunAdmissionError:
     )
 
 
-def _execute_host_admission_probe(executable: Path) -> None:
-    temporary_root = Path(tempfile.gettempdir()).resolve()
-    with tempfile.TemporaryDirectory(prefix="factory-host-admission-probe-") as raw_root:
-        root = Path(raw_root)
-        boundary = root / "project"
-        sibling = root / "sibling"
-        boundary.mkdir()
-        sibling.mkdir()
-        inside_read = boundary / "inside-read"
-        parent_read = root / "parent-read"
-        sibling_read = sibling / "outside-read"
-        temporary_write = temporary_root / f".{root.name}-temporary-write"
-        slash_tmp_write = Path("/tmp") / f".{root.name}-slash-tmp-write"
-        inside_read.write_text("inside-boundary\n")
-        parent_read.write_text("outside-boundary\n")
-        sibling_read.write_text("outside-boundary\n")
+def _run_host_admission_probe(executable: Path) -> None:
+    """Prove the candidate sandbox against disposable synthetic filesystem data."""
 
-        invocation = [
-            os.fspath(executable),
-            "sandbox",
-            "-C", os.fspath(boundary),
-            "-c", "permissions.factory-isolated="
-            + _codex_0_155_1_permission_profile(executable),
-            "-P", "factory-isolated",
-            "--",
-            "/bin/sh", "-c", _HOST_PROBE_SCRIPT, "factory-host-admission-probe",
-            os.fspath(boundary),
-            os.fspath(temporary_write),
-            os.fspath(slash_tmp_write),
-            os.fspath(executable),
-        ]
-        try:
+    try:
+        temporary_root = Path(tempfile.gettempdir()).resolve()
+        with tempfile.TemporaryDirectory(prefix="factory-host-admission-probe-") as raw_root:
+            root = Path(raw_root)
+            boundary = root / "project"
+            sibling = root / "sibling"
+            boundary.mkdir()
+            sibling.mkdir()
+            inside_read = boundary / "inside-read"
+            parent_read = root / "parent-read"
+            sibling_read = sibling / "outside-read"
+            temporary_write = temporary_root / f".{root.name}-temporary-write"
+            slash_tmp_write = Path("/tmp") / f".{root.name}-slash-tmp-write"
+            inside_read.write_text("inside-boundary\n")
+            parent_read.write_text("outside-boundary\n")
+            sibling_read.write_text("outside-boundary\n")
+
+            invocation = [
+                os.fspath(executable),
+                "sandbox",
+                "-C", os.fspath(boundary),
+                "-c", "permissions.factory-isolated="
+                + _codex_0_155_1_permission_profile(executable),
+                "-P", "factory-isolated",
+                "--",
+                "/bin/sh", "-c", _HOST_PROBE_SCRIPT, "factory-host-admission-probe",
+                os.fspath(boundary),
+                os.fspath(temporary_write),
+                os.fspath(slash_tmp_write),
+                os.fspath(executable),
+            ]
             process = subprocess.Popen(
                 invocation,
                 stdin=subprocess.DEVNULL,
@@ -271,35 +273,24 @@ def _execute_host_admission_probe(executable: Path) -> None:
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
-        except OSError as error:
-            raise _host_probe_failure(
-                executable, error.strerror or str(error),
-            ) from error
-        try:
-            stdout, stderr = process.communicate(timeout=_HOST_PROBE_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired as error:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.communicate()
-            raise _host_probe_failure(executable, "timed out") from error
-        finally:
-            temporary_write.unlink(missing_ok=True)
-            if slash_tmp_write != temporary_write:
-                slash_tmp_write.unlink(missing_ok=True)
+                stdout, stderr = process.communicate(timeout=_HOST_PROBE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as error:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise _host_probe_failure(executable, "timed out") from error
+            finally:
+                temporary_write.unlink(missing_ok=True)
+                if slash_tmp_write != temporary_write:
+                    slash_tmp_write.unlink(missing_ok=True)
 
-        if process.returncode:
-            raise _host_probe_failure(executable, f"exit status {process.returncode}")
-        if stdout != _HOST_PROBE_SUCCESS or stderr:
-            raise _host_probe_failure(executable, "unexpected output")
-
-
-def _run_host_admission_probe(executable: Path) -> None:
-    """Prove the candidate sandbox against disposable synthetic filesystem data."""
-
-    try:
-        _execute_host_admission_probe(executable)
+            if process.returncode:
+                raise _host_probe_failure(executable, f"exit status {process.returncode}")
+            if stdout != _HOST_PROBE_SUCCESS or stderr:
+                raise _host_probe_failure(executable, "unexpected output")
     except OSError as error:
         raise _host_probe_failure(
             executable, error.strerror or str(error),

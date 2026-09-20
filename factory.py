@@ -10,12 +10,23 @@ import os
 from pathlib import Path
 import re
 import stat
-import subprocess
 import sys
 import tempfile
 from typing import BinaryIO
 
 from _codex import RunAdmissionError, run as _codex_run
+from _project import (
+    GitInspectionError,
+    Project,
+    ProjectMarkerError,
+    ProjectSelectionError,
+    StaleProjectError,
+    discover_project,
+    expand_path,
+    inspect_registered_project,
+    project_marker,
+    select_explicit_project,
+)
 
 
 ROOT_SYNOPSIS = """Usage:
@@ -95,18 +106,6 @@ class UsageError(Exception):
         self.project = project
 
 
-class ProjectSelectionError(Exception):
-    """An explicit Project Boundary could not be selected."""
-
-
-class ProjectMarkerError(Exception):
-    """A Project Marker is malformed or inaccessible."""
-
-
-class GitInspectionError(ProjectSelectionError):
-    """Git could not reliably determine a Project's worktree."""
-
-
 class RunInputError(Exception):
     """A Project Spec or Context Source cannot be used for this Run."""
 
@@ -131,117 +130,9 @@ def _quoted(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
-_ENV_REFERENCE = re.compile(r"\$(\w+|\{[^}]*\})")
-
-
-def _expand_path(supplied: str) -> str:
-    def expand_variable(match: re.Match[str]) -> str:
-        name = match.group(1).strip("{}")
-        value = os.environ.get(name)
-        if not value:
-            raise ProjectSelectionError(f"environment variable {_quoted(name)} is unset or empty")
-        return value
-
-    expanded = _ENV_REFERENCE.sub(expand_variable, supplied)
-    expanded_home = os.path.expanduser(expanded)
-    if expanded_home.startswith("~"):
-        raise ProjectSelectionError(f"home directory in {_quoted(supplied)} could not be expanded")
-    return expanded_home
-
-
-def _resolve_explicit_path(supplied: str, invocation_dir: Path) -> Path:
-    """Resolve and validate an exact explicit Project Boundary."""
-
-    expanded_home = _expand_path(supplied)
-    try:
-        path = Path(expanded_home)
-        if not path.is_absolute():
-            path = invocation_dir / path
-        path = path.resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        cause = error.strerror if isinstance(error, OSError) and error.strerror else "symlink loop"
-        raise ProjectSelectionError(
-            f"path {_quoted(supplied)} cannot be resolved: {cause}"
-        ) from error
-    if not path.is_dir():
-        raise ProjectSelectionError(f"path {_quoted(supplied)} is not a directory")
-
-    _containing_worktree_root(path, f"path {_quoted(supplied)}")
-    return path
-
-
-def _containing_worktree_root(path: Path, label: str) -> Path:
-    """Ask Git for the canonical root containing a directory in a worktree."""
-
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree",
-             "--is-bare-repository", "--show-toplevel"],
-            capture_output=True, check=False, env={**os.environ, "LC_ALL": "C"},
-        )
-    except OSError as error:
-        raise GitInspectionError(f"Git inspection failed for {label}: {error}") from error
-    if result.returncode:
-        if (result.stdout == b"false\ntrue\n" and
-                b"this operation must be run in a work tree" in result.stderr):
-            raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
-        if (b"not a git repository" in result.stderr and
-                not os.environ.get("GIT_DIR")):
-            raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
-        raise GitInspectionError(f"Git inspection failed for {label}: Git returned {result.returncode}")
-    lines = result.stdout.split(b"\n", 2)
-    if len(lines) != 3:
-        raise GitInspectionError(f"Git inspection failed for {label}: invalid Git output")
-    if lines[0] != b"true" or lines[1] != b"false":
-        raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
-    try:
-        top_level = Path(os.fsdecode(lines[2].removesuffix(b"\n"))).resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        raise GitInspectionError(
-            f"Git inspection failed for {label}: invalid worktree path"
-        ) from error
-    if not path.is_relative_to(top_level):
-        raise GitInspectionError(f"Git inspection failed for {label}: worktree does not contain path")
-    return top_level
-
-
-def _project_marker(boundary: Path) -> Path | None:
-    marker = boundary / ".agent"
-    try:
-        marker.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise ProjectMarkerError(f"cannot be inspected: {error}") from error
-    try:
-        resolved = marker.resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        raise ProjectMarkerError(f"cannot be resolved: {error}") from error
-    if not resolved.is_relative_to(boundary) or not resolved.is_dir():
-        raise ProjectMarkerError("is not a contained directory")
-    return marker
-
-
-def _discover_project_boundary(invocation_dir: Path) -> Path:
-    """Select the nearest Project Marker within the containing worktree."""
-
-    root = _containing_worktree_root(invocation_dir, "invocation directory")
-    candidate = invocation_dir
-    while True:
-        try:
-            marker = _project_marker(candidate)
-        except ProjectMarkerError as error:
-            raise ProjectSelectionError(
-                f"Project Marker at {_quoted(str(candidate / '.agent'))} {error}"
-            ) from error
-        if marker is not None or candidate == root:
-            return candidate
-        candidate = candidate.parent
-
-
 def _project_spec(boundary: Path) -> Path | None:
     try:
-        marker = _project_marker(boundary)
+        marker = project_marker(boundary)
     except ProjectMarkerError as error:
         raise RunInputError(f"Project Spec marker {error}") from error
     if marker is None:
@@ -358,7 +249,7 @@ def _open_project_spec(boundary: Path, spec: Path) -> BinaryIO:
 
 def _context_path(supplied: str, invocation_dir: Path) -> Path:
     try:
-        expanded_text = _expand_path(supplied)
+        expanded_text = expand_path(supplied)
         if "\x00" in expanded_text:
             raise RunInputError(f"Context file {_quoted(supplied)} path contains NUL")
         expanded = Path(expanded_text)
@@ -610,8 +501,8 @@ def _write_registry(registry: Path, projects: dict[str, str]) -> None:
 def _add_project(name: str, supplied_path: str) -> None:
     if not _PROJECT_NAME.fullmatch(name):
         raise RegistryError(f"invalid Project Name {_quoted(name)}")
-    boundary = _resolve_explicit_path(supplied_path, Path.cwd())
-    path = str(boundary)
+    project = select_explicit_project(supplied_path, Path.cwd())
+    path = str(project.boundary)
     try:
         path.encode("utf-8", errors="strict")
     except UnicodeError as error:
@@ -688,41 +579,34 @@ def _remove_project(name: str) -> None:
         raise
 
 
-def _project_status(path: str) -> str:
-    selected = Path(path)
+def _registered_project(path: str) -> Project:
     try:
-        mode = selected.stat().st_mode
-    except (FileNotFoundError, NotADirectoryError):
-        return "stale: path does not exist"
-    except OSError as error:
-        raise RegistryError(f"Project validation failed: {error}") from error
-    if not stat.S_ISDIR(mode):
-        return "stale: path is not a directory"
-    try:
-        canonical = selected.resolve(strict=True)
-        if str(canonical) != path:
-            return "stale: path is not canonical"
-        _containing_worktree_root(canonical, f"path {_quoted(path)}")
+        return inspect_registered_project(path)
     except (OSError, RuntimeError) as error:
         raise RegistryError(f"Project validation failed: {error}") from error
     except GitInspectionError as error:
         raise RegistryError(str(error)) from error
-    except ProjectSelectionError:
-        return "stale: path is not inside a non-bare Git worktree"
+
+
+def _project_status(path: str) -> str:
+    try:
+        _registered_project(path)
+    except StaleProjectError as error:
+        return str(error)
     return "valid"
 
 
-def _select_registered_project(name: str) -> Path:
+def _select_registered_project(name: str) -> Project:
     if not _PROJECT_NAME.fullmatch(name):
         raise RegistryError(f"invalid Project Name {_quoted(name)}")
     projects = _read_registry()
     if name not in projects:
         raise RegistryError(f"Project {_quoted(name)} is not registered")
     path = projects[name]
-    status = _project_status(path)
-    if status != "valid":
-        raise RegistryError(f"Project {_quoted(name)} is {status}")
-    return Path(path)
+    try:
+        return _registered_project(path)
+    except StaleProjectError as error:
+        raise RegistryError(f"Project {_quoted(name)} is {error}") from error
 
 
 def _list_projects() -> None:
@@ -791,18 +675,20 @@ def _dispatch() -> int:
             run = _parse_run(sys.argv[1:])
             invocation_dir = Path.cwd()
             if run.selector is None:
-                boundary = _discover_project_boundary(invocation_dir)
+                project = discover_project(invocation_dir)
             elif run.selector[0] == "path":
-                boundary = _resolve_explicit_path(run.selector[1], invocation_dir)
+                project = select_explicit_project(run.selector[1], invocation_dir)
             else:
-                boundary = _select_registered_project(run.selector[1])
+                project = _select_registered_project(run.selector[1])
             try:
                 spool = tempfile.TemporaryFile(mode="w+b")
             except OSError as error:
                 raise RunInputError(f"Run Request spool failed: {error}") from error
             with spool:
                 try:
-                    context_bytes = _compose_run(run, boundary, invocation_dir, spool)
+                    context_bytes = _compose_run(
+                        run, project.boundary, invocation_dir, spool,
+                    )
                 except OSError as error:
                     raise RunInputError(f"Run Request spool failed: {error}") from error
                 threshold = _context_threshold()
@@ -816,7 +702,7 @@ def _dispatch() -> int:
                     spool.seek(0)
                 except OSError as error:
                     raise RunInputError(f"Run Request spool failed: {error}") from error
-                return _codex_run(boundary, spool)
+                return _codex_run(project, spool)
         return 1
     except UsageError as error:
         return _usage(error)

@@ -14,6 +14,8 @@ import subprocess
 import tempfile
 from typing import BinaryIO, ClassVar
 
+from _project import Project
+
 
 class RunAdmissionError(Exception):
     """Codex cannot be launched under the certified compatibility contract."""
@@ -316,29 +318,6 @@ def _quoted_absolute_path(path: Path) -> str:
     return json.dumps(str(path.absolute()), ensure_ascii=False)
 
 
-def _enclosing_git_root(project_boundary: Path) -> Path:
-    """Find the trusted-for-discovery Git root that Codex must treat as untrusted."""
-
-    try:
-        result = subprocess.run(
-            ["git", "-C", os.fspath(project_boundary), "rev-parse", "--show-toplevel"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    except OSError as error:
-        raise RunAdmissionError(
-            f"Git could not identify the enclosing root: {error.strerror or error}",
-        ) from error
-    if result.returncode or not result.stdout.endswith(b"\n"):
-        raise RunAdmissionError("Git could not identify the enclosing root")
-    try:
-        return Path(result.stdout[:-1].decode("utf-8")).resolve(strict=True)
-    except (OSError, UnicodeError) as error:
-        raise RunAdmissionError("Git reported an unusable enclosing root") from error
-
-
 def _inspection_failure(path: Path, error: OSError) -> RunAdmissionError:
     cause = error.strerror or str(error)
     return RunAdmissionError(
@@ -498,7 +477,7 @@ def _match_compatibility(executable: Path) -> _Codex01551Policy:
     )
 
 
-def run(project_boundary: Path, run_request_spool: BinaryIO) -> int:
+def run(project: Project, run_request_spool: BinaryIO) -> int:
     """Refuse every Run until a Codex artifact and host tuple is certified."""
     executable = _resolve_executable()
     if not _COMPATIBILITY_SET:
@@ -507,9 +486,8 @@ def run(project_boundary: Path, run_request_spool: BinaryIO) -> int:
             executable=executable,
         )
     policy = _match_compatibility(executable)
-    enclosing_git_root = _enclosing_git_root(project_boundary)
     invocation = policy.prepare_run(
-        project_boundary, enclosing_git_root,
+        project.boundary, project.enclosing_git_root,
     )
     # Invocation construction can inspect the filesystem; close that TOCTOU window.
     if _match_compatibility(executable) is not policy:
@@ -521,7 +499,7 @@ def run(project_boundary: Path, run_request_spool: BinaryIO) -> int:
     try:
         process = subprocess.Popen(
             invocation,
-            cwd=project_boundary,
+            cwd=project.boundary,
             stdin=run_request_spool,
         )
     except OSError as error:

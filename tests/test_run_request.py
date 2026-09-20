@@ -11,6 +11,7 @@ import pytest
 
 import factory
 from _codex import RunAdmissionError
+from _project import Project
 
 
 def run_arguments_for_selection(
@@ -57,9 +58,9 @@ def track_named_spools(
 
 def make_downstream_failure(
     attempts: list[Path], kind: str,
-) -> Callable[[Path, io.BufferedRandom], int]:
-    def fail(boundary: Path, spool: io.BufferedRandom) -> int:
-        attempts.append(boundary)
+) -> Callable[[Project, io.BufferedRandom], int]:
+    def fail(project: Project, spool: io.BufferedRandom) -> int:
+        attempts.append(project.boundary)
         if kind == "admission":
             raise RunAdmissionError("simultaneous admission failure")
         raise RuntimeError("simultaneous Codex failure")
@@ -87,10 +88,10 @@ def test_registered_run_uses_exact_boundary_and_only_its_spec(
         "Api": str(service), "api": str(other),
     }}))
     before = registry.read_bytes()
-    received: list[tuple[Path, bytes]] = []
+    received: list[tuple[Project, bytes]] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        received.append((boundary, spool.read()))
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
+        received.append((selected, spool.read()))
         return 0
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
@@ -102,9 +103,9 @@ def test_registered_run_uses_exact_boundary_and_only_its_spec(
         assert factory.main() == 0
 
     assert received == [
-        (service, b"# Project Guidance\n\nservice guidance\n\n"
+        (Project(service, project), b"# Project Guidance\n\nservice guidance\n\n"
          b"# Run Request\n\n## Instruction\n\nFix"),
-        (other, b"# Run Request\n\n## Instruction\n\nFix"),
+        (Project(other, project), b"# Run Request\n\n## Instruction\n\nFix"),
     ]
     assert registry.read_bytes() == before
     assert not (registry.parent / "projects.lock").exists()
@@ -124,10 +125,10 @@ def test_registered_run_revalidates_stale_boundary_without_discovery(
     registry.parent.mkdir(parents=True)
     registry.write_text(json.dumps({"version": 1, "projects": {"api": str(service)}}))
     before = registry.read_bytes()
-    boundaries: list[Path] = []
+    projects: list[Project] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        boundaries.append(boundary)
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
+        projects.append(selected)
         return 0
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
@@ -140,7 +141,7 @@ def test_registered_run_revalidates_stale_boundary_without_discovery(
     service.rename(project / "moved")
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     assert factory.main() == 1
-    assert boundaries == [service]
+    assert projects == [Project(service, project)]
     assert 'Project "api" is stale: path does not exist' in capsys.readouterr().err
     assert registry.read_bytes() == before
     assert not (registry.parent / "projects.lock").exists()
@@ -197,10 +198,10 @@ def test_run_without_selector_uses_containing_worktree_root(
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     nested = tmp_path / "service" / "src"
     nested.mkdir(parents=True)
-    boundaries: list[Path] = []
+    projects: list[Project] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        boundaries.append(boundary)
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
+        projects.append(selected)
         return 0
 
     monkeypatch.setattr(factory, "_codex_run", handoff)
@@ -209,7 +210,7 @@ def test_run_without_selector_uses_containing_worktree_root(
     monkeypatch.chdir(nested)
 
     assert factory.main() == 0
-    assert boundaries == [tmp_path]
+    assert projects == [Project(tmp_path, tmp_path)]
 
 
 def test_discovery_selects_nearest_marker_without_ancestor_spec(
@@ -222,10 +223,10 @@ def test_discovery_selects_nearest_marker_without_ancestor_spec(
     (service / ".agent").mkdir(parents=True)
     invocation = service / "src"
     invocation.mkdir()
-    received: list[tuple[Path, bytes]] = []
+    received: list[tuple[Project, bytes]] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        received.append((boundary, spool.read()))
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
+        received.append((selected, spool.read()))
         return 0
 
     monkeypatch.setattr(factory, "_codex_run", handoff)
@@ -234,7 +235,9 @@ def test_discovery_selects_nearest_marker_without_ancestor_spec(
     monkeypatch.chdir(invocation)
 
     assert factory.main() == 0
-    assert received == [(service, b"# Run Request\n\n## Instruction\n\nFix")]
+    assert received == [(
+        Project(service, tmp_path), b"# Run Request\n\n## Instruction\n\nFix",
+    )]
 
 
 @pytest.mark.parametrize("kind", ["file", "dangling", "escaping"])
@@ -314,10 +317,10 @@ def test_discovery_accepts_contained_symlinked_marker_and_its_spec(
     (service / ".agent").symlink_to(guidance, target_is_directory=True)
     invocation = service / "src"
     invocation.mkdir()
-    received: list[tuple[Path, bytes]] = []
+    received: list[tuple[Project, bytes]] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        received.append((boundary, spool.read()))
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
+        received.append((selected, spool.read()))
         return 0
 
     monkeypatch.setattr(factory, "_codex_run", handoff)
@@ -327,7 +330,7 @@ def test_discovery_accepts_contained_symlinked_marker_and_its_spec(
 
     assert factory.main() == 0
     assert received == [(
-        service,
+        Project(service, tmp_path),
         b"# Project Guidance\n\nservice guidance\n\n"
         b"# Run Request\n\n## Instruction\n\nFix",
     )]
@@ -368,10 +371,10 @@ def test_discovery_stays_inside_nested_repository(
     (outer / ".agent" / "spec.md").write_text("outer guidance")
     nested = inner / "service"
     nested.mkdir()
-    received: list[tuple[Path, bytes]] = []
+    received: list[tuple[Project, bytes]] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        received.append((boundary, spool.read()))
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
+        received.append((selected, spool.read()))
         return 0
 
     monkeypatch.setattr(factory, "_codex_run", handoff)
@@ -380,7 +383,9 @@ def test_discovery_stays_inside_nested_repository(
     monkeypatch.chdir(nested)
 
     assert factory.main() == 0
-    assert received == [(inner, b"# Run Request\n\n## Instruction\n\nFix")]
+    assert received == [(
+        Project(inner, inner), b"# Run Request\n\n## Instruction\n\nFix",
+    )]
 
 
 @pytest.mark.parametrize("kind", ["linked", "submodule"])
@@ -410,10 +415,10 @@ def test_discovery_uses_linked_worktree_or_submodule_root(
         root = parent / "module"
     nested = root / "service"
     nested.mkdir()
-    boundaries: list[Path] = []
+    projects: list[Project] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        boundaries.append(boundary)
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
+        projects.append(selected)
         return 0
 
     monkeypatch.setattr(factory, "_codex_run", handoff)
@@ -422,7 +427,7 @@ def test_discovery_uses_linked_worktree_or_submodule_root(
     monkeypatch.chdir(nested)
 
     assert factory.main() == 0
-    assert boundaries == [root]
+    assert projects == [Project(root, root)]
 
 
 def test_explicit_run_hands_off_exact_request_bytes(
@@ -437,8 +442,8 @@ def test_explicit_run_hands_off_exact_request_bytes(
     (tmp_path / "notes.txt").write_bytes(b"\xef\xbb\xbfFirst\n\n")
     requests: list[bytes] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        assert boundary == tmp_path
+    def handoff(project: Project, spool: io.BufferedRandom) -> int:
+        assert project == Project(tmp_path, tmp_path)
         requests.append(spool.read())
         return 7
 
@@ -969,13 +974,13 @@ def test_each_project_selection_hands_off_one_complete_rewound_binary_spool(
     invocation_dir.mkdir()
     alias = tmp_path / "alias"
     alias.symlink_to(project, target_is_directory=True)
-    handoffs: list[tuple[Path, bytes]] = []
+    handoffs: list[tuple[Project, bytes]] = []
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
         assert not spool.closed
         assert spool.tell() == 0
         assert spool.read(0) == b""
-        handoffs.append((boundary, spool.read()))
+        handoffs.append((selected, spool.read()))
         return 23
 
     arguments = run_arguments_for_selection(
@@ -989,7 +994,7 @@ def test_each_project_selection_hands_off_one_complete_rewound_binary_spool(
 
     assert factory.main() == 23
     assert handoffs == [(
-        project,
+        Project(project, project),
         b"# Project Guidance\n\nguidance\n\n# Run Request\n\n"
         b"## Instruction\n\nFix\n\n## Context\n\n"
         + f"### File: {json.dumps(str(context))}\n\n".encode()
@@ -1027,8 +1032,8 @@ def test_spool_lifetime_covers_every_codex_handoff_outcome(
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     created = track_named_spools(monkeypatch)
 
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        assert boundary == tmp_path
+    def handoff(project: Project, spool: io.BufferedRandom) -> int:
+        assert project == Project(tmp_path, tmp_path)
         assert not spool.closed
         assert spool.tell() == 0
         assert Path(spool.name).is_file()
@@ -1137,8 +1142,8 @@ def test_explicit_subdirectory_does_not_inherit_ancestor_spec(
     boundary.mkdir()
     received: list[bytes] = []
 
-    def handoff(project: Path, spool: io.BufferedRandom) -> int:
-        assert project == boundary
+    def handoff(project: Project, spool: io.BufferedRandom) -> int:
+        assert project == Project(boundary, tmp_path)
         received.append(spool.read())
         return 0
 
@@ -1202,8 +1207,8 @@ def test_external_context_file_expands_from_invocation_and_keeps_original_labels
     (invocation / "linked.txt").symlink_to(outside)
     received: list[bytes] = []
 
-    def handoff(selected: Path, spool: io.BufferedRandom) -> int:
-        assert selected == boundary
+    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
+        assert selected == Project(boundary, project)
         received.append(spool.read())
         return 0
 

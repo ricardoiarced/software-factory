@@ -12,7 +12,8 @@ import time
 import pytest
 
 import factory
-from factory import ProjectSelectionError, _parse_run, _resolve_explicit_path
+from factory import _parse_run
+from _project import Project, ProjectSelectionError, select_explicit_project
 
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
@@ -828,9 +829,10 @@ def test_explicit_path_preserves_canonical_subdirectory(tmp_path: Path, monkeypa
     monkeypatch.setenv("FACTORY_TEST_BOUNDARY", "link")
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    assert _resolve_explicit_path("$FACTORY_TEST_BOUNDARY", tmp_path) == boundary
-    assert _resolve_explicit_path("${FACTORY_TEST_BOUNDARY}", tmp_path) == boundary
-    assert _resolve_explicit_path("~/service", tmp_path) == boundary
+    expected = Project(boundary=boundary, enclosing_git_root=tmp_path)
+    assert select_explicit_project("$FACTORY_TEST_BOUNDARY", tmp_path) == expected
+    assert select_explicit_project("${FACTORY_TEST_BOUNDARY}", tmp_path) == expected
+    assert select_explicit_project("~/service", tmp_path) == expected
 
 
 @pytest.mark.parametrize("value", ["missing", "empty"])
@@ -890,7 +892,7 @@ def test_explicit_path_uses_nested_git_worktree(tmp_path: Path) -> None:
     boundary = inner / "service"
     boundary.mkdir()
 
-    assert _resolve_explicit_path(str(boundary), outer) == boundary
+    assert select_explicit_project(str(boundary), outer) == Project(boundary, inner)
 
 
 def test_explicit_path_handles_newline_in_git_worktree_path(tmp_path: Path) -> None:
@@ -900,7 +902,7 @@ def test_explicit_path_handles_newline_in_git_worktree_path(tmp_path: Path) -> N
     boundary = project / "service"
     boundary.mkdir()
 
-    assert _resolve_explicit_path(str(boundary), tmp_path) == boundary
+    assert select_explicit_project(str(boundary), tmp_path) == Project(boundary, project)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem byte paths")
@@ -911,7 +913,7 @@ def test_explicit_path_handles_non_utf8_git_worktree_path(tmp_path: Path) -> Non
     boundary = project / "service"
     boundary.mkdir()
 
-    assert _resolve_explicit_path(str(boundary), tmp_path) == boundary
+    assert select_explicit_project(str(boundary), tmp_path) == Project(boundary, project)
 
 
 def test_explicit_path_accepts_linked_worktree(tmp_path: Path) -> None:
@@ -925,7 +927,7 @@ def test_explicit_path_accepts_linked_worktree(tmp_path: Path) -> None:
     boundary = linked / "service"
     boundary.mkdir()
 
-    assert _resolve_explicit_path(str(boundary), source) == boundary
+    assert select_explicit_project(str(boundary), source) == Project(boundary, linked)
 
 
 def test_explicit_path_accepts_submodule(tmp_path: Path) -> None:
@@ -942,7 +944,9 @@ def test_explicit_path_accepts_submodule(tmp_path: Path) -> None:
     boundary = parent / "module" / "service"
     boundary.mkdir()
 
-    assert _resolve_explicit_path(str(boundary), parent) == boundary
+    assert select_explicit_project(str(boundary), parent) == Project(
+        boundary, parent / "module",
+    )
 
 
 def test_explicit_path_rejects_bare_repository(tmp_path: Path) -> None:
@@ -950,14 +954,14 @@ def test_explicit_path_rejects_bare_repository(tmp_path: Path) -> None:
     git("init", "--bare", "-q", str(bare), cwd=tmp_path)
 
     with pytest.raises(ProjectSelectionError, match="non-bare Git worktree"):
-        _resolve_explicit_path(str(bare), tmp_path)
+        select_explicit_project(str(bare), tmp_path)
 
 
 def test_explicit_path_rejects_missing_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", "")
 
     with pytest.raises(ProjectSelectionError, match="Git inspection failed"):
-        _resolve_explicit_path(str(tmp_path), tmp_path)
+        select_explicit_project(str(tmp_path), tmp_path)
 
 
 def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:

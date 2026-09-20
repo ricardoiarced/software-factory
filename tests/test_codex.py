@@ -45,6 +45,25 @@ fi
     path.chmod(0o755)
 
 
+def safe_feature_output(active_feature: str | None = None) -> bytes:
+    feature_lines = [
+        ("apps", "stable", False),
+        ("plugins", "stable", False),
+        ("remote_plugin", "stable", False),
+        ("browser_use", "stable", False),
+        ("browser_use_external", "stable", False),
+        ("browser_use_full_cdp", "stable", False),
+        ("computer_use", "stable", False),
+        ("multi_agent", "stable", False),
+        ("memories", "stable", False),
+        ("skip_host_skill_discovery", "under development", True),
+    ]
+    return b"".join(
+        f"{name:<29}{stage:<20}{str(value or name == active_feature).lower()}\n".encode()
+        for name, stage, value in feature_lines
+    )
+
+
 def certify(executable: Path) -> _CompatibilityEntry:
     metadata = executable.stat()
     with executable.open("rb") as artifact:
@@ -329,6 +348,105 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
         run(tmp_path, io.BytesIO())
 
     assert not launched
+
+
+@pytest.mark.parametrize("forbidden_feature", [
+    "apps",
+    "plugins",
+    "remote_plugin",
+    "browser_use",
+    "browser_use_external",
+    "browser_use_full_cdp",
+    "computer_use",
+    "multi_agent",
+    "memories",
+])
+def test_run_refuses_each_active_effective_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forbidden_feature: str,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
+    launched = False
+    features = safe_feature_output(forbidden_feature)
+
+    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        output = features if command[1:3] == ["features", "list"] else b"[]\n"
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    def launch(*args: object, **kwargs: object) -> None:
+        nonlocal launched
+        launched = True
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    with pytest.raises(
+        RunAdmissionError, match=f"forbidden capability {forbidden_feature}",
+    ):
+        run(tmp_path, io.BytesIO())
+
+    assert not launched
+
+
+@pytest.mark.parametrize("features, mcp, expected_reason", [
+    (
+        safe_feature_output(),
+        b'[{"name": "managed-server"}]\n',
+        "active MCP servers",
+    ),
+    (b"hooks                        stable             true\n", b"[]\n", "unrecognized feature output"),
+])
+def test_run_refuses_active_or_ambiguous_extension_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, features: bytes, mcp: bytes,
+    expected_reason: str,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    monkeypatch.setattr("_codex._enclosing_git_root", lambda path: tmp_path)
+    monkeypatch.setattr(
+        "_codex.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, features if command[1:3] == ["features", "list"] else mcp, b"",
+        ),
+    )
+
+    with pytest.raises(RunAdmissionError, match=expected_reason):
+        run(tmp_path, io.BytesIO())
+
+
+def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_inspector_executable(executable)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
+    # The executable's effective result contradicts Factory's runtime disable,
+    # modelling a higher-precedence hidden or environment policy.
+    monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output("apps").decode("ascii"))
+    monkeypatch.setenv("FACTORY_MCP", "[]\n")
+    monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "0")
+    install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: certify(executable))
+    (tmp_path / "context").write_text("context")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys, "argv", ["factory", "--path", str(tmp_path), "--file", "context", "--force", "Fix"],
+    )
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+
+    assert factory.main() == 1
+    assert "forbidden capability apps is active" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("features, mcp, environment", [

@@ -43,6 +43,17 @@ def _quoted_absolute_path(path: Path) -> str:
     return json.dumps(str(path.absolute()), ensure_ascii=False)
 
 
+def _codex_0_155_1_permission_profile(executable: Path) -> str:
+    """Serialize the isolated permission profile certified for Codex 0.155.1."""
+
+    return (
+        '{extends = ":workspace", filesystem = {":root" = "deny", '
+        '":minimal" = "read", ":tmpdir" = "deny", ":slash_tmp" = "deny", '
+        f'{_quoted_absolute_path(executable.resolve().parent)} = "read", '
+        '":workspace_roots" = {"." = "write"}}, network = {enabled = false}}'
+    )
+
+
 def _inspection_failure(path: Path, error: OSError) -> RunAdmissionError:
     cause = error.strerror or str(error)
     return RunAdmissionError(

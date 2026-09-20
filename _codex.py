@@ -164,6 +164,11 @@ def _inspect_strict_configuration(executable: Path, enclosing_git_root: Path) ->
             raise _strict_configuration_failure(executable, "contradictory feature output")
         states[name] = match.group(3) == b"true"
     if states != _REQUIRED_FEATURE_STATES:
+        for name, required_state in _REQUIRED_FEATURE_STATES.items():
+            if name in states and states[name] != required_state:
+                raise _strict_configuration_failure(
+                    executable, f"forbidden capability {name} is active",
+                )
         raise _strict_configuration_failure(executable, "incomplete feature output")
 
     mcp = _run_inspector(
@@ -174,7 +179,7 @@ def _inspect_strict_configuration(executable: Path, enclosing_git_root: Path) ->
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise _strict_configuration_failure(executable, "unrecognized MCP output") from error
     if configured_mcp != []:
-        raise _strict_configuration_failure(executable, "unrecognized MCP output")
+        raise _strict_configuration_failure(executable, "active MCP servers")
 
 
 def _enclosing_git_root(project_boundary: Path) -> Path:

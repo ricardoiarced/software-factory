@@ -3,12 +3,9 @@
 from importlib.metadata import PackageNotFoundError, version
 from dataclasses import dataclass
 import codecs
-import errno
-import fcntl
 import json
 import os
 from pathlib import Path
-import re
 import stat
 import sys
 import tempfile
@@ -26,6 +23,14 @@ from _project import (
     select_explicit_project,
 )
 from _project_guidance import ProjectGuidanceError, open_project_spec
+from _project_registry import (
+    RegistryCommitUncertain,
+    RegistryError,
+    add_project,
+    read_projects,
+    remove_project,
+    validate_project_name,
+)
 
 
 ROOT_SYNOPSIS = """Usage:
@@ -107,14 +112,6 @@ class UsageError(Exception):
 
 class RunInputError(Exception):
     """A Project Spec or Context Source cannot be used for this Run."""
-
-
-class RegistryError(Exception):
-    """The Project Registry cannot be read or inspected."""
-
-
-class RegistryCommitUncertain(RegistryError):
-    """The registry was replaced, but durable completion is uncertain."""
 
 
 @dataclass(frozen=True)
@@ -332,197 +329,10 @@ def _parse_project(args: list[str]) -> tuple[str, list[str]]:
     return command, values
 
 
-_PROJECT_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?\Z")
-
-
-def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise RegistryError("malformed Project Registry: duplicate key")
-        result[key] = value
-    return result
-
-
-def _read_registry() -> dict[str, str]:
-    from platformdirs import user_config_path
-
-    registry = user_config_path("factory", appauthor=False) / "projects.json"
-    try:
-        descriptor = os.open(registry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
-        return {}
-    except OSError as error:
-        if error.errno == errno.ELOOP:
-            raise RegistryError("malformed Project Registry: not a regular file") from error
-        raise RegistryError(f"Project Registry cannot be read: {error}") from error
-    try:
-        mode = os.fstat(descriptor).st_mode
-    except OSError as error:
-        os.close(descriptor)
-        raise RegistryError(f"Project Registry cannot be read: {error}") from error
-    if not stat.S_ISREG(mode):
-        os.close(descriptor)
-        raise RegistryError("malformed Project Registry: not a regular file")
-    try:
-        with os.fdopen(descriptor, "rb") as source:
-            document: object = json.loads(
-                source.read().decode("utf-8", errors="strict"),
-                object_pairs_hook=_unique_json_object,
-            )
-    except (UnicodeError, ValueError, RecursionError) as error:
-        raise RegistryError("malformed Project Registry: invalid JSON or UTF-8") from error
-    except OSError as error:
-        raise RegistryError(f"Project Registry cannot be read: {error}") from error
-    if not isinstance(document, dict) or set(document) != {"version", "projects"}:
-        raise RegistryError("malformed Project Registry: invalid schema")
-    if type(document["version"]) is not int or document["version"] != 1:
-        raise RegistryError("malformed Project Registry: unsupported version")
-    projects = document["projects"]
-    if not isinstance(projects, dict):
-        raise RegistryError("malformed Project Registry: invalid projects")
-    for name, path in projects.items():
-        if (not isinstance(name, str) or not _PROJECT_NAME.fullmatch(name) or
-                not isinstance(path, str) or not os.path.isabs(path) or "\x00" in path):
-            raise RegistryError("malformed Project Registry: invalid Project Name or path")
-        try:
-            path.encode("utf-8", errors="strict")
-        except UnicodeError as error:
-            raise RegistryError("malformed Project Registry: invalid path text") from error
-    return projects
-
-
-def _create_config_directory(directory: Path) -> None:
-    missing: list[Path] = []
-    candidate = directory
-    while not candidate.exists():
-        missing.append(candidate)
-        candidate = candidate.parent
-    for candidate in reversed(missing):
-        candidate.mkdir(mode=0o700, exist_ok=True)
-        _sync_directory(candidate.parent)
-
-
-def _sync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _write_registry(registry: Path, projects: dict[str, str]) -> None:
-    document = {"version": 1, "projects": dict(sorted(projects.items()))}
-    payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    try:
-        previous_mode = stat.S_IMODE(registry.stat(follow_symlinks=False).st_mode)
-    except FileNotFoundError:
-        previous_mode = None
-
-    temporary: str | None = None
-    replaced = False
-    try:
-        descriptor, temporary = tempfile.mkstemp(prefix=".projects-", dir=registry.parent)
-        with os.fdopen(descriptor, "wb") as target:
-            if previous_mode is not None:
-                os.fchmod(target.fileno(), previous_mode)
-            target.write(payload)
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, registry)
-        replaced = True
-        _sync_directory(registry.parent)
-    except OSError as error:
-        if replaced:
-            raise RegistryCommitUncertain(f"Project Registry update may have committed: {error}") from error
-        raise RegistryError(f"Project Registry cannot be updated: {error}") from error
-    finally:
-        if temporary is not None and not replaced:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
-
-
 def _add_project(name: str, supplied_path: str) -> None:
-    if not _PROJECT_NAME.fullmatch(name):
-        raise RegistryError(f"invalid Project Name {_quoted(name)}")
+    validate_project_name(name)
     project = select_explicit_project(supplied_path, Path.cwd())
-    path = str(project.boundary)
-    try:
-        path.encode("utf-8", errors="strict")
-    except UnicodeError as error:
-        raise RegistryError("Project Boundary cannot be encoded as UTF-8") from error
-
-    from platformdirs import user_config_path
-
-    directory = user_config_path("factory", appauthor=False)
-    registry = directory / "projects.json"
-    changed = False
-    try:
-        _create_config_directory(directory)
-        descriptor = os.open(directory / "projects.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, "rb+") as lock:
-            if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
-                raise RegistryError("Project Registry lock is not a regular file")
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            projects = _read_registry()
-            old_path = projects.get(name)
-            if old_path is None:
-                message = f'Added project {json.dumps(name, ensure_ascii=False)} at {json.dumps(path, ensure_ascii=False)}.\n'
-            elif old_path == path:
-                message = f'Project {json.dumps(name, ensure_ascii=False)} is already registered at {json.dumps(path, ensure_ascii=False)}.\n'
-                sys.stdout.write(message)
-                return
-            else:
-                message = (f'Updated project {json.dumps(name, ensure_ascii=False)} from '
-                           f'{json.dumps(old_path, ensure_ascii=False)} to {json.dumps(path, ensure_ascii=False)}.\n')
-            projects[name] = path
-            _write_registry(registry, projects)
-            changed = True
-            sys.stdout.write(message)
-    except OSError as error:
-        if changed:
-            raise RegistryCommitUncertain(f"Project Registry update may have committed: output failed: {error}") from error
-        raise RegistryError(f"Project Registry cannot be updated: {error}") from error
-    except UnicodeError as error:
-        if changed:
-            raise RegistryCommitUncertain(f"Project Registry update may have committed: output failed: {error}") from error
-        raise
-
-
-def _remove_project(name: str) -> None:
-    from platformdirs import user_config_path
-
-    directory = user_config_path("factory", appauthor=False)
-    registry = directory / "projects.json"
-    if not directory.exists():
-        raise RegistryError(f"Project {_quoted(name)} is not registered")
-    changed = False
-    try:
-        descriptor = os.open(directory / "projects.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, "rb+") as lock:
-            if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
-                raise RegistryError("Project Registry lock is not a regular file")
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            projects = _read_registry()
-            if name not in projects:
-                raise RegistryError(f"Project {_quoted(name)} is not registered")
-            path = projects.pop(name)
-            _write_registry(registry, projects)
-            changed = True
-            sys.stdout.write(
-                f'Removed project {json.dumps(name, ensure_ascii=False)} '
-                f'from {json.dumps(path, ensure_ascii=False)}.\n'
-            )
-    except OSError as error:
-        if changed:
-            raise RegistryCommitUncertain(f"Project Registry update may have committed: output failed: {error}") from error
-        raise RegistryError(f"Project Registry cannot be updated: {error}") from error
-    except UnicodeError as error:
-        if changed:
-            raise RegistryCommitUncertain(f"Project Registry update may have committed: output failed: {error}") from error
-        raise
+    add_project(name, project)
 
 
 def _registered_project(path: str) -> Project:
@@ -543,9 +353,8 @@ def _project_status(path: str) -> str:
 
 
 def _select_registered_project(name: str) -> Project:
-    if not _PROJECT_NAME.fullmatch(name):
-        raise RegistryError(f"invalid Project Name {_quoted(name)}")
-    projects = _read_registry()
+    validate_project_name(name)
+    projects = read_projects()
     if name not in projects:
         raise RegistryError(f"Project {_quoted(name)} is not registered")
     path = projects[name]
@@ -556,7 +365,7 @@ def _select_registered_project(name: str) -> Project:
 
 
 def _list_projects() -> None:
-    projects = _read_registry()
+    projects = read_projects()
     if not projects:
         output = "No projects registered.\n"
     else:
@@ -572,7 +381,7 @@ def _list_projects() -> None:
 
 
 def _show_project(name: str) -> None:
-    projects = _read_registry()
+    projects = read_projects()
     if name not in projects:
         raise RegistryError(f"Project {_quoted(name)} is not registered")
     path = projects[name]
@@ -614,7 +423,7 @@ def _dispatch() -> int:
                 _add_project(values[0], values[1])
                 return 0
             if command == "remove":
-                _remove_project(values[0])
+                remove_project(values[0])
                 return 0
             sys.stderr.write("factory: error: Project administration is not yet available.\n")
         else:

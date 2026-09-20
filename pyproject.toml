@@ -12,4 +12,4 @@ dependencies = ["platformdirs>=4"]
 factory = "factory:main"
 
 [tool.setuptools]
-py-modules = ["factory", "_codex", "_project", "_project_guidance"]
+py-modules = ["factory", "_codex", "_project", "_project_guidance", "_project_registry"]

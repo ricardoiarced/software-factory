@@ -1,9 +1,11 @@
 """Deterministic Codex Run Admission behavior."""
 
 import errno
+import hashlib
 import io
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
@@ -11,12 +13,165 @@ import sys
 import pytest
 
 import factory
-from _codex import RunAdmissionError, run
+from _codex import _CompatibilityEntry, _match_compatibility, RunAdmissionError, run
 
 
-def make_executable(path: Path) -> None:
-    path.write_text("#!/bin/sh\nexit 0\n")
+def make_executable(path: Path, version: str = "0.154.0") -> None:
+    path.write_text(f"#!/bin/sh\nif [ \"$1\" = --version ]; then\n  echo 'codex {version}'\nfi\n")
     path.chmod(0o755)
+
+
+def certify(executable: Path) -> _CompatibilityEntry:
+    metadata = executable.stat()
+    with executable.open("rb") as artifact:
+        digest = hashlib.file_digest(artifact, "sha256").hexdigest()
+    return _CompatibilityEntry(
+        version="0.154.0",
+        sha256=digest,
+        operating_system=platform.system(),
+        architecture=platform.machine(),
+        canonical_path=executable,
+        filesystem_identity=(metadata.st_dev, metadata.st_ino),
+    )
+
+
+def install_compatibility_fixture(
+    executable: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (certify(executable),))
+
+
+def test_identity_matches_an_exact_private_compatibility_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "codex"
+    make_executable(executable)
+    install_compatibility_fixture(executable, monkeypatch)
+
+    assert _match_compatibility(executable) == certify(executable)
+
+
+def test_identity_refuses_malformed_version_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "codex"
+    make_executable(executable)
+    install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr(
+        "_codex.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, b"0.154.0\n", b""),
+    )
+
+    with pytest.raises(RunAdmissionError, match="reported an unrecognized version"):
+        _match_compatibility(executable)
+
+
+def test_identity_refuses_a_changed_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "codex"
+    make_executable(executable)
+    install_compatibility_fixture(executable, monkeypatch)
+    executable.write_text(executable.read_text() + "# changed\n")
+    executable.chmod(0o755)
+
+    with pytest.raises(RunAdmissionError, match="SHA-256 does not match"):
+        _match_compatibility(executable)
+
+
+def test_identity_refuses_another_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "codex"
+    make_executable(executable)
+    entry = certify(executable)
+    monkeypatch.setattr(
+        "_codex._COMPATIBILITY_SET",
+        (_CompatibilityEntry(
+            version=entry.version,
+            sha256=entry.sha256,
+            operating_system="other-os",
+            architecture=entry.architecture,
+            canonical_path=entry.canonical_path,
+            filesystem_identity=entry.filesystem_identity,
+        ),),
+    )
+
+    with pytest.raises(RunAdmissionError, match="platform does not match"):
+        _match_compatibility(executable)
+
+
+def test_identity_refuses_another_architecture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "codex"
+    make_executable(executable)
+    entry = certify(executable)
+    monkeypatch.setattr(
+        "_codex._COMPATIBILITY_SET",
+        (_CompatibilityEntry(
+            version=entry.version,
+            sha256=entry.sha256,
+            operating_system=entry.operating_system,
+            architecture="other-architecture",
+            canonical_path=entry.canonical_path,
+            filesystem_identity=entry.filesystem_identity,
+        ),),
+    )
+
+    with pytest.raises(RunAdmissionError, match="platform does not match"):
+        _match_compatibility(executable)
+
+
+def test_identity_uses_the_canonical_target_of_a_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "installation" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    symlink = tmp_path / "bin" / "codex"
+    symlink.parent.mkdir()
+    symlink.symlink_to(executable)
+    install_compatibility_fixture(executable, monkeypatch)
+
+    assert _match_compatibility(symlink.resolve()) == certify(executable)
+
+
+def test_identity_refuses_a_replaced_filesystem_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "codex"
+    make_executable(executable)
+    install_compatibility_fixture(executable, monkeypatch)
+    replacement = tmp_path / "replacement"
+    shutil.copyfile(executable, replacement)
+    replacement.chmod(0o755)
+    replacement.replace(executable)
+
+    with pytest.raises(RunAdmissionError, match="filesystem identity does not match"):
+        _match_compatibility(executable)
+
+
+def test_identity_refuses_replacement_between_version_and_artifact_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "codex"
+    make_executable(executable)
+    install_compatibility_fixture(executable, monkeypatch)
+    replacement = tmp_path / "replacement"
+    shutil.copyfile(executable, replacement)
+    replacement.chmod(0o755)
+    original_open = Path.open
+
+    def replace_before_open(path: Path, *args: object, **kwargs: object) -> io.IOBase:
+        if path == executable:
+            replacement.replace(executable)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", replace_before_open)
+
+    with pytest.raises(RunAdmissionError, match="filesystem identity does not match"):
+        _match_compatibility(executable)
 
 
 def test_run_refuses_when_codex_is_missing_from_path(

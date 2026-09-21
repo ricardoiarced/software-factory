@@ -25,13 +25,31 @@ from _codex import (
 from _project import Project
 
 
+HOST_PROBE_PROMPT = (
+    "# Project Guidance\n\n"
+    "factory-host-admission-project-guidance-v1\n\n"
+    "# Run Request\n\n"
+    "## Instruction\n\n"
+    "factory-host-admission-run-request-v1"
+)
+HOST_PROBE_PROMPT_INPUT = json.dumps([{
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": HOST_PROBE_PROMPT}],
+}], separators=(",", ":"))
+MALFORMED_PROFILE_REJECTION = (
+    b'Error: invalid type: string "{", expected struct PermissionProfileToml\n'
+    b'in `permissions`\n'
+)
+
+
 def make_executable(path: Path, version: str = "0.155.1") -> None:
     path.write_text(f"#!/bin/sh\nif [ \"$1\" = --version ]; then\n  echo 'codex {version}'\nfi\n")
     path.chmod(0o755)
 
 
 def make_inspector_executable(path: Path) -> None:
-    path.write_text("""#!/bin/sh
+    script = """#!/bin/sh
 if [ "$1" = --version ]; then
   echo 'codex 0.155.1'
 elif [ "$1:$2" = 'features:list' ]; then
@@ -40,16 +58,26 @@ elif [ "$1:$2" = 'features:list' ]; then
 elif [ "$1:$2" = 'mcp:list' ]; then
   printf '%s' "$FACTORY_MCP"
   exit "${FACTORY_MCP_EXIT:-0}"
+elif [ "$1:$2" = 'debug:prompt-input' ]; then
+  printf '%s\n' 'FACTORY_HOST_PROBE_PROMPT_INPUT'
 elif [ "$1" = sandbox ]; then
+  if [ "$7" = factory-malformed ]; then
+    printf '%s\n' 'Error: invalid type: string "{", expected struct PermissionProfileToml' 'in `permissions`' >&2
+    exit 1
+  fi
   printf 'factory-host-admission-probe-v1\n'
 fi
-""")
+"""
+    path.write_text(script.replace(
+        "FACTORY_HOST_PROBE_PROMPT_INPUT", HOST_PROBE_PROMPT_INPUT,
+    ))
     path.chmod(0o755)
 
 
 def safe_feature_output(active_feature: str | None = None) -> bytes:
     feature_lines = [
         ("apps", "stable", False),
+        ("hooks", "stable", False),
         ("plugins", "stable", False),
         ("remote_plugin", "stable", False),
         ("browser_use", "stable", False),
@@ -112,6 +140,7 @@ def expected_configuration(executable: Path, git_root: Path) -> list[str]:
         "-c", "shell_environment_policy.inherit=\"core\"",
         "-c", "shell_environment_policy.ignore_default_excludes=false",
         "-c", "features.apps=false",
+        "-c", "features.hooks=false",
         "-c", "features.plugins=false",
         "-c", "features.remote_plugin=false",
         "-c", "features.browser_use=false",
@@ -159,8 +188,16 @@ def permission_profile_from(arguments: list[str]) -> dict[str, object]:
 def successful_inspection(
     command: list[str], **kwargs: object,
 ) -> subprocess.CompletedProcess[bytes]:
-    output = safe_feature_output() if command[1:3] == ["features", "list"] else b"[]\n"
-    return subprocess.CompletedProcess(command, 0, output, b"")
+    if command[1:3] == ["features", "list"]:
+        return subprocess.CompletedProcess(command, 0, safe_feature_output(), b"")
+    if command[1:3] == ["debug", "prompt-input"]:
+        output = HOST_PROBE_PROMPT_INPUT.encode()
+        return subprocess.CompletedProcess(command, 0, output, b"")
+    if command[1] == "sandbox":
+        return subprocess.CompletedProcess(
+            command, 1, b"", MALFORMED_PROFILE_REJECTION,
+        )
+    return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
 
 
 class SuccessfulProbeProcess:
@@ -211,14 +248,33 @@ def install_compatibility_fixture(
 
 
 def make_probe_executable(path: Path) -> None:
-    path.write_text("""#!/bin/sh
+    script = """#!/bin/sh
 if [ "$1" = --version ]; then
   echo 'codex 0.155.1'
 elif [ "$1:$2" = 'features:list' ]; then
   printf '%s' "$FACTORY_FEATURES"
 elif [ "$1:$2" = 'mcp:list' ]; then
   printf '[]\n'
+elif [ "$1:$2" = 'debug:prompt-input' ]; then
+  [ -f AGENTS.md ] || exit 92
+  [ -f .agents/skills/factory-probe/SKILL.md ] || exit 92
+  [ -f .codex/config.toml ] || exit 92
+  : > "$FACTORY_PROMPT_PROBE_GATE"
+  printf '%s\n' 'FACTORY_HOST_PROBE_PROMPT_INPUT'
 elif [ "$1" = sandbox ]; then
+  if [ "$7" = factory-malformed ]; then
+    : > "$FACTORY_NEGATIVE_PROFILE_GATE"
+    if [ "${FACTORY_NEGATIVE_PROFILE_STDOUT+x}" = x ]; then
+      printf '%s' "$FACTORY_NEGATIVE_PROFILE_STDOUT"
+    fi
+    if [ "${FACTORY_NEGATIVE_PROFILE_STDERR+x}" = x ]; then
+      printf '%s' "$FACTORY_NEGATIVE_PROFILE_STDERR" >&2
+    else
+      printf '%s\n' 'Error: invalid type: string "{", expected struct PermissionProfileToml' 'in `permissions`' >&2
+    fi
+    exit "${FACTORY_NEGATIVE_PROFILE_EXIT:-1}"
+  fi
+  [ -z "${BASH_ENV+x}" ] || exit 92
   for argument in "$@"; do
     if [ "$argument" = "$FACTORY_SELECTED_PROJECT" ]; then
       exit 91
@@ -227,16 +283,17 @@ elif [ "$1" = sandbox ]; then
   [ "$2" = -C ] || exit 92
   [ "$4" = -c ] || exit 92
   [ "$6:$7:$8" = '-P:factory-isolated:--' ] || exit 92
-  [ "$9:${10}" = '/bin/sh:-c' ] || exit 92
-  [ "${12}" = factory-host-admission-probe ] || exit 92
-  [ "${13}" = "$3" ] || exit 92
-  [ -f "${13}/inside-read" ] || exit 92
-  [ "$(cat "${13}/inside-read")" = inside-boundary ] || exit 92
-  [ -f "${13%/*}/parent-read" ] || exit 92
-  [ -f "${13%/*}/sibling/outside-read" ] || exit 92
-  case "${14}" in "${13}"/*) exit 92;; esac
-  case "${15}" in /tmp/*) :;; *) exit 92;; esac
-  [ "${16}" = "$0" ] || exit 92
+  [ "$9:${10}:${11}" = '/bin/bash:-p:-c' ] || exit 92
+  [ "${13}" = factory-host-admission-probe ] || exit 92
+  [ "${14}" = "$3" ] || exit 92
+  [ -f "${14}/inside-read" ] || exit 92
+  [ "$(cat "${14}/inside-read")" = inside-boundary ] || exit 92
+  [ -f "${14%/*}/parent-read" ] || exit 92
+  [ -f "${14%/*}/sibling/outside-read" ] || exit 92
+  case "${15}" in "${14}"/*) exit 92;; esac
+  case "${16}" in /tmp/*) :;; *) exit 92;; esac
+  [ "${17}" = "$0" ] || exit 92
+  case "${18}" in *[!0-9]*|'') exit 92;; esac
   case "$5" in
     *'":root" = "deny"'*'":minimal" = "read"'*'":tmpdir" = "deny"'*) :;;
     *) exit 92;;
@@ -248,16 +305,17 @@ elif [ "$1" = sandbox ]; then
   require_script_fragment() {
     case "$1" in *"$2"*) :;; *) exit 93;; esac
   }
-  require_script_fragment "${11}" 'read_exact "$inside_read"'
-  require_script_fragment "${11}" 'can_write "$inside_write"'
-  require_script_fragment "${11}" 'can_read "$parent_read"'
-  require_script_fragment "${11}" 'can_write "$parent_write"'
-  require_script_fragment "${11}" 'can_read "$sibling_read"'
-  require_script_fragment "${11}" 'can_write "$sibling_write"'
-  require_script_fragment "${11}" 'can_write "$temporary_write"'
-  require_script_fragment "${11}" 'can_write "$slash_tmp_write"'
-  require_script_fragment "${11}" 'can_read "/bin/sh"'
-  require_script_fragment "${11}" 'can_read "$executable"'
+  require_script_fragment "${12}" 'read_exact "$inside_read"'
+  require_script_fragment "${12}" 'can_write "$inside_write"'
+  require_script_fragment "${12}" 'can_read "$parent_read"'
+  require_script_fragment "${12}" 'can_write "$parent_write"'
+  require_script_fragment "${12}" 'can_read "$sibling_read"'
+  require_script_fragment "${12}" 'can_write "$sibling_write"'
+  require_script_fragment "${12}" 'can_write "$temporary_write"'
+  require_script_fragment "${12}" 'can_write "$slash_tmp_write"'
+  require_script_fragment "${12}" 'can_read "/bin/sh"'
+  require_script_fragment "${12}" 'can_read "$executable"'
+  require_script_fragment "${12}" 'can_network "$network_port"'
   : > "$FACTORY_PROBE_GATE"
   if [ -n "${FACTORY_PROBE_DESCENDANT_SLEEP:-}" ]; then
     (
@@ -285,7 +343,10 @@ elif [ "$1" = exec ]; then
   fi
   exit 99
 fi
-""")
+"""
+    path.write_text(script.replace(
+        "FACTORY_HOST_PROBE_PROMPT_INPUT", HOST_PROBE_PROMPT_INPUT,
+    ))
     path.chmod(0o755)
 
 
@@ -300,11 +361,15 @@ def prepare_probe_run(
     executable.parent.mkdir()
     make_probe_executable(executable)
     probe_gate = tmp_path / "probe-ran"
+    prompt_probe_gate = tmp_path / "prompt-probe-ran"
+    negative_profile_gate = tmp_path / "negative-profile-ran"
     launch_gate = tmp_path / "run-launched"
     monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
     monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
     monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
     monkeypatch.setenv("FACTORY_PROBE_GATE", str(probe_gate))
+    monkeypatch.setenv("FACTORY_PROMPT_PROBE_GATE", str(prompt_probe_gate))
+    monkeypatch.setenv("FACTORY_NEGATIVE_PROFILE_GATE", str(negative_profile_gate))
     monkeypatch.setenv("FACTORY_LAUNCH_GATE", str(launch_gate))
     install_compatibility_fixture(
         executable,
@@ -387,13 +452,41 @@ def test_codex_0_155_1_policy_uses_one_configuration_for_evidence_and_launch(
 
     configuration = expected_configuration(executable, git_root)
     assert invocation == expected_invocation(executable, boundary, git_root)
-    assert inspections == [
+    assert inspections[:2] == [
         [os.fspath(executable), "features", "list", *configuration],
         [os.fspath(executable), "mcp", "list", "--json", *configuration],
+    ]
+    host_features = next(
+        command for command in inspections[2:]
+        if command[1:3] == ["features", "list"]
+    )
+    prompt_input = next(
+        command for command in inspections
+        if command[1:3] == ["debug", "prompt-input"]
+    )
+    assert prompt_input == [
+        os.fspath(executable),
+        "debug", "prompt-input",
+        *host_features[3:],
+        HOST_PROBE_PROMPT,
     ]
     assert probes[0][:3] == [os.fspath(executable), "sandbox", "-C"]
     assert probes[0][4:6] == [
         "-c", "permissions.factory-isolated=" + expected_permission_profile(executable),
+    ]
+    probe_boundary = probes[0][3]
+    malformed_profile = next(
+        command for command in inspections
+        if command[1] == "sandbox" and "factory-malformed" in command
+    )
+    assert malformed_profile == [
+        os.fspath(executable),
+        "sandbox",
+        "-C", probe_boundary,
+        "-c", "permissions.factory-malformed={",
+        "-P", "factory-malformed",
+        "--",
+        "/bin/sh", "-c", "exit 0",
     ]
 
 
@@ -547,7 +640,118 @@ def test_run_requires_a_successful_synthetic_probe_before_launching_codex(
     with spool.open("rb") as request:
         assert run(boundary, request) == 23
     assert probe_gate.is_file()
+    assert (tmp_path / "prompt-probe-ran").is_file()
+    assert (tmp_path / "negative-profile-ran").is_file()
     assert launch_gate.is_file()
+
+
+def test_run_refuses_when_the_malformed_profile_negative_control_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
+    monkeypatch.setenv("FACTORY_NEGATIVE_PROFILE_EXIT", "0")
+
+    with pytest.raises(
+        RunAdmissionError, match="malformed permission profile was accepted",
+    ):
+        run(boundary, io.BytesIO())
+
+    assert probe_gate.is_file()
+    assert (tmp_path / "prompt-probe-ran").is_file()
+    assert (tmp_path / "negative-profile-ran").is_file()
+    assert not launch_gate.exists()
+
+
+@pytest.mark.parametrize(("exit_status", "stdout", "stderr"), [
+    ("2", "", MALFORMED_PROFILE_REJECTION.decode()),
+    ("1", "unexpected output\n", MALFORMED_PROFILE_REJECTION.decode()),
+    ("1", "", "unrelated failure\n"),
+])
+def test_run_requires_pinned_malformed_profile_rejection_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    exit_status: str, stdout: str, stderr: str,
+) -> None:
+    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
+    monkeypatch.setenv("FACTORY_NEGATIVE_PROFILE_EXIT", exit_status)
+    monkeypatch.setenv("FACTORY_NEGATIVE_PROFILE_STDOUT", stdout)
+    monkeypatch.setenv("FACTORY_NEGATIVE_PROFILE_STDERR", stderr)
+
+    with pytest.raises(
+        RunAdmissionError,
+        match="malformed permission profile rejection was not recognized",
+    ):
+        run(boundary, io.BytesIO())
+
+    assert probe_gate.is_file()
+    assert (tmp_path / "negative-profile-ran").is_file()
+    assert not launch_gate.exists()
+
+
+@pytest.mark.parametrize(("prompt_input", "reason"), [
+    (b"{", "unrecognized prompt-input output"),
+    (b"[" * 2000 + b"]" * 2000, "unrecognized prompt-input output"),
+    (b"{}", "unrecognized prompt-input output"),
+    (
+        json.dumps([{
+            "type": "unknown",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "factory-host-admission-project-guidance-v1",
+            }],
+        }]).encode(),
+        "unrecognized prompt-input output",
+    ),
+    (
+        b'[{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"other guidance"}]}]',
+        "Project Guidance was not retained",
+    ),
+    (
+        b'[{"type":"message","role":"user","content":['
+        b'{"type":"input_text","text":'
+        b'"factory-host-admission-project-guidance-v1"},'
+        b'{"type":"input_text","text":'
+        b'"factory-host-admission-forbidden-project-guidance-v1"}]}]',
+        "project instruction or extension was discovered",
+    ),
+])
+def test_run_refuses_incomplete_or_unrecognized_prompt_input_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    prompt_input: bytes, reason: str,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    launched = False
+
+    def inspect(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if command[1:3] == ["features", "list"]:
+            output = safe_feature_output()
+        elif command[1:3] == ["mcp", "list"]:
+            output = b"[]\n"
+        else:
+            output = prompt_input
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    def launch(*args: object, **kwargs: object) -> None:
+        nonlocal launched
+        launched = True
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    with pytest.raises(
+        RunAdmissionError, match=reason,
+    ):
+        run(Project(tmp_path, tmp_path), io.BytesIO())
+
+    assert not launched
 
 
 @pytest.mark.parametrize(("stdout", "stderr", "exit_status", "reason"), [
@@ -597,6 +801,63 @@ def test_run_refuses_a_timed_out_host_probe(
     assert not descendant_survived.exists()
 
 
+def test_run_refuses_a_timed_out_network_denial_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
+    original_run = subprocess.run
+
+    def run_subprocess(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if command[0] == "/bin/bash":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr("_codex.subprocess.run", run_subprocess)
+
+    with pytest.raises(
+        RunAdmissionError, match="network denial control timed out",
+    ):
+        run(boundary, io.BytesIO())
+
+    assert not probe_gate.exists()
+    assert not launch_gate.exists()
+
+
+def test_host_probe_ignores_bash_startup_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
+    startup_file = tmp_path / "bash-env"
+    startup_file.write_text("exit 99\n")
+    monkeypatch.setenv("BASH_ENV", os.fspath(startup_file))
+    monkeypatch.setenv("BASH_FUNC_exit%%", "() { return 0; }")
+    original_popen = subprocess.Popen
+
+    def launch(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.Popen[bytes]:
+        if command[1] == "sandbox" and "factory-malformed" not in command:
+            assert command[9:12] == ["/bin/bash", "-p", "-c"]
+            environment = kwargs["env"]
+            assert isinstance(environment, dict)
+            assert "BASH_ENV" not in environment
+            assert not any(
+                name.startswith("BASH_FUNC_") for name in environment
+            )
+        return original_popen(command, **kwargs)
+
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    spool = tmp_path / "run-request"
+    spool.write_bytes(b"# Run Request\n")
+    with spool.open("rb") as request:
+        assert run(boundary, request) == 23
+    assert probe_gate.is_file()
+    assert launch_gate.is_file()
+
+
 def test_run_refuses_when_synthetic_probe_data_cannot_be_created(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -635,6 +896,7 @@ def test_run_requires_complete_strict_configuration_inspection(
         if command[1:3] == ["features", "list"]:
             return subprocess.CompletedProcess(command, 0, (
                 b"apps                         stable             false\n"
+                b"hooks                        stable             false\n"
                 b"plugins                      stable             false\n"
                 b"remote_plugin                stable             false\n"
                 b"browser_use                  stable             false\n"
@@ -647,6 +909,12 @@ def test_run_requires_complete_strict_configuration_inspection(
             ), b"")
         if command[1:3] == ["mcp", "list"]:
             return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
+        if command[1:3] == ["debug", "prompt-input"]:
+            return successful_inspection(command)
+        if command[1] == "sandbox":
+            return subprocess.CompletedProcess(
+                command, 1, b"", MALFORMED_PROFILE_REJECTION,
+            )
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
     class Process(SuccessfulProbeProcess):
@@ -658,10 +926,83 @@ def test_run_requires_complete_strict_configuration_inspection(
 
     assert run(Project(boundary, git_root), io.BytesIO()) == 0
     configuration = expected_configuration(executable, git_root)
-    assert inspected == [
+    assert inspected[:2] == [
         [os.fspath(executable), "features", "list", *configuration],
         [os.fspath(executable), "mcp", "list", "--json", *configuration],
     ]
+    assert any(command[1:3] == ["debug", "prompt-input"] for command in inspected)
+    assert any(
+        command[1] == "sandbox" and "factory-malformed" in command
+        for command in inspected
+    )
+
+
+def test_run_refuses_a_timed_out_strict_configuration_inspector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    policy = install_compatibility_fixture(
+        executable, monkeypatch, host_probe_timeout_seconds=0.25,
+    )
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    launched = False
+
+    def inspect(command: list[str], **kwargs: object) -> None:
+        assert kwargs["timeout"] == 0.25
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    def launch(*args: object, **kwargs: object) -> None:
+        nonlocal launched
+        launched = True
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    with pytest.raises(
+        RunAdmissionError, match="strict configuration inspection failed: timed out",
+    ):
+        run(Project(tmp_path, tmp_path), io.BytesIO())
+
+    assert not launched
+
+
+def test_run_refuses_stderr_from_a_successful_strict_configuration_inspector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    launched = False
+
+    def inspect(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if command[1:3] == ["features", "list"]:
+            return subprocess.CompletedProcess(
+                command, 0, safe_feature_output(), b"unknown warning\n",
+            )
+        return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
+
+    def launch(*args: object, **kwargs: object) -> None:
+        nonlocal launched
+        launched = True
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    with pytest.raises(
+        RunAdmissionError,
+        match="strict configuration inspection failed: unexpected stderr",
+    ):
+        run(Project(tmp_path, tmp_path), io.BytesIO())
+
+    assert not launched
 
 
 @pytest.mark.parametrize("features, mcp", [
@@ -702,6 +1043,7 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
 
 @pytest.mark.parametrize("forbidden_feature", [
     "apps",
+    "hooks",
     "plugins",
     "remote_plugin",
     "browser_use",
@@ -748,7 +1090,7 @@ def test_run_refuses_each_active_effective_capability(
         b'[{"name": "managed-server"}]\n',
         "active MCP servers",
     ),
-    (b"hooks                        stable             true\n", b"[]\n", "unrecognized feature output"),
+    (safe_feature_output("hooks"), b"[]\n", "forbidden capability hooks"),
 ])
 def test_run_refuses_active_or_ambiguous_extension_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, features: bytes, mcp: bytes,
@@ -800,6 +1142,7 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
 @pytest.mark.parametrize("features, mcp, environment", [
     (
         b"apps                         stable             false\n"
+        b"hooks                        stable             false\n"
         b"plugins                      stable             false\n"
         b"remote_plugin                stable             false\n"
         b"browser_use                  stable             false\n"
@@ -813,6 +1156,7 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     ),
     (
         b"apps                         stable             false\n"
+        b"hooks                        stable             false\n"
         b"plugins                      stable             false\n"
         b"remote_plugin                stable             false\n"
         b"browser_use                  stable             false\n"

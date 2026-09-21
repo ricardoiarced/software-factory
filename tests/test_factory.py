@@ -12,6 +12,7 @@ import time
 import pytest
 
 import factory
+import _project_registry as project_registry
 from factory import _parse_run
 from _project import Project, ProjectSelectionError, select_explicit_project
 
@@ -183,7 +184,7 @@ def test_project_add_syncs_new_configuration_directory_entries(
             synced.append((info.st_dev, info.st_ino))
         actual_fsync(descriptor)
 
-    monkeypatch.setattr(factory.os, "fsync", record_sync)
+    monkeypatch.setattr(project_registry.os, "fsync", record_sync)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
 
@@ -209,7 +210,7 @@ def test_project_add_parent_sync_failure_stops_before_registry_replacement(
             raise OSError("parent directory sync failed")
         actual_fsync(descriptor)
 
-    monkeypatch.setattr(factory.os, "fsync", fail_parent_sync)
+    monkeypatch.setattr(project_registry.os, "fsync", fail_parent_sync)
 
     assert factory.main() == 1
     output = capsys.readouterr()
@@ -296,7 +297,7 @@ def test_project_mutation_rereads_strict_registry_after_acquiring_lock(
         actual_flock(descriptor, operation)
         registry.write_text('{"version":2,"projects":{}}')
 
-    monkeypatch.setattr(factory.fcntl, "flock", change_registry_at_lock)
+    monkeypatch.setattr(project_registry.fcntl, "flock", change_registry_at_lock)
 
     assert factory.main() == 1
     output = capsys.readouterr()
@@ -345,10 +346,10 @@ def test_project_add_replace_failure_keeps_previous_generation(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
 
-    def fail_replace(*_: object) -> None:
+    def fail_replace(*_: object, **__: object) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr(factory.os, "replace", fail_replace)
+    monkeypatch.setattr(project_registry.os, "replace", fail_replace)
 
     result = factory.main()
 
@@ -370,10 +371,20 @@ def test_project_add_pre_replace_failure_keeps_previous_generation(
     monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
 
     if failure == "temporary creation":
-        def fail_temporary_creation(*_: object, **__: object) -> tuple[int, str]:
-            raise OSError("temporary creation failed")
+        actual_open = os.open
 
-        monkeypatch.setattr(factory.tempfile, "mkstemp", fail_temporary_creation)
+        def fail_temporary_creation(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            if isinstance(path, str) and path.startswith(".projects-"):
+                raise OSError("temporary creation failed")
+            return actual_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(project_registry.os, "open", fail_temporary_creation)
     elif failure == "write":
         actual_fdopen = os.fdopen
 
@@ -397,12 +408,12 @@ def test_project_add_pre_replace_failure_keeps_previous_generation(
         def fdopen(descriptor: int, mode: str) -> object:
             return FailingWriter(descriptor) if mode == "wb" else actual_fdopen(descriptor, mode)
 
-        monkeypatch.setattr(factory.os, "fdopen", fdopen)
+        monkeypatch.setattr(project_registry.os, "fdopen", fdopen)
     else:
         def fail_file_sync(descriptor: int) -> None:
             raise OSError("file sync failed")
 
-        monkeypatch.setattr(factory.os, "fsync", fail_file_sync)
+        monkeypatch.setattr(project_registry.os, "fsync", fail_file_sync)
 
     result = factory.main()
     output = capsys.readouterr()
@@ -429,7 +440,7 @@ def test_project_add_directory_sync_failure_warns_update_may_have_committed(
             raise OSError("directory sync failed")
         actual_fsync(descriptor)
 
-    monkeypatch.setattr(factory.os, "fsync", fail_directory_sync)
+    monkeypatch.setattr(project_registry.os, "fsync", fail_directory_sync)
 
     result = factory.main()
     output = capsys.readouterr()
@@ -526,10 +537,10 @@ def test_project_remove_replace_failure_keeps_previous_generation(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(sys, "argv", ["factory", "project", "remove", "api"])
 
-    def fail_replace(*_: object) -> None:
+    def fail_replace(*_: object, **__: object) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr(factory.os, "replace", fail_replace)
+    monkeypatch.setattr(project_registry.os, "replace", fail_replace)
 
     result = factory.main()
     output = capsys.readouterr()
@@ -556,7 +567,7 @@ def test_project_remove_directory_sync_failure_warns_update_may_have_committed(
             raise OSError("directory sync failed")
         actual_fsync(descriptor)
 
-    monkeypatch.setattr(factory.os, "fsync", fail_directory_sync)
+    monkeypatch.setattr(project_registry.os, "fsync", fail_directory_sync)
 
     result = factory.main()
     output = capsys.readouterr()

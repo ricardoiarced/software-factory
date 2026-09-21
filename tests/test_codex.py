@@ -208,11 +208,36 @@ def successful_inspection(
     return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
 
 
+def successful_run_inspection(
+    command: list[str], **kwargs: object,
+) -> subprocess.CompletedProcess[bytes]:
+    if command[1:] == ["--version"]:
+        return subprocess.CompletedProcess(command, 0, b"codex 0.155.1\n", b"")
+    return successful_inspection(command, **kwargs)
+
+
 class SuccessfulProbeProcess:
     returncode = 0
 
     def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
         return b"factory-host-admission-probe-v1\n", b""
+
+
+class ListeningSocket:
+    def __enter__(self) -> "ListeningSocket":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        pass
+
+    def bind(self, address: tuple[str, int]) -> None:
+        pass
+
+    def listen(self, backlog: int) -> None:
+        pass
+
+    def getsockname(self) -> tuple[str, int]:
+        return "127.0.0.1", 43123
 
 
 def capture_policy_preparation(
@@ -253,6 +278,16 @@ def install_compatibility_fixture(
         (policy,),
     )
     return policy
+
+
+def install_launch_fixture(
+    executable: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    make_executable(executable)
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr("_codex.subprocess.run", successful_run_inspection)
+    monkeypatch.setattr("_codex.socket.socket", lambda *args: ListeningSocket())
+    install_compatibility_fixture(executable, monkeypatch)
 
 
 def policy_with_recorded_host_admission_probe(
@@ -516,23 +551,20 @@ def test_codex_0_155_1_policy_uses_one_configuration_for_evidence_and_launch(
     ]
 
 
-def test_run_launches_the_certified_codex_with_matching_boundary(
+def test_run_creates_one_native_foreground_codex_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
-    make_executable(executable, version="0.155.1")
     boundary = tmp_path / "project"
     boundary.mkdir()
     git_root = tmp_path / "git root"
     git_root.mkdir()
     spool = io.BytesIO(b"# Run Request\n")
-    policy = certify(executable)
-    monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    invocation = expected_invocation(executable, boundary, git_root)
+    install_launch_fixture(executable, monkeypatch)
 
-    calls: list[tuple[list[str], Path, io.BytesIO]] = []
+    calls: list[tuple[list[str], dict[str, object], bool, int]] = []
 
     class Process:
         def wait(self) -> int:
@@ -541,16 +573,57 @@ def test_run_launches_the_certified_codex_with_matching_boundary(
     def launch(command: list[str], **kwargs: object) -> SuccessfulProbeProcess | Process:
         if command[1] == "sandbox":
             return SuccessfulProbeProcess()
-        calls.append((command, kwargs["cwd"], kwargs["stdin"]))
+        calls.append((command, kwargs, spool.closed, spool.tell()))
         return Process()
 
-    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
-    assert run(Project(boundary, git_root), spool) == 17
-    assert calls == [(
-        expected_invocation(executable, boundary, git_root), boundary, spool,
-    )]
+    run(Project(boundary, git_root), spool)
+
+    assert calls == [(invocation, {
+        "cwd": boundary,
+        "stdin": spool,
+        "stdout": None,
+        "stderr": None,
+        "env": None,
+        "shell": False,
+        "start_new_session": False,
+    }, False, 0)]
+
+
+def test_run_does_not_retry_failed_process_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    install_launch_fixture(executable, monkeypatch)
+    attempts = 0
+
+    def fail_to_start(
+        command: list[str], **kwargs: object,
+    ) -> SuccessfulProbeProcess | None:
+        nonlocal attempts
+        if command[1] == "sandbox":
+            return SuccessfulProbeProcess()
+        attempts += 1
+        raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+
+    monkeypatch.setattr("_codex.subprocess.Popen", fail_to_start)
+
+    try:
+        run(Project(boundary, boundary), io.BytesIO())
+    except RunAdmissionError as error:
+        message = str(error)
+    else:
+        message = None
+
+    assert (message, attempts) == (
+        f'Codex executable "{executable}" could not start: '
+        "Resource temporarily unavailable",
+        1,
+    )
 
 
 def test_run_uses_the_project_selection_git_root_without_rediscovery(

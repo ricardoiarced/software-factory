@@ -507,6 +507,27 @@ def wait_for_signal_runtime(ready: Path, factory_pid: int) -> tuple[int, int]:
     return int(child_pid), int(process_group)
 
 
+def start_signal_runtime(
+    project: Project,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_signal: signal.Signals,
+    *,
+    exit_status: int | None = None,
+) -> tuple[int, int, int]:
+    ready = tmp_path / "signal-ready"
+    monkeypatch.setenv("FACTORY_RUNTIME_PROBE", "signal-wait")
+    monkeypatch.setenv("FACTORY_RUNTIME_PYTHON", sys.executable)
+    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL", str(runtime_signal))
+    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL_READY", str(ready))
+    if exit_status is not None:
+        monkeypatch.setenv("FACTORY_RUNTIME_EXIT", str(exit_status))
+
+    factory_pid = fork_runtime_run(project, tmp_path)
+    child_pid, process_group = wait_for_signal_runtime(ready, factory_pid)
+    return factory_pid, child_pid, process_group
+
+
 def test_codex_0_155_1_policy_preparation_is_deterministic_and_exact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -658,44 +679,45 @@ def test_run_creates_one_native_foreground_codex_process(
     }, False, 0)]
 
 
+@pytest.mark.parametrize("runtime_signal", [signal.SIGTERM, signal.SIGKILL])
 def test_run_exposes_signal_terminated_child_as_the_same_signal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    runtime_signal: signal.Signals,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
     monkeypatch.setenv("FACTORY_RUNTIME_PROBE", "signal-self")
-    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL", str(signal.SIGTERM))
+    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL", str(runtime_signal))
 
     factory_pid = os.fork()
     if factory_pid == 0:
-        spool_path = tmp_path / "run-request"
-        spool_path.write_bytes(b"# Run Request\n")
-        with spool_path.open("rb") as spool:
-            status = run(project, spool)
+        try:
+            spool_path = tmp_path / "run-request"
+            spool_path.write_bytes(b"# Run Request\n")
+            with spool_path.open("rb") as spool:
+                status = run(project, spool)
+        except BaseException:
+            os._exit(125)
         os._exit(status)
 
     _, status = os.waitpid(factory_pid, 0)
 
     assert os.WIFSIGNALED(status)
-    assert os.WTERMSIG(status) == signal.SIGTERM
+    assert os.WTERMSIG(status) == runtime_signal
 
 
+@pytest.mark.parametrize("runtime_signal", [signal.SIGTERM, signal.SIGUSR1])
 def test_run_preserves_status_when_foreground_child_handles_signal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    runtime_signal: signal.Signals,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
-    ready = tmp_path / "signal-ready"
-    monkeypatch.setenv("FACTORY_RUNTIME_PROBE", "signal-wait")
-    monkeypatch.setenv("FACTORY_RUNTIME_PYTHON", sys.executable)
-    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL", str(signal.SIGTERM))
-    monkeypatch.setenv("FACTORY_RUNTIME_EXIT", "23")
-    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL_READY", str(ready))
-
-    factory_pid = fork_runtime_run(project, tmp_path)
-    child_pid, child_process_group = wait_for_signal_runtime(ready, factory_pid)
+    factory_pid, child_pid, child_process_group = start_signal_runtime(
+        project, tmp_path, monkeypatch, runtime_signal, exit_status=23,
+    )
     assert child_pid != factory_pid
     assert child_process_group == factory_pid
 
-    os.killpg(factory_pid, signal.SIGTERM)
+    os.killpg(factory_pid, runtime_signal)
     _, status = os.waitpid(factory_pid, 0)
 
     assert os.WIFEXITED(status)
@@ -711,14 +733,9 @@ def test_run_preserves_foreground_termination_signals_without_tracebacks(
     capfdbinary: pytest.CaptureFixture[bytes], runtime_signal: signal.Signals,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
-    ready = tmp_path / "signal-ready"
-    monkeypatch.setenv("FACTORY_RUNTIME_PROBE", "signal-wait")
-    monkeypatch.setenv("FACTORY_RUNTIME_PYTHON", sys.executable)
-    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL", str(runtime_signal))
-    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL_READY", str(ready))
-
-    factory_pid = fork_runtime_run(project, tmp_path)
-    _, child_process_group = wait_for_signal_runtime(ready, factory_pid)
+    factory_pid, _, child_process_group = start_signal_runtime(
+        project, tmp_path, monkeypatch, runtime_signal,
+    )
     assert child_process_group == factory_pid
 
     os.killpg(factory_pid, runtime_signal)
@@ -734,15 +751,9 @@ def test_run_preserves_foreground_suspend_and_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
-    ready = tmp_path / "signal-ready"
-    monkeypatch.setenv("FACTORY_RUNTIME_PROBE", "signal-wait")
-    monkeypatch.setenv("FACTORY_RUNTIME_PYTHON", sys.executable)
-    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL", str(signal.SIGTERM))
-    monkeypatch.setenv("FACTORY_RUNTIME_EXIT", "0")
-    monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL_READY", str(ready))
-
-    factory_pid = fork_runtime_run(project, tmp_path)
-    _, child_process_group = wait_for_signal_runtime(ready, factory_pid)
+    factory_pid, _, child_process_group = start_signal_runtime(
+        project, tmp_path, monkeypatch, signal.SIGTERM, exit_status=0,
+    )
     assert child_process_group == factory_pid
 
     os.killpg(factory_pid, signal.SIGTSTP)

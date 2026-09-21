@@ -595,6 +595,14 @@ _CHILD_RUNTIME_SIGNALS = (
     signal.SIGINT,
     signal.SIGQUIT,
     signal.SIGTERM,
+    signal.SIGALRM,
+    signal.SIGUSR1,
+    signal.SIGUSR2,
+    signal.SIGPIPE,
+    signal.SIGPROF,
+    signal.SIGVTALRM,
+    signal.SIGXCPU,
+    signal.SIGXFSZ,
 )
 
 
@@ -820,9 +828,10 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
     ] = {}
     try:
         for runtime_signal in _CHILD_RUNTIME_SIGNALS:
-            previous_handlers[runtime_signal] = signal.signal(
-                runtime_signal, _defer_runtime_signal_to_child,
-            )
+            previous_handler = signal.getsignal(runtime_signal)
+            previous_handlers[runtime_signal] = previous_handler
+            if previous_handler != signal.SIG_IGN:
+                signal.signal(runtime_signal, _defer_runtime_signal_to_child)
         try:
             process = subprocess.Popen(
                 invocation,
@@ -846,7 +855,8 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
             signal.signal(handled_signal, handler)
     if status < 0:
         termination_signal = -status
-        signal.signal(termination_signal, signal.SIG_DFL)
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, {termination_signal})
+        if termination_signal != signal.SIGKILL:
+            signal.signal(termination_signal, signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {termination_signal})
         os.kill(os.getpid(), termination_signal)
     return status

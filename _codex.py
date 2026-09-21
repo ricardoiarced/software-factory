@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import re
 import signal
+import socket
 import stat
 import subprocess
 import tempfile
@@ -44,6 +45,7 @@ class _Codex01551Policy:
     )
     _required_feature_states: ClassVar[tuple[tuple[str, bool], ...]] = (
         ("apps", False),
+        ("hooks", False),
         ("plugins", False),
         ("remote_plugin", False),
         ("browser_use", False),
@@ -55,6 +57,23 @@ class _Codex01551Policy:
         ("skip_host_skill_discovery", True),
     )
     _host_probe_success: ClassVar[bytes] = b"factory-host-admission-probe-v1\n"
+    _malformed_profile_rejection: ClassVar[bytes] = (
+        b'Error: invalid type: string "{", expected struct PermissionProfileToml\n'
+        b'in `permissions`\n'
+    )
+    _host_probe_project_guidance: ClassVar[str] = (
+        "factory-host-admission-project-guidance-v1"
+    )
+    _host_probe_forbidden_guidance: ClassVar[str] = (
+        "factory-host-admission-forbidden-project-guidance-v1"
+    )
+    _host_probe_prompt: ClassVar[str] = (
+        "# Project Guidance\n\n"
+        + _host_probe_project_guidance
+        + "\n\n# Run Request\n\n"
+        "## Instruction\n\n"
+        "factory-host-admission-run-request-v1"
+    )
     _host_probe_script: ClassVar[str] = r"""
 set -u
 
@@ -62,6 +81,7 @@ boundary=$1
 temporary_write=$2
 slash_tmp_write=$3
 executable=$4
+network_port=$5
 root=${boundary%/*}
 inside_read=$boundary/inside-read
 inside_write=$boundary/inside-write
@@ -79,6 +99,9 @@ can_read() {
 can_write() {
   ( umask 077; printf '%s\n' 'probe-write' > "$1" ) 2>/dev/null
 }
+can_network() {
+  ( : > "/dev/tcp/127.0.0.1/$1" ) 2>/dev/null
+}
 
 read_exact "$inside_read" 'inside-boundary' || exit 10
 can_write "$inside_write" || exit 11
@@ -91,6 +114,7 @@ can_write "$temporary_write" && exit 17
 can_write "$slash_tmp_write" && exit 18
 can_read "/bin/sh" || exit 19
 can_read "$executable" || exit 20
+can_network "$network_port" && exit 21
 printf '%s\n' 'factory-host-admission-probe-v1'
 """.strip()
 
@@ -111,6 +135,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             "-c", "shell_environment_policy.inherit=\"core\"",
             "-c", "shell_environment_policy.ignore_default_excludes=false",
             "-c", "features.apps=false",
+            "-c", "features.hooks=false",
             "-c", "features.plugins=false",
             "-c", "features.remote_plugin=false",
             "-c", "features.browser_use=false",
@@ -155,7 +180,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             executable=self.canonical_path,
         )
 
-    def _run_inspector(self, command: list[str]) -> bytes:
+    def _run_inspector(self, command: list[str], *, cwd: Path) -> bytes:
         try:
             result = subprocess.run(
                 command,
@@ -163,7 +188,11 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
+                cwd=cwd,
+                timeout=self.host_probe_timeout_seconds,
             )
+        except subprocess.TimeoutExpired as error:
+            raise self._strict_configuration_failure("timed out") from error
         except OSError as error:
             raise self._strict_configuration_failure(
                 error.strerror or str(error),
@@ -172,14 +201,17 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             raise self._strict_configuration_failure(
                 f"exit status {result.returncode}",
             )
+        if result.stderr:
+            raise self._strict_configuration_failure("unexpected stderr")
         return result.stdout
 
     def _inspect_strict_configuration(
-        self, enclosing_git_root: Path,
+        self, project_boundary: Path, enclosing_git_root: Path,
     ) -> None:
         configuration = self._configuration(enclosing_git_root)
         features = self._run_inspector(
             [os.fspath(self.canonical_path), "features", "list", *configuration],
+            cwd=project_boundary,
         )
         required_states = dict(self._required_feature_states)
         states: dict[str, bool] = {}
@@ -211,6 +243,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
 
         mcp = self._run_inspector(
             [os.fspath(self.canonical_path), "mcp", "list", "--json", *configuration],
+            cwd=project_boundary,
         )
         try:
             configured_mcp = json.loads(mcp)
@@ -220,6 +253,103 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             ) from error
         if configured_mcp != []:
             raise self._strict_configuration_failure("active MCP servers")
+
+    @staticmethod
+    def _prompt_input_strings(value: object) -> tuple[str, ...] | None:
+        if not isinstance(value, list):
+            return None
+        strings: list[str] = []
+        for message in value:
+            if (
+                not isinstance(message, dict)
+                or message.get("type") != "message"
+                or message.get("role") not in ("developer", "user")
+            ):
+                return None
+            content = message.get("content")
+            if not isinstance(content, list):
+                return None
+            for item in content:
+                if (
+                    not isinstance(item, dict)
+                    or item.get("type") != "input_text"
+                    or not isinstance(item.get("text"), str)
+                ):
+                    return None
+                strings.append(item["text"])
+        return tuple(strings)
+
+    def _inspect_project_guidance(
+        self, boundary: Path, configuration: list[str],
+    ) -> None:
+        output = self._run_inspector([
+            os.fspath(self.canonical_path),
+            "debug", "prompt-input",
+            *configuration,
+            self._host_probe_prompt,
+        ], cwd=boundary)
+        try:
+            prompt_input = json.loads(output)
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+            raise self._host_probe_failure(
+                "unrecognized prompt-input output",
+            ) from error
+        strings = self._prompt_input_strings(prompt_input)
+        if strings is None:
+            raise self._host_probe_failure("unrecognized prompt-input output")
+        if not any(
+            self._host_probe_project_guidance in value
+            for value in strings
+        ):
+            raise self._host_probe_failure("Project Guidance was not retained")
+        if any(
+            self._host_probe_forbidden_guidance in value
+            for value in strings
+        ):
+            raise self._host_probe_failure(
+                "project instruction or extension was discovered",
+            )
+
+    def _inspect_malformed_profile_rejection(self, boundary: Path) -> None:
+        command = [
+            os.fspath(self.canonical_path),
+            "sandbox",
+            "-C", os.fspath(boundary),
+            "-c", "permissions.factory-malformed={",
+            "-P", "factory-malformed",
+            "--",
+            "/bin/sh", "-c", "exit 0",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                cwd=boundary,
+                timeout=self.host_probe_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise self._host_probe_failure(
+                "malformed permission profile check timed out",
+            ) from error
+        except OSError as error:
+            raise self._host_probe_failure(
+                error.strerror or str(error),
+            ) from error
+        if result.returncode == 0:
+            raise self._host_probe_failure(
+                "malformed permission profile was accepted",
+            )
+        if (
+            result.returncode != 1
+            or result.stdout
+            or not result.stderr.endswith(self._malformed_profile_rejection)
+        ):
+            raise self._host_probe_failure(
+                "malformed permission profile rejection was not recognized",
+            )
 
     def _host_probe_failure(self, reason: str) -> RunAdmissionError:
         return RunAdmissionError(
@@ -240,6 +370,11 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                 sibling = root / "sibling"
                 boundary.mkdir()
                 sibling.mkdir()
+                (boundary / ".git").mkdir()
+                project_skills = boundary / ".agents" / "skills" / "factory-probe"
+                project_skills.mkdir(parents=True)
+                project_config = boundary / ".codex"
+                project_config.mkdir()
                 inside_read = boundary / "inside-read"
                 parent_read = root / "parent-read"
                 sibling_read = sibling / "outside-read"
@@ -248,44 +383,105 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                 inside_read.write_text("inside-boundary\n")
                 parent_read.write_text("outside-boundary\n")
                 sibling_read.write_text("outside-boundary\n")
-
-                invocation = [
-                    os.fspath(self.canonical_path),
-                    "sandbox",
-                    "-C", os.fspath(boundary),
-                    "-c", "permissions.factory-isolated="
-                    + self._permission_profile(),
-                    "-P", "factory-isolated",
-                    "--",
-                    "/bin/sh", "-c", self._host_probe_script,
-                    "factory-host-admission-probe",
-                    os.fspath(boundary),
-                    os.fspath(temporary_write),
-                    os.fspath(slash_tmp_write),
-                    os.fspath(self.canonical_path),
-                ]
-                process = subprocess.Popen(
-                    invocation,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True,
+                (root / "AGENTS.md").write_text(
+                    self._host_probe_forbidden_guidance + "\n",
                 )
-                try:
-                    stdout, stderr = process.communicate(
-                        timeout=self.host_probe_timeout_seconds,
+                (boundary / "AGENTS.md").write_text(
+                    self._host_probe_forbidden_guidance + "\n",
+                )
+                (project_skills / "SKILL.md").write_text(
+                    "---\nname: factory-probe\ndescription: "
+                    + self._host_probe_forbidden_guidance
+                    + "\n---\n\n"
+                    + self._host_probe_forbidden_guidance
+                    + "\n",
+                )
+                (project_config / "config.toml").write_text(
+                    "[features]\napps = true\n\n"
+                    "[mcp_servers.factory_probe]\ncommand = \"/bin/false\"\n",
+                )
+
+                configuration = self._configuration(boundary)
+                self._inspect_strict_configuration(boundary, boundary)
+                self._inspect_project_guidance(boundary, configuration)
+                unsafe_bash_environment = {
+                    "BASH_ENV", "BASHOPTS", "CDPATH", "ENV", "GLOBIGNORE",
+                    "SHELLOPTS",
+                }
+                probe_environment = {
+                    name: value for name, value in os.environ.items()
+                    if (
+                        name not in unsafe_bash_environment
+                        and not name.startswith("BASH_FUNC_")
                     )
-                except subprocess.TimeoutExpired as error:
+                }
+
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                    listener.bind(("127.0.0.1", 0))
+                    listener.listen(2)
+                    network_port = listener.getsockname()[1]
                     try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.communicate()
-                    raise self._host_probe_failure("timed out") from error
-                finally:
-                    temporary_write.unlink(missing_ok=True)
-                    if slash_tmp_write != temporary_write:
-                        slash_tmp_write.unlink(missing_ok=True)
+                        control = subprocess.run(
+                            [
+                                "/bin/bash", "-p", "-c",
+                                ': > "/dev/tcp/127.0.0.1/$1"',
+                                "--", str(network_port),
+                            ],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            check=False,
+                            timeout=self.host_probe_timeout_seconds,
+                            env=probe_environment,
+                        )
+                    except subprocess.TimeoutExpired as error:
+                        raise self._host_probe_failure(
+                            "network denial control timed out",
+                        ) from error
+                    if control.returncode:
+                        raise self._host_probe_failure(
+                            "network denial control could not connect",
+                        )
+
+                    invocation = [
+                        os.fspath(self.canonical_path),
+                        "sandbox",
+                        "-C", os.fspath(boundary),
+                        "-c", "permissions.factory-isolated="
+                        + self._permission_profile(),
+                        "-P", "factory-isolated",
+                        "--",
+                        "/bin/bash", "-p", "-c", self._host_probe_script,
+                        "factory-host-admission-probe",
+                        os.fspath(boundary),
+                        os.fspath(temporary_write),
+                        os.fspath(slash_tmp_write),
+                        os.fspath(self.canonical_path),
+                        str(network_port),
+                    ]
+                    process = subprocess.Popen(
+                        invocation,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        start_new_session=True,
+                        env=probe_environment,
+                    )
+                    try:
+                        stdout, stderr = process.communicate(
+                            timeout=self.host_probe_timeout_seconds,
+                        )
+                    except subprocess.TimeoutExpired as error:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.communicate()
+                        raise self._host_probe_failure("timed out") from error
+                    finally:
+                        temporary_write.unlink(missing_ok=True)
+                        if slash_tmp_write != temporary_write:
+                            slash_tmp_write.unlink(missing_ok=True)
 
                 if process.returncode:
                     raise self._host_probe_failure(
@@ -293,6 +489,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                     )
                 if stdout != self._host_probe_success or stderr:
                     raise self._host_probe_failure("unexpected output")
+                self._inspect_malformed_profile_rejection(boundary)
         except OSError as error:
             raise self._host_probe_failure(
                 error.strerror or str(error),
@@ -303,7 +500,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
     ) -> list[str]:
         """Apply all certified checks and build this policy's launch invocation."""
 
-        self._inspect_strict_configuration(enclosing_git_root)
+        self._inspect_strict_configuration(project_boundary, enclosing_git_root)
         self._run_host_admission_probe()
         return self._invocation(project_boundary, enclosing_git_root)
 

@@ -413,6 +413,9 @@ if "FACTORY_RUNTIME_EXIT" in os.environ:
     signal.signal(signum, lambda *_: sys.exit(exit_status))
 else:
     signal.signal(signum, signal.SIG_DFL)
+if "FACTORY_RUNTIME_RESUME_READY" in os.environ:
+    resume_ready = Path(os.environ["FACTORY_RUNTIME_RESUME_READY"])
+    signal.signal(signal.SIGCONT, lambda *_: resume_ready.touch())
 Path(os.environ["FACTORY_RUNTIME_SIGNAL_READY"]).write_text(
     f"{os.getpid()} {os.getpgrp()}\\n"
 )
@@ -499,17 +502,25 @@ def fork_runtime_run(
     return factory_pid
 
 
-def wait_for_signal_runtime(ready: Path, factory_pid: int) -> tuple[int, int]:
+def wait_for_runtime_marker(
+    marker: Path, factory_pid: int, failure: str,
+) -> None:
     deadline = time.monotonic() + 5
-    while not ready.exists() and time.monotonic() < deadline:
+    while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
-    if not ready.exists():
+    if not marker.exists():
         try:
             os.killpg(factory_pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         os.waitpid(factory_pid, 0)
-        pytest.fail("signal runtime did not become ready")
+        pytest.fail(failure)
+
+
+def wait_for_signal_runtime(ready: Path, factory_pid: int) -> tuple[int, int]:
+    wait_for_runtime_marker(
+        ready, factory_pid, "signal runtime did not become ready",
+    )
     child_pid, process_group = ready.read_text().split()
     return int(child_pid), int(process_group)
 
@@ -800,6 +811,8 @@ def test_run_preserves_foreground_suspend_and_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
+    resume_ready = tmp_path / "signal-resumed"
+    monkeypatch.setenv("FACTORY_RUNTIME_RESUME_READY", str(resume_ready))
     factory_pid, _, child_process_group = start_signal_runtime(
         project, tmp_path, monkeypatch, signal.SIGTERM, exit_status=0,
     )
@@ -811,8 +824,21 @@ def test_run_preserves_foreground_suspend_and_resume(
     assert os.WSTOPSIG(stopped_status) == signal.SIGTSTP
 
     os.killpg(factory_pid, signal.SIGCONT)
+    wait_for_runtime_marker(
+        resume_ready, factory_pid, "foreground child did not resume",
+    )
+
     os.killpg(factory_pid, signal.SIGTERM)
-    _, resumed_status = os.waitpid(factory_pid, 0)
+    exit_deadline = time.monotonic() + 5
+    while True:
+        resumed_pid, resumed_status = os.waitpid(factory_pid, os.WNOHANG)
+        if resumed_pid != 0 or time.monotonic() >= exit_deadline:
+            break
+        time.sleep(0.01)
+    if resumed_pid == 0:
+        os.killpg(factory_pid, signal.SIGKILL)
+        os.waitpid(factory_pid, 0)
+        pytest.fail("foreground process group did not terminate")
 
     assert os.WIFEXITED(resumed_status)
     assert os.WEXITSTATUS(resumed_status) == 0

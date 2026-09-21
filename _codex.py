@@ -1,5 +1,6 @@
 """Codex Run Admission and lifecycle boundary."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import errno
 import hashlib
@@ -14,7 +15,8 @@ import socket
 import stat
 import subprocess
 import tempfile
-from typing import BinaryIO, ClassVar
+from types import FrameType
+from typing import Any, BinaryIO, ClassVar
 
 from _project import Project
 
@@ -588,6 +590,21 @@ printf '%s\n' 'factory-host-admission-probe-v1'
 # fail-closed until an artifact has passed the real-host certification suite.
 _COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = ()
 _VERSION_OUTPUT = re.compile(rb"codex ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
+# Keep this to the foreground-group contract. Synchronous faults and
+# process-local timer/resource signals retain Factory's native dispositions.
+_CHILD_RUNTIME_SIGNALS = (
+    signal.SIGHUP,
+    signal.SIGINT,
+    signal.SIGQUIT,
+    signal.SIGTERM,
+    signal.SIGUSR1,
+)
+
+
+def _defer_runtime_signal_to_child(
+    _signal_number: int, _frame: FrameType | None,
+) -> None:
+    """Let the foreground child status decide the Run's signal outcome."""
 
 
 def _quoted_absolute_path(path: Path) -> str:
@@ -800,6 +817,10 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
         project.boundary, project.enclosing_git_root,
     )
     _recheck_artifact(policy)
+    previous_handlers: dict[
+        signal.Signals,
+        Callable[[int, FrameType | None], Any] | int | None,
+    ] = {}
     try:
         process = subprocess.Popen(
             invocation,
@@ -817,4 +838,20 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
             f"{error.strerror or error}",
             executable=executable,
         ) from error
-    return process.wait()
+    try:
+        for runtime_signal in _CHILD_RUNTIME_SIGNALS:
+            previous_handler = signal.getsignal(runtime_signal)
+            previous_handlers[runtime_signal] = previous_handler
+            if previous_handler != signal.SIG_IGN:
+                signal.signal(runtime_signal, _defer_runtime_signal_to_child)
+        status = process.wait()
+    finally:
+        for handled_signal, handler in previous_handlers.items():
+            signal.signal(handled_signal, handler)
+    if status < 0:
+        termination_signal = -status
+        if termination_signal != signal.SIGKILL:
+            signal.signal(termination_signal, signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {termination_signal})
+        os.kill(os.getpid(), termination_signal)
+    return status

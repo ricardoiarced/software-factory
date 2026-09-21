@@ -688,17 +688,7 @@ def test_run_exposes_signal_terminated_child_as_the_same_signal(
     monkeypatch.setenv("FACTORY_RUNTIME_PROBE", "signal-self")
     monkeypatch.setenv("FACTORY_RUNTIME_SIGNAL", str(runtime_signal))
 
-    factory_pid = os.fork()
-    if factory_pid == 0:
-        try:
-            spool_path = tmp_path / "run-request"
-            spool_path.write_bytes(b"# Run Request\n")
-            with spool_path.open("rb") as spool:
-                status = run(project, spool)
-        except BaseException:
-            os._exit(125)
-        os._exit(status)
-
+    factory_pid = fork_runtime_run(project, tmp_path)
     _, status = os.waitpid(factory_pid, 0)
 
     assert os.WIFSIGNALED(status)

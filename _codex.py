@@ -805,6 +805,11 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
             invocation,
             cwd=project.boundary,
             stdin=run_request_spool,
+            stdout=None,
+            stderr=None,
+            env=None,
+            shell=False,
+            start_new_session=False,
         )
     except OSError as error:
         raise RunAdmissionError(

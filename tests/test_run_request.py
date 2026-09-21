@@ -69,6 +69,30 @@ def make_downstream_failure(
     return fail
 
 
+@pytest.mark.parametrize("status", [0, 1, 2])
+def test_factory_returns_ordinary_codex_status_without_annotating_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capfdbinary: pytest.CaptureFixture[bytes], status: int,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    def handoff(project: Project, spool: io.BufferedRandom) -> int:
+        assert project == Project(tmp_path, tmp_path)
+        os.write(1, b"\xffcodex-stdout\n")
+        os.write(2, b"\xfecodex-stderr\n")
+        return status
+
+    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
+    monkeypatch.chdir(tmp_path)
+
+    assert factory.main() == status
+    captured = capfdbinary.readouterr()
+    assert captured.out == b"\xffcodex-stdout\n"
+    assert captured.err == b"\xfecodex-stderr\n"
+
+
 def test_registered_run_uses_exact_boundary_and_only_its_spec(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

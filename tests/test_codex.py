@@ -399,6 +399,18 @@ elif [ "$1" = exec ]; then
   if [ -n "${FACTORY_LAUNCH_GATE:-}" ]; then
     : > "$FACTORY_LAUNCH_GATE"
   fi
+  if [ "${FACTORY_RUNTIME_PROBE:-}" = native ]; then
+    [ "${CODEX_HOME:-}" = "$FACTORY_EXPECTED_CODEX_HOME" ] || exit 90
+    cat > "$FACTORY_RUNTIME_SPOOL_COPY" || exit 90
+    printf '\\377codex-stdout\n'
+    printf '\\376codex-stderr\n' >&2
+    exit "$FACTORY_RUNTIME_EXIT"
+  fi
+  if [ "${FACTORY_RUNTIME_PROBE:-}" = tty ]; then
+    [ ! -t 0 ] && [ -t 1 ] && [ -t 2 ] || exit 90
+    printf 'codex-tty\n'
+    exit 0
+  fi
   if [ -f "$FACTORY_PROBE_GATE" ]; then
     exit 23
   fi
@@ -589,6 +601,74 @@ def test_run_creates_one_native_foreground_codex_process(
         "shell": False,
         "start_new_session": False,
     }, False, 0)]
+
+
+@pytest.mark.parametrize("status", [0, 1, 2])
+def test_run_preserves_native_output_environment_spool_and_ordinary_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capfdbinary: pytest.CaptureFixture[bytes], status: int,
+) -> None:
+    project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
+    codex_home = tmp_path / "codex-home-with-authentication"
+    spool_copy = tmp_path / "received-run-request"
+    request = b"# Run Request\n\n## Instruction\n\nPreserve native behavior"
+    request_path = tmp_path / "run-request"
+    request_path.write_bytes(request)
+    monkeypatch.setenv("CODEX_HOME", os.fspath(codex_home))
+    monkeypatch.setenv("FACTORY_EXPECTED_CODEX_HOME", os.fspath(codex_home))
+    monkeypatch.setenv("FACTORY_RUNTIME_PROBE", "native")
+    monkeypatch.setenv("FACTORY_RUNTIME_SPOOL_COPY", os.fspath(spool_copy))
+    monkeypatch.setenv("FACTORY_RUNTIME_EXIT", str(status))
+
+    with request_path.open("rb") as spool:
+        result = run(project, spool)
+        assert not spool.closed
+
+    captured = capfdbinary.readouterr()
+    assert result == status
+    assert captured.out == b"\xffcodex-stdout\n"
+    assert captured.err == b"\xfecodex-stderr\n"
+    assert spool_copy.read_bytes() == request
+
+
+def test_run_preserves_child_tty_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
+    request_path = tmp_path / "run-request"
+    request_path.write_bytes(b"# Run Request\n")
+    monkeypatch.setenv("FACTORY_RUNTIME_PROBE", "tty")
+    master, slave = os.openpty()
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+
+    try:
+        os.dup2(slave, 1)
+        os.dup2(slave, 2)
+        with request_path.open("rb") as spool:
+            result = run(project, spool)
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.dup2(saved_stderr, 2)
+        os.close(saved_stdout)
+        os.close(saved_stderr)
+        os.close(slave)
+
+    output = b""
+    while True:
+        try:
+            chunk = os.read(master, 4096)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        output += chunk
+    os.close(master)
+
+    assert result == 0
+    assert output == b"codex-tty\r\n"
 
 
 def test_run_does_not_retry_failed_process_creation(

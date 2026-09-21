@@ -1,6 +1,7 @@
 """Deterministic Codex Run Admission behavior."""
 
 import errno
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
@@ -41,6 +42,13 @@ MALFORMED_PROFILE_REJECTION = (
     b'Error: invalid type: string "{", expected struct PermissionProfileToml\n'
     b'in `permissions`\n'
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_host_admission_probe_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("_codex._cache_directory", lambda: tmp_path / "cache")
 
 
 def make_executable(path: Path, version: str = "0.155.1") -> None:
@@ -245,6 +253,24 @@ def install_compatibility_fixture(
         (policy,),
     )
     return policy
+
+
+def policy_with_recorded_host_admission_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, _Codex01551Policy, list[list[str]]]:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    policy = certify(executable)
+    probes: list[list[str]] = []
+
+    def probe(command: list[str], **kwargs: object) -> SuccessfulProbeProcess:
+        probes.append(command)
+        return SuccessfulProbeProcess()
+
+    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
+    monkeypatch.setattr("_codex.subprocess.Popen", probe)
+    return executable, policy, probes
 
 
 def make_probe_executable(path: Path) -> None:
@@ -643,6 +669,290 @@ def test_run_requires_a_successful_synthetic_probe_before_launching_codex(
     assert (tmp_path / "prompt-probe-ran").is_file()
     assert (tmp_path / "negative-profile-ran").is_file()
     assert launch_gate.is_file()
+
+
+def test_run_reuses_a_complete_host_admission_probe_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    policy = certify(executable)
+    inspections: list[list[str]] = []
+    probes: list[list[str]] = []
+
+    def inspect(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        inspections.append(command)
+        return successful_inspection(command, **kwargs)
+
+    def probe(command: list[str], **kwargs: object) -> SuccessfulProbeProcess:
+        probes.append(command)
+        return SuccessfulProbeProcess()
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", probe)
+
+    policy.prepare_run(tmp_path, tmp_path)
+    policy.prepare_run(tmp_path, tmp_path)
+
+    assert len(probes) == 1
+    assert [command[1:3] for command in inspections].count(["features", "list"]) == 3
+    assert [command[1:3] for command in inspections].count(["mcp", "list"]) == 3
+
+
+@pytest.mark.parametrize("replacement", [
+    b"{",
+    b'{"schema":1}\n',
+    b'{"schema":0,"success":true}\n',
+    b'{"schema":1,"success":true,"factory_version":"other"}\n',
+])
+def test_run_reprobes_malformed_stale_partial_or_mismatched_cache_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: bytes,
+) -> None:
+    _, policy, probes = policy_with_recorded_host_admission_probe(
+        tmp_path, monkeypatch,
+    )
+    policy.prepare_run(tmp_path, tmp_path)
+    cached = next((tmp_path / "cache" / "host-admission-probe").iterdir())
+    cached.write_bytes(replacement)
+
+    policy.prepare_run(tmp_path, tmp_path)
+
+    assert len(probes) == 2
+
+
+def test_run_reprobes_after_factory_or_host_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, policy, probes = policy_with_recorded_host_admission_probe(
+        tmp_path, monkeypatch,
+    )
+    factory_version = "1.0"
+    host_release = "kernel-1"
+
+    monkeypatch.setattr("_codex._factory_version", lambda: factory_version)
+    monkeypatch.setattr(
+        "_codex._host_identity",
+        lambda: {"release": host_release, "version": "host-version"},
+    )
+    policy.prepare_run(tmp_path, tmp_path)
+    factory_version = "1.1"
+    policy.prepare_run(tmp_path, tmp_path)
+    monkeypatch.setattr(_Codex01551Policy, "version", "0.155.2")
+    policy.prepare_run(tmp_path, tmp_path)
+    host_release = "kernel-2"
+    policy.prepare_run(tmp_path, tmp_path)
+
+    assert len(probes) == 4
+
+
+def test_run_reprobes_after_codex_artifact_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable, first_policy, probes = policy_with_recorded_host_admission_probe(
+        tmp_path, monkeypatch,
+    )
+
+    first_policy.prepare_run(tmp_path, tmp_path)
+    executable.write_text(executable.read_text() + "# replacement\n")
+    executable.chmod(0o755)
+    certify(executable).prepare_run(tmp_path, tmp_path)
+
+    assert len(probes) == 2
+
+
+def test_failed_host_admission_probe_is_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    policy = certify(executable)
+    probes = 0
+
+    class FailedProbeProcess(SuccessfulProbeProcess):
+        returncode = 7
+
+    def probe(command: list[str], **kwargs: object) -> SuccessfulProbeProcess:
+        nonlocal probes
+        probes += 1
+        return FailedProbeProcess() if probes == 1 else SuccessfulProbeProcess()
+
+    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
+    monkeypatch.setattr("_codex.subprocess.Popen", probe)
+
+    with pytest.raises(RunAdmissionError, match="exit status 7"):
+        policy.prepare_run(tmp_path, tmp_path)
+    assert not tuple((tmp_path / "cache").rglob("*.json"))
+    policy.prepare_run(tmp_path, tmp_path)
+
+    assert probes == 2
+
+
+def test_host_admission_probe_success_is_atomically_stored_with_its_complete_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    policy = certify(executable)
+    replaced: list[tuple[Path, Path, bytes]] = []
+    actual_replace = os.replace
+
+    def replace(source: Path, destination: Path) -> None:
+        replaced.append((source, destination, source.read_bytes()))
+        assert source.parent == destination.parent
+        assert not destination.exists()
+        actual_replace(source, destination)
+
+    monkeypatch.setattr("_codex._factory_version", lambda: "factory-version")
+    monkeypatch.setattr(
+        "_codex._host_identity",
+        lambda: {"release": "host-release", "version": "host-version"},
+    )
+    monkeypatch.setattr("_codex.os.replace", replace)
+    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
+    monkeypatch.setattr(
+        "_codex.subprocess.Popen",
+        lambda *args, **kwargs: SuccessfulProbeProcess(),
+    )
+
+    policy.prepare_run(tmp_path, tmp_path)
+
+    assert len(replaced) == 1
+    source, destination, payload = replaced[0]
+    assert source.name.startswith(".host-admission-probe-")
+    assert destination.parent == tmp_path / "cache" / "host-admission-probe"
+    assert destination.read_bytes() == payload
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert json.loads(payload) == {
+        "schema": 1,
+        "success": True,
+        "factory_version": "factory-version",
+        "codex_version": "0.155.1",
+        "executable_sha256": policy.sha256,
+        "operating_system": policy.operating_system,
+        "architecture": policy.architecture,
+        "host_identity": {"release": "host-release", "version": "host-version"},
+    }
+
+
+def test_cache_write_failure_leaves_admission_uncached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    policy = certify(executable)
+    probes = 0
+
+    def probe(command: list[str], **kwargs: object) -> SuccessfulProbeProcess:
+        nonlocal probes
+        probes += 1
+        return SuccessfulProbeProcess()
+
+    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
+    monkeypatch.setattr("_codex.subprocess.Popen", probe)
+    monkeypatch.setattr(
+        "_codex.os.replace",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError(errno.ENOSPC, "full")),
+    )
+
+    policy.prepare_run(tmp_path, tmp_path)
+    policy.prepare_run(tmp_path, tmp_path)
+
+    assert probes == 2
+    assert not tuple((tmp_path / "cache").rglob("*.json"))
+
+
+def test_cache_hit_still_rejects_a_forbidden_effective_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, policy, probes = policy_with_recorded_host_admission_probe(
+        tmp_path, monkeypatch,
+    )
+    policy.prepare_run(tmp_path, tmp_path)
+
+    def forbidden_inspection(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        output = safe_feature_output("apps") if command[1:3] == ["features", "list"] else b"[]\n"
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    monkeypatch.setattr("_codex.subprocess.run", forbidden_inspection)
+
+    with pytest.raises(RunAdmissionError, match="forbidden capability apps is active"):
+        policy.prepare_run(tmp_path, tmp_path)
+
+    assert len(probes) == 1
+
+
+def test_cache_hit_still_rechecks_the_executable_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable)
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    probes = 0
+    launches = 0
+
+    class RunProcess:
+        def wait(self) -> int:
+            return 0
+
+    def inspect(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if command[1:] == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, b"codex 0.155.1\n", b"")
+        return successful_inspection(command, **kwargs)
+
+    def launch(
+        command: list[str], **kwargs: object,
+    ) -> SuccessfulProbeProcess | RunProcess:
+        nonlocal probes, launches
+        if command[1] == "sandbox":
+            probes += 1
+            return SuccessfulProbeProcess()
+        launches += 1
+        return RunProcess()
+
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    assert run(Project(boundary, boundary), io.BytesIO()) == 0
+    executable.write_text(executable.read_text() + "# replacement\n")
+    executable.chmod(0o755)
+
+    with pytest.raises(RunAdmissionError, match="SHA-256 does not match"):
+        run(Project(boundary, boundary), io.BytesIO())
+
+    assert policy.sha256 != hashlib.sha256(executable.read_bytes()).hexdigest()
+    assert probes == 1
+    assert launches == 1
+
+
+def test_concurrent_cache_readers_observe_a_complete_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, policy, probes = policy_with_recorded_host_admission_probe(
+        tmp_path, monkeypatch,
+    )
+    policy.prepare_run(tmp_path, tmp_path)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        invocations = tuple(
+            executor.map(lambda _: policy.prepare_run(tmp_path, tmp_path), range(32))
+        )
+
+    assert len(probes) == 1
+    assert all(invocation == invocations[0] for invocation in invocations)
 
 
 def test_run_refuses_when_the_malformed_profile_negative_control_succeeds(

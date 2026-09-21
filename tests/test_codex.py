@@ -567,6 +567,12 @@ def test_run_uses_the_project_selection_git_root_without_rediscovery(
     prepared_with: list[tuple[Path, Path]] = []
 
     class MatchedPolicy:
+        def __init__(self) -> None:
+            metadata = executable.stat()
+            self.canonical_path = executable
+            self.sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
+            self.filesystem_identity = (metadata.st_dev, metadata.st_ino)
+
         def prepare_run(
             self, project_boundary: Path, enclosing_git_root: Path,
         ) -> list[str]:
@@ -601,6 +607,12 @@ def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
     calls: list[tuple[Path, Path]] = []
 
     class MatchedPolicy:
+        def __init__(self) -> None:
+            metadata = executable.stat()
+            self.canonical_path = executable
+            self.sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
+            self.filesystem_identity = (metadata.st_dev, metadata.st_ino)
+
         def prepare_run(
             self, project_boundary: Path, enclosing_git_root: Path,
         ) -> list[str]:
@@ -619,8 +631,9 @@ def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
     assert calls == [(boundary, git_root)]
 
 
-def test_run_refuses_if_the_certified_policy_changes_before_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("change", ["replacement", "self-update"])
+def test_run_refuses_an_executable_change_without_evaluating_it_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -630,12 +643,42 @@ def test_run_refuses_if_the_certified_policy_changes_before_launch(
     git_root = tmp_path / "git-root"
     git_root.mkdir()
 
-    initial_policy = certify(executable)
-    changed_policy = certify(executable)
-    assert changed_policy == initial_policy
-    assert changed_policy is not initial_policy
-    matches = iter((initial_policy, changed_policy))
+    policy = install_compatibility_fixture(executable, monkeypatch)
+    cache_payload = policy._host_probe_cache_payload()
+    policy._store_host_probe_success(cache_payload)
+    actual_prepare_run = _Codex01551Policy.prepare_run
+    version_checks = 0
     launched = False
+
+    def prepare_then_change(
+        self: _Codex01551Policy,
+        project_boundary: Path,
+        enclosing_git_root: Path,
+    ) -> list[str]:
+        invocation = actual_prepare_run(
+            self, project_boundary, enclosing_git_root,
+        )
+        changed = executable.read_text() + "# changed\n"
+        if change == "replacement":
+            replacement = tmp_path / "replacement"
+            replacement.write_text(changed)
+            replacement.chmod(0o755)
+            replacement.replace(executable)
+        else:
+            executable.write_text(changed)
+            executable.chmod(0o755)
+        return invocation
+
+    def inspect(
+        command: list[str], **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal version_checks
+        if command[1:] == ["--version"]:
+            version_checks += 1
+            return subprocess.CompletedProcess(
+                command, 0, b"codex 0.155.1\n", b"",
+            )
+        return successful_inspection(command, **kwargs)
 
     def launch(command: list[str], **kwargs: object) -> SuccessfulProbeProcess | None:
         nonlocal launched
@@ -645,15 +688,19 @@ def test_run_refuses_if_the_certified_policy_changes_before_launch(
         return None
 
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (initial_policy,))
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: next(matches))
-    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
+    monkeypatch.setattr(_Codex01551Policy, "prepare_run", prepare_then_change)
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
-    with pytest.raises(RunAdmissionError, match="matched a different certified policy"):
+    with pytest.raises(
+        RunAdmissionError,
+        match="changed during Run Admission; refusing to evaluate its replacement",
+    ):
         run(Project(boundary, git_root), io.BytesIO())
 
     assert not launched
+    assert version_checks == 1
+    assert policy.sha256 != hashlib.sha256(executable.read_bytes()).hexdigest()
 
 
 def test_run_requires_a_successful_synthetic_probe_before_launching_codex(

@@ -753,6 +753,36 @@ def _match_compatibility(executable: Path) -> _Codex01551Policy:
     )
 
 
+def _recheck_artifact(policy: _Codex01551Policy) -> None:
+    """Refuse a changed artifact without executing it as a new candidate."""
+
+    executable = policy.canonical_path
+    try:
+        with executable.open("rb") as artifact:
+            metadata = os.fstat(artifact.fileno())
+            filesystem_identity = (metadata.st_dev, metadata.st_ino)
+            if filesystem_identity != policy.filesystem_identity:
+                raise RunAdmissionError(
+                    f"Codex executable {_quoted_absolute_path(executable)} changed "
+                    "during Run Admission; refusing to evaluate its replacement",
+                    executable=executable,
+                )
+            digest = hashlib.file_digest(artifact, "sha256").hexdigest()
+        current = executable.stat()
+    except OSError as error:
+        raise _inspection_failure(executable, error) from error
+
+    if (
+        digest != policy.sha256
+        or (current.st_dev, current.st_ino) != filesystem_identity
+    ):
+        raise RunAdmissionError(
+            f"Codex executable {_quoted_absolute_path(executable)} changed "
+            "during Run Admission; refusing to evaluate its replacement",
+            executable=executable,
+        )
+
+
 def run(project: Project, run_request_spool: BinaryIO) -> int:
     """Refuse every Run until a Codex artifact and host tuple is certified."""
     executable = _resolve_executable()
@@ -765,13 +795,7 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
     invocation = policy.prepare_run(
         project.boundary, project.enclosing_git_root,
     )
-    # Invocation construction can inspect the filesystem; close that TOCTOU window.
-    if _match_compatibility(executable) is not policy:
-        raise RunAdmissionError(
-            f"Codex executable {_quoted_absolute_path(executable)} matched a different "
-            "certified policy during Run Admission; install the certified artifact",
-            executable=executable,
-        )
+    _recheck_artifact(policy)
     try:
         process = subprocess.Popen(
             invocation,

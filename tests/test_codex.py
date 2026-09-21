@@ -566,22 +566,19 @@ def test_run_uses_the_project_selection_git_root_without_rediscovery(
     invocation = [os.fspath(executable), "exec", "-"]
     prepared_with: list[tuple[Path, Path]] = []
 
-    class MatchedPolicy:
-        def __init__(self) -> None:
-            metadata = executable.stat()
-            self.canonical_path = executable
-            self.sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
-            self.filesystem_identity = (metadata.st_dev, metadata.st_ino)
+    policy = install_compatibility_fixture(executable, monkeypatch)
 
-        def prepare_run(
-            self, project_boundary: Path, enclosing_git_root: Path,
-        ) -> list[str]:
-            prepared_with.append((project_boundary, enclosing_git_root))
-            return invocation
+    def prepare_run(
+        self: _Codex01551Policy,
+        project_boundary: Path,
+        enclosing_git_root: Path,
+    ) -> list[str]:
+        assert self is policy
+        prepared_with.append((project_boundary, enclosing_git_root))
+        return invocation
 
-    policy = MatchedPolicy()
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
+    monkeypatch.setattr(_Codex01551Policy, "prepare_run", prepare_run)
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
         "Process", (), {"wait": lambda self: 17},
@@ -606,22 +603,19 @@ def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
     invocation = [os.fspath(executable), "exec", "-"]
     calls: list[tuple[Path, Path]] = []
 
-    class MatchedPolicy:
-        def __init__(self) -> None:
-            metadata = executable.stat()
-            self.canonical_path = executable
-            self.sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
-            self.filesystem_identity = (metadata.st_dev, metadata.st_ino)
+    policy = install_compatibility_fixture(executable, monkeypatch)
 
-        def prepare_run(
-            self, project_boundary: Path, enclosing_git_root: Path,
-        ) -> list[str]:
-            calls.append((project_boundary, enclosing_git_root))
-            return invocation
+    def prepare_run(
+        self: _Codex01551Policy,
+        project_boundary: Path,
+        enclosing_git_root: Path,
+    ) -> list[str]:
+        assert self is policy
+        calls.append((project_boundary, enclosing_git_root))
+        return invocation
 
-    policy = MatchedPolicy()
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
+    monkeypatch.setattr(_Codex01551Policy, "prepare_run", prepare_run)
     monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
     monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
         "Process", (), {"wait": lambda self: 17},

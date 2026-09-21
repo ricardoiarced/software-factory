@@ -753,6 +753,15 @@ def _match_compatibility(executable: Path) -> _Codex01551Policy:
     )
 
 
+def _changed_artifact_failure(policy: _Codex01551Policy) -> RunAdmissionError:
+    executable = policy.canonical_path
+    return RunAdmissionError(
+        f"Codex executable {_quoted_absolute_path(executable)} changed "
+        "during Run Admission; refusing to evaluate its replacement",
+        executable=executable,
+    )
+
+
 def _recheck_artifact(policy: _Codex01551Policy) -> None:
     """Refuse a changed artifact without executing it as a new candidate."""
 
@@ -762,25 +771,20 @@ def _recheck_artifact(policy: _Codex01551Policy) -> None:
             metadata = os.fstat(artifact.fileno())
             filesystem_identity = (metadata.st_dev, metadata.st_ino)
             if filesystem_identity != policy.filesystem_identity:
-                raise RunAdmissionError(
-                    f"Codex executable {_quoted_absolute_path(executable)} changed "
-                    "during Run Admission; refusing to evaluate its replacement",
-                    executable=executable,
-                )
+                raise _changed_artifact_failure(policy)
             digest = hashlib.file_digest(artifact, "sha256").hexdigest()
-        current = executable.stat()
+        path_metadata_after_hash = executable.stat()
     except OSError as error:
         raise _inspection_failure(executable, error) from error
 
     if (
         digest != policy.sha256
-        or (current.st_dev, current.st_ino) != filesystem_identity
+        or (
+            path_metadata_after_hash.st_dev,
+            path_metadata_after_hash.st_ino,
+        ) != filesystem_identity
     ):
-        raise RunAdmissionError(
-            f"Codex executable {_quoted_absolute_path(executable)} changed "
-            "during Run Admission; refusing to evaluate its replacement",
-            executable=executable,
-        )
+        raise _changed_artifact_failure(policy)
 
 
 def run(project: Project, run_request_spool: BinaryIO) -> int:

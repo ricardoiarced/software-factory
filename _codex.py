@@ -590,19 +590,14 @@ printf '%s\n' 'factory-host-admission-probe-v1'
 # fail-closed until an artifact has passed the real-host certification suite.
 _COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = ()
 _VERSION_OUTPUT = re.compile(rb"codex ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
+# Keep this to the foreground-group contract. Synchronous faults and
+# process-local timer/resource signals retain Factory's native dispositions.
 _CHILD_RUNTIME_SIGNALS = (
     signal.SIGHUP,
     signal.SIGINT,
     signal.SIGQUIT,
     signal.SIGTERM,
-    signal.SIGALRM,
     signal.SIGUSR1,
-    signal.SIGUSR2,
-    signal.SIGPIPE,
-    signal.SIGPROF,
-    signal.SIGVTALRM,
-    signal.SIGXCPU,
-    signal.SIGXFSZ,
 )
 
 
@@ -827,28 +822,28 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
         Callable[[int, FrameType | None], Any] | int | None,
     ] = {}
     try:
+        process = subprocess.Popen(
+            invocation,
+            cwd=project.boundary,
+            stdin=run_request_spool,
+            stdout=None,
+            stderr=None,
+            env=None,
+            shell=False,
+            start_new_session=False,
+        )
+    except OSError as error:
+        raise RunAdmissionError(
+            f"Codex executable {_quoted_absolute_path(executable)} could not start: "
+            f"{error.strerror or error}",
+            executable=executable,
+        ) from error
+    try:
         for runtime_signal in _CHILD_RUNTIME_SIGNALS:
             previous_handler = signal.getsignal(runtime_signal)
             previous_handlers[runtime_signal] = previous_handler
             if previous_handler != signal.SIG_IGN:
                 signal.signal(runtime_signal, _defer_runtime_signal_to_child)
-        try:
-            process = subprocess.Popen(
-                invocation,
-                cwd=project.boundary,
-                stdin=run_request_spool,
-                stdout=None,
-                stderr=None,
-                env=None,
-                shell=False,
-                start_new_session=False,
-            )
-        except OSError as error:
-            raise RunAdmissionError(
-                f"Codex executable {_quoted_absolute_path(executable)} could not start: "
-                f"{error.strerror or error}",
-                executable=executable,
-            ) from error
         status = process.wait()
     finally:
         for handled_signal, handler in previous_handlers.items():

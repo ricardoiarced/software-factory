@@ -477,10 +477,17 @@ def prepare_probe_run(
     return Project(boundary, boundary), probe_gate, launch_gate
 
 
-def fork_runtime_run(project: Project, tmp_path: Path) -> int:
+def fork_runtime_run(
+    project: Project,
+    tmp_path: Path,
+    *,
+    default_signal: signal.Signals | None = None,
+) -> int:
     factory_pid = os.fork()
     if factory_pid == 0:
         os.setpgid(0, 0)
+        if default_signal is not None:
+            signal.signal(default_signal, signal.SIG_DFL)
         try:
             spool_path = tmp_path / f"run-request-{os.getpid()}"
             spool_path.write_bytes(b"# Run Request\n")
@@ -677,6 +684,70 @@ def test_run_creates_one_native_foreground_codex_process(
         "shell": False,
         "start_new_session": False,
     }, False, 0)]
+
+
+def test_run_does_not_swallow_a_signal_during_process_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    install_launch_fixture(executable, monkeypatch)
+
+    class Process:
+        def wait(self) -> int:
+            return 0
+
+    def launch(
+        command: list[str], **_kwargs: object,
+    ) -> SuccessfulProbeProcess | Process:
+        if command[1] == "sandbox":
+            return SuccessfulProbeProcess()
+        os.kill(os.getpid(), signal.SIGTERM)
+        return Process()
+
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    factory_pid = fork_runtime_run(
+        Project(boundary, boundary), tmp_path, default_signal=signal.SIGTERM,
+    )
+    _, status = os.waitpid(factory_pid, 0)
+
+    assert os.WIFSIGNALED(status)
+    assert os.WTERMSIG(status) == signal.SIGTERM
+
+
+def test_run_does_not_defer_a_factory_local_timer_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    boundary = tmp_path / "project"
+    boundary.mkdir()
+    install_launch_fixture(executable, monkeypatch)
+
+    class Process:
+        def wait(self) -> int:
+            os.kill(os.getpid(), signal.SIGALRM)
+            return 0
+
+    def launch(
+        command: list[str], **_kwargs: object,
+    ) -> SuccessfulProbeProcess | Process:
+        if command[1] == "sandbox":
+            return SuccessfulProbeProcess()
+        return Process()
+
+    monkeypatch.setattr("_codex.subprocess.Popen", launch)
+
+    factory_pid = fork_runtime_run(
+        Project(boundary, boundary), tmp_path, default_signal=signal.SIGALRM,
+    )
+    _, status = os.waitpid(factory_pid, 0)
+
+    assert os.WIFSIGNALED(status)
+    assert os.WTERMSIG(status) == signal.SIGALRM
 
 
 @pytest.mark.parametrize("runtime_signal", [signal.SIGTERM, signal.SIGKILL])

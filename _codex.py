@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import errno
 import hashlib
+from importlib.metadata import version
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,25 @@ class RunAdmissionError(Exception):
     def __init__(self, message: str, *, executable: Path | None = None) -> None:
         super().__init__(message)
         self.executable = executable
+
+
+def _cache_directory() -> Path:
+    from platformdirs import user_cache_path
+
+    return user_cache_path("factory", appauthor=False)
+
+
+def _factory_version() -> str:
+    return version("software-factory")
+
+
+def _host_identity() -> dict[str, str]:
+    """Return the OS/kernel facts whose change invalidates probe evidence."""
+
+    return {
+        "release": platform.release(),
+        "version": platform.version(),
+    }
 
 
 @dataclass(frozen=True)
@@ -359,6 +379,62 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             executable=self.canonical_path,
         )
 
+    def _host_probe_cache_payload(self) -> bytes:
+        document = {
+            "schema": 1,
+            "success": True,
+            "factory_version": _factory_version(),
+            "codex_version": self.version,
+            "executable_sha256": self.sha256,
+            "operating_system": self.operating_system,
+            "architecture": self.architecture,
+            "host_identity": _host_identity(),
+        }
+        return (
+            json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode("ascii")
+
+    def _host_probe_cache_path(self, payload: bytes) -> Path:
+        key = hashlib.sha256(payload).hexdigest()
+        return _cache_directory() / "host-admission-probe" / f"{key}.json"
+
+    def _has_cached_host_probe_success(self, payload: bytes) -> bool:
+        try:
+            return self._host_probe_cache_path(payload).read_bytes() == payload
+        except OSError:
+            return False
+
+    def _store_host_probe_success(self, payload: bytes) -> None:
+        path = self._host_probe_cache_path(payload)
+        temporary: Path | None = None
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=path.parent,
+                prefix=".host-admission-probe-", delete=False,
+            ) as target:
+                temporary = Path(target.name)
+                os.fchmod(target.fileno(), 0o600)
+                target.write(payload)
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(temporary, path)
+            temporary = None
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            pass
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     def _run_host_admission_probe(self) -> None:
         try:
             temporary_root = Path(tempfile.gettempdir()).resolve()
@@ -501,7 +577,10 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         """Apply all certified checks and build this policy's launch invocation."""
 
         self._inspect_strict_configuration(project_boundary, enclosing_git_root)
-        self._run_host_admission_probe()
+        cache_payload = self._host_probe_cache_payload()
+        if not self._has_cached_host_probe_success(cache_payload):
+            self._run_host_admission_probe()
+            self._store_host_probe_success(cache_payload)
         return self._invocation(project_boundary, enclosing_git_root)
 
 

@@ -241,12 +241,18 @@ def _mutate_registry(
     committed = False
     try:
         try:
-            descriptor = os.open(
-                _LOCK,
-                os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=directory,
-            )
+            for attempt in range(3):
+                try:
+                    descriptor = os.open(
+                        _LOCK,
+                        os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=directory,
+                    )
+                    break
+                except FileNotFoundError:
+                    if attempt == 2:
+                        raise
             with os.fdopen(descriptor, "rb+") as lock:
                 if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
                     raise RegistryError("Project Registry lock is not a regular file")

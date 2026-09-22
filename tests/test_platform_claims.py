@@ -1,0 +1,135 @@
+"""Enforce that release-facing support claims stay inside the Compatibility Set.
+
+A Factory release may advertise support only for exact Codex tuples that
+completed real-host certification and that production Run Admission embeds.
+These tests keep the advertised claims and the embedded set from drifting
+apart in either direction.
+"""
+
+from collections.abc import Mapping
+import json
+from pathlib import Path
+import re
+
+import _codex
+from certification.test_exact_tuple import EVIDENCE_PROPERTIES, PRODUCTION_CHECKS
+
+
+PROJECT = Path(__file__).resolve().parents[1]
+SUPPORT_DOCUMENT = PROJECT / "SUPPORT.md"
+RESULTS = PROJECT / "certification" / "results"
+REPORT_LINE = re.compile(r"FACTORY_REAL_HOST_CERTIFICATION=(\{.*\})")
+TUPLE_FIELDS = ("codex_version", "official_sha256", "operating_system", "architecture")
+
+
+def _advertised_tuples() -> list[dict[str, str]]:
+    """Read the exact tuples SUPPORT.md advertises as supported."""
+
+    document = SUPPORT_DOCUMENT.read_text(encoding="utf-8")
+    section = re.search(
+        r"^## Advertised tuples\s*$\n(.*?)(?=^## |\Z)", document,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert section is not None, (
+        "SUPPORT.md must state its exact support claims under '## Advertised tuples'"
+    )
+    fenced = re.search(r"```json\s*\n(.*?)```", section.group(1), re.DOTALL)
+    assert fenced is not None, "the advertised tuples must be one JSON document"
+    claims = json.loads(fenced.group(1))
+    assert isinstance(claims, list), "the advertised tuples must be a JSON list"
+    for claim in claims:
+        assert isinstance(claim, dict), "each advertised tuple must be a JSON object"
+        assert set(claim) == set(TUPLE_FIELDS), (
+            f"each advertised tuple needs exactly {sorted(TUPLE_FIELDS)}"
+        )
+    return claims
+
+
+def _compatibility_claims() -> list[dict[str, str]]:
+    """Read the exact tuples production Run Admission embeds."""
+
+    return [
+        {
+            "codex_version": policy.version,
+            "official_sha256": policy.sha256,
+            "operating_system": policy.operating_system,
+            "architecture": policy.architecture,
+        }
+        for policy in _codex._COMPATIBILITY_SET
+    ]
+
+
+def _reported_tuple(report: Mapping[str, object]) -> tuple[object, ...]:
+    """Reduce one report or claim to its exact platform tuple."""
+
+    return tuple(report[field] for field in TUPLE_FIELDS)
+
+
+def _recorded_reports() -> list[dict[str, object]]:
+    """Read every emitted certification report under certification/results."""
+
+    reports = []
+    for record in sorted(RESULTS.glob("*.md")):
+        for match in REPORT_LINE.finditer(record.read_text(encoding="utf-8")):
+            reports.append(json.loads(match.group(1)))
+    return reports
+
+
+def _completed_certification(report: dict[str, object]) -> bool:
+    """Accept only a complete successful report from the real-host gate."""
+
+    evidence = report.get("evidence")
+    checks = report.get("production_checks")
+    return (
+        report.get("schema") == 1
+        and report.get("result") == "certified"
+        and "failure" not in report
+        and report.get("host_reported_version") == report.get("codex_version")
+        and isinstance(report.get("canonical_executable"), str)
+        and isinstance(report.get("filesystem_identity"), dict)
+        and isinstance(report.get("selection_commit"), str)
+        and isinstance(evidence, dict)
+        and set(evidence) == set(EVIDENCE_PROPERTIES)
+        and all(status == "established" for status in evidence.values())
+        and isinstance(checks, dict)
+        and set(checks) == set(PRODUCTION_CHECKS)
+        and all(status == "established" for status in checks.values())
+    )
+
+
+def test_support_document_advertises_exactly_the_embedded_compatibility_set() -> None:
+    """A support claim without an embedded policy overstates certification."""
+
+    assert _advertised_tuples() == _compatibility_claims()
+
+
+def test_every_embedded_tuple_has_a_certified_real_host_record() -> None:
+    """No tuple enters the embedded set without recorded certification evidence."""
+
+    certified = tuple(
+        _reported_tuple(report)
+        for report in _recorded_reports()
+        if _completed_certification(report)
+    )
+    for claim in _compatibility_claims():
+        assert _reported_tuple(claim) in certified, claim
+
+
+def test_incomplete_certification_cannot_authorize_a_support_claim() -> None:
+    report: dict[str, object] = {
+        "schema": 1,
+        "result": "certified",
+        "codex_version": "0.155.1",
+        "host_reported_version": "0.155.1",
+        "canonical_executable": "/bin/codex",
+        "filesystem_identity": {"device": 1, "inode": 2},
+        "selection_commit": "a" * 40,
+        "evidence": {name: "not-established" for name in EVIDENCE_PROPERTIES},
+        "production_checks": {name: "not-established" for name in PRODUCTION_CHECKS},
+    }
+
+    assert not _completed_certification(report)
+    report["evidence"] = {name: "established" for name in EVIDENCE_PROPERTIES}
+    assert not _completed_certification(report)
+    report["production_checks"] = {name: "established" for name in PRODUCTION_CHECKS}
+    assert _completed_certification(report)

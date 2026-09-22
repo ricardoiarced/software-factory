@@ -1536,17 +1536,26 @@ def test_run_refuses_a_timed_out_host_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(
-        tmp_path, monkeypatch, host_probe_timeout_seconds=0.01,
+        tmp_path, monkeypatch, host_probe_timeout_seconds=0.5,
     )
+    actual_run = subprocess.run
+
+    def run_setup(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        # The short limit belongs to the sandbox probe, not the inspectors or
+        # network control that run before it.
+        kwargs["timeout"] = 10
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr("_codex.subprocess.run", run_setup)
     descendant_survived = tmp_path / "probe-descendant-survived"
-    monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SLEEP", "0.1")
+    monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SLEEP", "1.5")
     monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SURVIVED", str(descendant_survived))
     started = time.monotonic()
     with pytest.raises(RunAdmissionError, match="Host Admission Probe failed: timed out"):
         run(boundary, io.BytesIO())
 
-    assert time.monotonic() - started < 0.5
-    time.sleep(0.2)
+    assert time.monotonic() - started < 3
+    time.sleep(1.6)
     assert probe_gate.is_file()
     assert not launch_gate.exists()
     assert not descendant_survived.exists()
@@ -2309,3 +2318,24 @@ def test_factory_reports_an_admission_failure_without_a_traceback(
         'factory: error: Codex executable "codex" was not found on PATH; '
         "install Codex or add it to PATH.\n"
     )
+
+
+def test_an_empty_compatibility_set_refuses_every_run_before_launching_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Uncertified releases stay installable while refusing every Run."""
+
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
+
+    request = b"# Run Request\n\n## Instruction\n\nDiagnose this failure\n"
+    spool = io.BytesIO(request)
+    with pytest.raises(RunAdmissionError) as raised:
+        run(Project(tmp_path, tmp_path), spool)
+
+    assert str(raised.value) == "Codex Compatibility Set is empty; no Run is supported"
+    assert raised.value.executable == executable
+    assert spool.read() == request

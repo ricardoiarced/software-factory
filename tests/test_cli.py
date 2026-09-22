@@ -1,11 +1,17 @@
 """Smoke test the published artifact through its installed console script."""
 
+from collections.abc import Callable
 from email.parser import Parser
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import venv
 from zipfile import ZipFile
+
+import platformdirs
+import pytest
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -71,3 +77,98 @@ def test_built_wheel_installs_and_reports_distribution_version(tmp_path):
     assert malformed.stdout == b""
     assert malformed.stderr.startswith(b"factory: error: ")
     assert b"Try 'factory --help' for more information.\n" in malformed.stderr
+
+
+@pytest.fixture(scope="module")
+def installed_factory(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    """Build the wheel once and serve the installed entry point from a venv.
+
+    The installed ``platformdirs`` dependency is served from the host through
+    ``PYTHONPATH`` so the registry works without network access; dependency
+    isolation itself stays with the strict smoke test above.
+    """
+
+    artifacts = tmp_path_factory.mktemp("dist")
+    subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(artifacts), str(PROJECT)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (wheel,) = artifacts.glob("*.whl")
+    environment = tmp_path_factory.mktemp("venv")
+    venv.EnvBuilder(with_pip=True).create(environment)
+    scripts = environment / ("Scripts" if sys.platform == "win32" else "bin")
+    subprocess.run(
+        [str(scripts / "python"), "-m", "pip", "install", "--no-deps", str(wheel)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    factory_script = str(scripts / "factory")
+    platformdirs_package = Path(platformdirs.__file__).resolve().parent.parent
+    working_directory = tmp_path_factory.mktemp("cwd")
+
+    def invoke(
+        *arguments: str, env: dict[str, str], cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        path_entries = [str(platformdirs_package)]
+        if env.get("PYTHONPATH"):
+            path_entries.append(env["PYTHONPATH"])
+        # Run away from the checkout so its modules can never shadow the
+        # installed distribution under test.
+        return subprocess.run(
+            [factory_script, *arguments],
+            capture_output=True,
+            cwd=cwd or working_directory,
+            env={**env, "PYTHONPATH": os.pathsep.join(path_entries)},
+        )
+
+    return invoke
+
+
+def test_installed_cli_serves_administration_and_fails_closed_before_codex(
+    tmp_path: Path,
+    installed_factory: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> None:
+    """An uncertified release still installs and administers, but never runs."""
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    boundary = tmp_path / "boundary"
+    boundary.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    git_binary = shutil.which("git")
+    assert git_binary is not None
+    environment = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "PATH": os.pathsep.join((
+            os.fspath(Path(git_binary).parent), os.defpath,
+        )),
+    }
+
+    added = installed_factory("project", "add", "api", str(boundary), env=environment)
+    assert added.returncode == 0
+    assert added.stdout == f'Added project "api" at "{boundary.resolve()}".\n'.encode()
+    assert added.stderr == b""
+
+    listed = installed_factory("project", "list", env=environment)
+    assert listed.returncode == 0
+    assert listed.stdout == (
+        f'NAME\tSTATUS\tPATH\n"api"\tvalid\t"{boundary.resolve()}"\n'
+    ).encode()
+    assert listed.stderr == b""
+
+    run = installed_factory(
+        "--project", "api", "Diagnose this failure", env=environment,
+    )
+    assert run.returncode == 1
+    assert run.stdout == b""
+    assert run.stderr == (
+        b'factory: error: Codex executable "codex" was not found on PATH; '
+        b"install Codex or add it to PATH.\n"
+    )

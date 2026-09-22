@@ -2309,3 +2309,24 @@ def test_factory_reports_an_admission_failure_without_a_traceback(
         'factory: error: Codex executable "codex" was not found on PATH; '
         "install Codex or add it to PATH.\n"
     )
+
+
+def test_an_empty_compatibility_set_refuses_every_run_before_launching_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Uncertified releases stay installable while refusing every Run."""
+
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.155.1")
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
+
+    request = b"# Run Request\n\n## Instruction\n\nDiagnose this failure\n"
+    spool = io.BytesIO(request)
+    with pytest.raises(RunAdmissionError) as raised:
+        run(Project(tmp_path, tmp_path), spool)
+
+    assert str(raised.value) == "Codex Compatibility Set is empty; no Run is supported"
+    assert raised.value.executable == executable
+    assert spool.read() == request

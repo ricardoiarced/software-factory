@@ -1200,3 +1200,35 @@ def test_only_exact_first_project_enters_administration(tmp_path: Path) -> None:
     assert run.returncode == escaped.returncode == 1
     assert b"Codex Compatibility Set is empty" in run.stderr
     assert b"Codex Compatibility Set is empty" in escaped.stderr
+
+
+class _BrokenStream:
+    """A stream whose every write fails like a closed descriptor."""
+
+    def write(self, _text: str) -> int:
+        raise OSError("stream is closed")
+
+
+@pytest.mark.parametrize(
+    "argv, broken_stream",
+    [
+        (["factory", "--help"], "stdout"),
+        (["factory", "--bogus"], "stderr"),
+    ],
+    ids=["help-stdout", "usage-stderr"],
+)
+def test_failed_factory_output_write_exits_one_without_a_traceback(
+    argv: list[str], broken_stream: str,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(sys, broken_stream, _BrokenStream())
+
+    assert factory.main() == 1
+    output = capsys.readouterr()
+    if broken_stream == "stdout":
+        assert output.out == ""
+        assert output.err == "factory: error: output failed.\n"
+    else:
+        assert output.out == output.err == ""
+    assert "Traceback" not in output.err

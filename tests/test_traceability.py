@@ -17,6 +17,12 @@ from certification.test_exact_tuple import EVIDENCE_PROPERTIES, PRODUCTION_CHECK
 PROJECT = Path(__file__).resolve().parents[1]
 MATRIX = PROJECT / "docs" / "traceability.md"
 ACCEPTANCE_IDS = tuple(f"AC-{number:02d}" for number in range(1, 13))
+SECTION_STATEMENT_COUNTS = (6, 3, 14, 9, 12, 9, 14, 5, 11, 4, 10)
+STATEMENT_IDS = {
+    f"S{section}.{number}"
+    for section, count in enumerate(SECTION_STATEMENT_COUNTS, start=1)
+    for number in range(1, count + 1)
+}
 
 
 def _test_functions(relative_path: Path) -> set[str]:
@@ -73,9 +79,15 @@ def _matrix_rows() -> list[tuple[str, set[str], set[str]]]:
 def test_traceability_matrix_exists_and_covers_the_final_acceptance_criteria() -> None:
     rows = _matrix_rows()
     assert rows, f"{MATRIX} must map normative statements to named tests"
-    identifiers = {identifier for identifier, _, _ in rows}
-    missing = [identifier for identifier in ACCEPTANCE_IDS if identifier not in identifiers]
-    assert not missing, f"acceptance criteria without a matrix row: {missing}"
+    identifiers = [identifier for identifier, _, _ in rows]
+    expected = STATEMENT_IDS | set(ACCEPTANCE_IDS)
+    assert len(identifiers) == len(set(identifiers)), "duplicate normative statement IDs"
+    assert set(identifiers) == expected, (
+        f"missing IDs: {sorted(expected - set(identifiers))}; "
+        f"unexpected IDs: {sorted(set(identifiers) - expected)}"
+    )
+    empty = [identifier for identifier, tests, assertions in rows if not (tests or assertions)]
+    assert not empty, f"normative statements without evidence: {empty}"
 
 
 def test_every_referenced_test_exists() -> None:

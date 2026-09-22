@@ -6,11 +6,13 @@ These tests keep the advertised claims and the embedded set from drifting
 apart in either direction.
 """
 
+from collections.abc import Mapping
 import json
 from pathlib import Path
 import re
 
 import _codex
+from certification.test_exact_tuple import EVIDENCE_PROPERTIES, PRODUCTION_CHECKS
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -57,7 +59,7 @@ def _compatibility_claims() -> list[dict[str, str]]:
     ]
 
 
-def _reported_tuple(report: dict[str, object]) -> tuple[object, ...]:
+def _reported_tuple(report: Mapping[str, object]) -> tuple[object, ...]:
     """Reduce one report or claim to its exact platform tuple."""
 
     return tuple(report[field] for field in TUPLE_FIELDS)
@@ -73,6 +75,28 @@ def _recorded_reports() -> list[dict[str, object]]:
     return reports
 
 
+def _completed_certification(report: dict[str, object]) -> bool:
+    """Accept only a complete successful report from the real-host gate."""
+
+    evidence = report.get("evidence")
+    checks = report.get("production_checks")
+    return (
+        report.get("schema") == 1
+        and report.get("result") == "certified"
+        and "failure" not in report
+        and report.get("host_reported_version") == report.get("codex_version")
+        and isinstance(report.get("canonical_executable"), str)
+        and isinstance(report.get("filesystem_identity"), dict)
+        and isinstance(report.get("selection_commit"), str)
+        and isinstance(evidence, dict)
+        and set(evidence) == set(EVIDENCE_PROPERTIES)
+        and all(status == "established" for status in evidence.values())
+        and isinstance(checks, dict)
+        and set(checks) == set(PRODUCTION_CHECKS)
+        and all(status == "established" for status in checks.values())
+    )
+
+
 def test_support_document_advertises_exactly_the_embedded_compatibility_set() -> None:
     """A support claim without an embedded policy overstates certification."""
 
@@ -85,7 +109,27 @@ def test_every_embedded_tuple_has_a_certified_real_host_record() -> None:
     certified = tuple(
         _reported_tuple(report)
         for report in _recorded_reports()
-        if report["result"] == "certified"
+        if _completed_certification(report)
     )
     for claim in _compatibility_claims():
         assert _reported_tuple(claim) in certified, claim
+
+
+def test_incomplete_certification_cannot_authorize_a_support_claim() -> None:
+    report: dict[str, object] = {
+        "schema": 1,
+        "result": "certified",
+        "codex_version": "0.155.1",
+        "host_reported_version": "0.155.1",
+        "canonical_executable": "/bin/codex",
+        "filesystem_identity": {"device": 1, "inode": 2},
+        "selection_commit": "a" * 40,
+        "evidence": {name: "not-established" for name in EVIDENCE_PROPERTIES},
+        "production_checks": {name: "not-established" for name in PRODUCTION_CHECKS},
+    }
+
+    assert not _completed_certification(report)
+    report["evidence"] = {name: "established" for name in EVIDENCE_PROPERTIES}
+    assert not _completed_certification(report)
+    report["production_checks"] = {name: "established" for name in PRODUCTION_CHECKS}
+    assert _completed_certification(report)

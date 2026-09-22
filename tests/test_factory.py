@@ -3,6 +3,7 @@
 import os
 import json
 import fcntl
+import errno
 from pathlib import Path
 import stat
 import subprocess
@@ -238,6 +239,32 @@ def test_project_add_concurrent_writers_keep_every_mapping(tmp_path: Path) -> No
     assert json.loads(registry.read_text())["projects"] == {
         f"p{index}": str(tmp_path) for index in range(8)
     }
+
+
+def test_project_add_recovers_from_transient_lock_creation_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git("init", "-q", cwd=tmp_path)
+    config = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+    actual_open = os.open
+    lock_open_attempts = 0
+
+    def transient_lock_failure(path: str, flags: int, *args: object, **kwargs: object) -> int:
+        nonlocal lock_open_attempts
+        if path == "projects.lock":
+            lock_open_attempts += 1
+            if lock_open_attempts == 1:
+                raise FileNotFoundError(errno.ENOENT, "No such file or directory", path)
+        return actual_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(project_registry.os, "open", transient_lock_failure)
+
+    assert factory.main() == 0
+    assert lock_open_attempts == 2
+    registry = config / "factory" / "projects.json"
+    assert json.loads(registry.read_text())["projects"] == {"api": str(tmp_path)}
 
 
 def test_concurrent_add_and_remove_keep_complete_registry_generations(tmp_path: Path) -> None:

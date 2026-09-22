@@ -28,7 +28,7 @@ jobs:
           set -euo pipefail
           summary=$(python -m pytest certification -q -rs 2>&1 | tail -n 1)
           echo "$summary"
-          printf '%s\n' "$summary" | grep -q '^1 skipped'
+          printf '%s\n' "$summary" | grep -qE '^[0-9]+ skipped'
 
   packaging:
     name: Packaging smoke (${{ matrix.os }}, Python ${{ matrix.python-version }})

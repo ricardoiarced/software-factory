@@ -917,6 +917,10 @@ def test_explicit_path_handles_newline_in_git_worktree_path(tmp_path: Path) -> N
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem byte paths")
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Darwin filesystems reject non-UTF-8 byte paths, so the fixture cannot exist",
+)
 def test_explicit_path_handles_non_utf8_git_worktree_path(tmp_path: Path) -> None:
     project = tmp_path / os.fsdecode(b"project-\xff")
     project.mkdir()

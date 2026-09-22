@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import select
 import shutil
 import signal
 import subprocess
@@ -883,6 +884,7 @@ def test_run_preserves_child_tty_identity(
     saved_stdout = os.dup(1)
     saved_stderr = os.dup(2)
 
+    output = b""
     try:
         os.dup2(slave, 1)
         os.dup2(slave, 2)
@@ -893,19 +895,23 @@ def test_run_preserves_child_tty_identity(
         os.dup2(saved_stderr, 2)
         os.close(saved_stdout)
         os.close(saved_stderr)
-        os.close(slave)
-
-    output = b""
-    while True:
-        try:
-            chunk = os.read(master, 4096)
-        except OSError as error:
-            if error.errno == errno.EIO:
+        # Drain the master while the slave stays open: BSD ptys discard the
+        # buffered output when the last slave descriptor closes, so the
+        # queued output must be collected before that teardown.
+        while True:
+            readable, _, _ = select.select((master,), (), (), 1.0)
+            if not readable:
                 break
-            raise
-        if not chunk:
-            break
-        output += chunk
+            try:
+                chunk = os.read(master, 4096)
+            except OSError as error:
+                if error.errno == errno.EIO:
+                    break
+                raise
+            if not chunk:
+                break
+            output += chunk
+        os.close(slave)
     os.close(master)
 
     assert result == 0

@@ -1,0 +1,116 @@
+name: Release verification
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  deterministic:
+    name: Deterministic suite (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          check-latest: true
+      - name: Install the declared runtime dependency and the test tooling
+        run: python -m pip install platformdirs pytest build
+      - name: Run the deterministic suite against the checkout
+        run: python -m pytest -q
+      - name: Keep real-host certification explicitly selected
+        run: |
+          set -euo pipefail
+          summary=$(python -m pytest certification -q -rs 2>&1 | tail -n 1)
+          echo "$summary"
+          printf '%s\n' "$summary" | grep -qE '^[0-9]+ skipped'
+
+  packaging:
+    name: Packaging smoke (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          check-latest: true
+      - name: Build the wheel and source distribution
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Verify the built artifacts
+        run: |
+          set -euo pipefail
+          test "$(find dist -name '*.tar.gz' | wc -l)" -eq 1
+          test "$(find dist -name '*.whl' | wc -l)" -eq 1
+          wheel=$(find dist -name '*.whl')
+          case "$wheel" in
+            *-py3-none-any.whl) ;;
+            *)
+              echo "refusing a platform-specific wheel: $wheel"
+              exit 1
+              ;;
+          esac
+          echo "wheel=$wheel" >> "$GITHUB_ENV"
+      - name: Install the wheel in isolation
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/install-check"
+          "$RUNNER_TEMP/install-check/bin/python" -m pip install "$wheel"
+      - name: Smoke-test the installed console entry point
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          factory="$RUNNER_TEMP/install-check/bin/factory"
+          version=$(basename "$wheel" | cut -d - -f 2)
+          reported=$("$factory" --version)
+          echo "$reported"
+          test "$reported" = "factory $version"
+          help=$("$factory" --help)
+          case "$help" in
+            Usage:*) ;;
+            *)
+              echo "unexpected help output from the installed entry point"
+              exit 1
+              ;;
+          esac
+          echo "the isolated install serves factory $version"
+
+  release-gate:
+    needs: [deterministic, packaging]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate the release gate
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "Required results: $RESULTS" >> "$GITHUB_STEP_SUMMARY"
+          for result in $RESULTS; do
+            if [[ "$result" != "success" ]]; then
+              echo "a required verification did not pass: $result" >> "$GITHUB_STEP_SUMMARY"
+              gate=failed
+            fi
+          done
+          if [[ "${gate:-}" == "failed" ]]; then
+            exit 1
+          fi
+          cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          The gate covers deterministic behavior and packaging across Linux and
+          macOS on Python 3.11 and the newest stable Python. Passing it records
+          no support decision: the universal wheel is never evidence of Project
+          Data Isolation support. Support decisions are recorded only under
+          certification/results/ after explicitly selected real-host
+          certification.
+          EOF

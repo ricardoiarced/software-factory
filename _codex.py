@@ -589,7 +589,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
 # Certification adds complete exact policies here. Keeping production empty is
 # fail-closed until an artifact has passed the real-host certification suite.
 _COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = ()
-_VERSION_OUTPUT = re.compile(rb"codex ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
+_VERSION_OUTPUT = re.compile(rb"codex-cli ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
 # Keep this to the foreground-group contract. Synchronous faults and
 # process-local timer/resource signals retain Factory's native dispositions.
 _CHILD_RUNTIME_SIGNALS = (

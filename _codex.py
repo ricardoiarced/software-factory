@@ -804,8 +804,9 @@ def _recheck_artifact(policy: _Codex01551Policy) -> None:
         raise _changed_artifact_failure(policy)
 
 
-def run(project: Project, run_request_spool: BinaryIO) -> int:
-    """Refuse every Run until a Codex artifact and host tuple is certified."""
+def _admit_run(project: Project) -> tuple[_Codex01551Policy, list[str]]:
+    """Establish the complete production evidence and strict invocation."""
+
     executable = _resolve_executable()
     if not _COMPATIBILITY_SET:
         raise RunAdmissionError(
@@ -817,6 +818,14 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
         project.boundary, project.enclosing_git_root,
     )
     _recheck_artifact(policy)
+    return policy, invocation
+
+
+def run(project: Project, run_request_spool: BinaryIO) -> int:
+    """Refuse every Run until a Codex artifact and host tuple is certified."""
+
+    policy, invocation = _admit_run(project)
+    executable = policy.canonical_path
     previous_handlers: dict[
         signal.Signals,
         Callable[[int, FrameType | None], Any] | int | None,

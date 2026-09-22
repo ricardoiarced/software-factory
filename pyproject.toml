@@ -13,3 +13,9 @@ factory = "factory:main"
 
 [tool.setuptools]
 py-modules = ["factory", "_codex", "_project", "_project_guidance", "_project_registry"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "real_host_certification: exercises a selected real Codex artifact and host",
+]

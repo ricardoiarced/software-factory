@@ -2,13 +2,13 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Literal, NotRequired, TypedDict
 
 import pytest
 
 import _codex
 from _project import Project
-from conftest import CertificationSelection
+from certification._selection import CertificationSelection
 
 
 pytestmark = pytest.mark.real_host_certification
@@ -30,27 +30,52 @@ PRODUCTION_CHECKS = (
     "permission-profile",
     "host-admission-probe",
 )
+EvidenceStatus = Literal["not-established", "established"]
 
 
-def _report(
+class FilesystemIdentity(TypedDict):
+    device: int
+    inode: int
+
+
+class CertificationReport(TypedDict):
+    schema: int
+    result: Literal["rejected", "certified"]
+    factory_version: str
+    codex_version: str
+    host_reported_version: str | None
+    official_sha256: str
+    official_source: str
+    operating_system: str
+    architecture: str
+    host_identity: dict[str, str]
+    selection_manifest: str
+    selection_commit: str
+    canonical_executable: str | None
+    filesystem_identity: FilesystemIdentity | None
+    evidence: dict[str, EvidenceStatus]
+    production_checks: dict[str, EvidenceStatus]
+    failure: NotRequired[str]
+
+
+def _rejected_report(
     selection: CertificationSelection,
-    executable: Path,
-    filesystem_identity: tuple[int, int],
-) -> dict[str, Any]:
+) -> CertificationReport:
     return {
         "schema": 1,
         "result": "rejected",
         "factory_version": _codex._factory_version(),
         "codex_version": selection.version,
+        "host_reported_version": None,
         "official_sha256": selection.official_sha256,
+        "official_source": selection.official_source,
         "operating_system": selection.operating_system,
         "architecture": selection.architecture,
         "host_identity": _codex._host_identity(),
-        "canonical_executable": str(executable),
-        "filesystem_identity": {
-            "device": filesystem_identity[0],
-            "inode": filesystem_identity[1],
-        },
+        "selection_manifest": str(selection.manifest),
+        "selection_commit": selection.selection_commit,
+        "canonical_executable": None,
+        "filesystem_identity": None,
         "evidence": {
             name: "not-established" for name in EVIDENCE_PROPERTIES
         },
@@ -60,6 +85,12 @@ def _report(
     }
 
 
+def _report_line(report: CertificationReport) -> str:
+    return "FACTORY_REAL_HOST_CERTIFICATION=" + json.dumps(
+        report, sort_keys=True, separators=(",", ":"),
+    )
+
+
 def test_selected_artifact_and_host_pass_production_run_admission(
     certification_selection: CertificationSelection,
     tmp_path: Path,
@@ -67,20 +98,24 @@ def test_selected_artifact_and_host_pass_production_run_admission(
 ) -> None:
     """Certify only evidence established by the complete production path."""
 
-    executable = _codex._resolve_executable()
-    _, filesystem_identity = _codex._artifact_identity(executable)
-    report = _report(
-        certification_selection, executable, filesystem_identity,
-    )
-    policy = _codex._Codex01551Policy(
-        sha256=certification_selection.official_sha256,
-        operating_system=certification_selection.operating_system,
-        architecture=certification_selection.architecture,
-        canonical_path=executable,
-        filesystem_identity=filesystem_identity,
-    )
-
+    report = _rejected_report(certification_selection)
+    project_root = Path(__file__).resolve().parent.parent
     try:
+        executable = _codex._resolve_executable()
+        report["canonical_executable"] = str(executable)
+        _, filesystem_identity = _codex._artifact_identity(executable)
+        report["filesystem_identity"] = {
+            "device": filesystem_identity[0],
+            "inode": filesystem_identity[1],
+        }
+        report["host_reported_version"] = _codex._reported_version(executable)
+        policy = _codex._Codex01551Policy(
+            sha256=certification_selection.official_sha256,
+            operating_system=certification_selection.operating_system,
+            architecture=certification_selection.architecture,
+            canonical_path=executable,
+            filesystem_identity=filesystem_identity,
+        )
         if certification_selection.version != policy.version:
             raise _codex.RunAdmissionError(
                 f"selected Codex version {certification_selection.version!r} "
@@ -91,12 +126,7 @@ def test_selected_artifact_and_host_pass_production_run_admission(
         monkeypatch.setattr(
             _codex, "_cache_directory", lambda: tmp_path / "fresh-probe-cache",
         )
-        admitted_policy, _ = _codex._admit_run(
-            Project(
-                Path(__file__).resolve().parent.parent,
-                Path(__file__).resolve().parent.parent,
-            ),
-        )
+        admitted_policy, _ = _codex._admit_run(Project(project_root, project_root))
         if admitted_policy is not policy:
             raise _codex.RunAdmissionError(
                 "production admission returned a different policy",
@@ -104,10 +134,7 @@ def test_selected_artifact_and_host_pass_production_run_admission(
             )
     except _codex.RunAdmissionError as error:
         report["failure"] = str(error)
-        pytest.fail(
-            "FACTORY_REAL_HOST_CERTIFICATION="
-            + json.dumps(report, sort_keys=True, separators=(",", ":")),
-        )
+        pytest.fail(_report_line(report))
 
     report["result"] = "certified"
     report["evidence"] = {
@@ -116,7 +143,4 @@ def test_selected_artifact_and_host_pass_production_run_admission(
     report["production_checks"] = {
         name: "established" for name in PRODUCTION_CHECKS
     }
-    print(
-        "FACTORY_REAL_HOST_CERTIFICATION="
-        + json.dumps(report, sort_keys=True, separators=(",", ":")),
-    )
+    print(_report_line(report))

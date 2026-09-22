@@ -54,3 +54,8 @@ the certification file is named directly, it skips unless
 `--real-host-certification` is present. A successful result is evidence for a
 separate support decision; only that reviewed decision may add the exact tuple
 to Factory's production Compatibility Set.
+
+Each certification run — certified or rejected — gets one recorded decision
+under `certification/results/`, naming the candidate manifest, the exact
+failure or established evidence, and the decision's exact-tuple scope. A
+named candidate without a recorded decision fails the deterministic suite.

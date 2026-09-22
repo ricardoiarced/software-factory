@@ -6,7 +6,11 @@ import subprocess
 
 import pytest
 
+import _codex
 from certification._selection import load_committed_selection, SelectionError
+
+
+PROJECT = Path(__file__).resolve().parents[1]
 
 
 def make_candidate_repository(tmp_path: Path) -> Path:
@@ -76,3 +80,23 @@ def test_uncommitted_digest_cannot_select_an_executable_for_certification(
         SelectionError, match="must exactly match a file committed at HEAD",
     ):
         load_committed_selection(tmp_path, candidate)
+
+
+def test_rejected_tuple_leaves_the_production_compatibility_set_empty() -> None:
+    assert _codex._COMPATIBILITY_SET == ()
+
+
+def test_every_named_candidate_has_a_recorded_support_decision() -> None:
+    results = PROJECT / "certification" / "results"
+    records = [
+        path.read_text(encoding="utf-8") for path in results.glob("*.md")
+    ]
+    for manifest in sorted(
+        (PROJECT / "certification" / "candidates").glob("*.json"),
+    ):
+        path = f"certification/candidates/{manifest.name}"
+        decisions = [
+            record for record in records
+            if path in record and '"result":"' in record
+        ]
+        assert decisions, path

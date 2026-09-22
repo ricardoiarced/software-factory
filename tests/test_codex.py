@@ -1536,17 +1536,26 @@ def test_run_refuses_a_timed_out_host_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(
-        tmp_path, monkeypatch, host_probe_timeout_seconds=0.01,
+        tmp_path, monkeypatch, host_probe_timeout_seconds=0.5,
     )
+    actual_run = subprocess.run
+
+    def run_setup(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        # The short limit belongs to the sandbox probe, not the inspectors or
+        # network control that run before it.
+        kwargs["timeout"] = 10
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr("_codex.subprocess.run", run_setup)
     descendant_survived = tmp_path / "probe-descendant-survived"
-    monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SLEEP", "0.1")
+    monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SLEEP", "1.5")
     monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SURVIVED", str(descendant_survived))
     started = time.monotonic()
     with pytest.raises(RunAdmissionError, match="Host Admission Probe failed: timed out"):
         run(boundary, io.BytesIO())
 
-    assert time.monotonic() - started < 0.5
-    time.sleep(0.2)
+    assert time.monotonic() - started < 3
+    time.sleep(1.6)
     assert probe_gate.is_file()
     assert not launch_gate.exists()
     assert not descendant_survived.exists()

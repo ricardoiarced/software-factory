@@ -57,6 +57,10 @@ _Avoid_: Best-effort isolation, sandbox fallback
 The exact Codex executable artifacts and platform combinations certified by a Factory release to enforce Project Data Isolation.
 _Avoid_: Compatibility range, minimum Codex version
 
+**Claude Compatibility Set**:
+The exact Claude Code executable artifacts and platform combinations certified by a Factory release to enforce Project Data Isolation.
+_Avoid_: Compatibility range, minimum Claude Code version
+
 **Run Admission**:
 The fail-closed checks that establish a Run can use a member of the selected Harness's compatibility set and enforce the required isolation before Factory submits the Run Request.
 _Avoid_: Compatibility mode

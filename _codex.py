@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from typing import BinaryIO, ClassVar
 
-from _harness import PreparedRun, RunAdmissionError, launch
+from _harness import PreparedRun, RunAdmissionError, _quoted_absolute_path, launch
 from _project import Project
 
 
@@ -596,10 +596,6 @@ _COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = (
     ),
 )
 _VERSION_OUTPUT = re.compile(rb"codex-cli ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
-
-
-def _quoted_absolute_path(path: Path) -> str:
-    return json.dumps(str(path.absolute()), ensure_ascii=False)
 
 
 def _inspection_failure(path: Path, error: OSError) -> RunAdmissionError:

@@ -133,6 +133,48 @@ def test_codex_newest_stable_refuses_a_publisher_without_a_stable_release(
         newest_stable_codex()
 
 
+def test_publisher_http_error_statuses_are_lookup_failures(
+    publisher_responses: PublisherResponses,
+) -> None:
+    publisher_responses.install({
+        CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
+        CODEX_NPM_DIST_TAGS: (404, b"not found"),
+    })
+    with pytest.raises(RunAdmissionError) as refused:
+        newest_stable_codex()
+    message = str(refused.value)
+    assert "could not reach the Codex publisher" in message
+    assert "HTTP 404" in message
+
+    publisher_responses.calls.clear()
+    publisher_responses.install({
+        CODEX_GITHUB_RELEASES: (410, b"gone"),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+    })
+    with pytest.raises(RunAdmissionError) as refused:
+        newest_stable_codex()
+    message = str(refused.value)
+    assert "could not reach the Codex publisher" in message
+    assert "answered HTTP 410" in message
+
+
+def test_a_claude_pointer_error_status_is_a_lookup_failure(
+    publisher_responses: PublisherResponses,
+) -> None:
+    publisher_responses.install({
+        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "2.1.281"}),
+        CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
+        CLAUDE_LATEST_POINTER: (404, b"not found"),
+    })
+
+    with pytest.raises(RunAdmissionError) as refused:
+        newest_stable_claude_code()
+
+    message = str(refused.value)
+    assert "could not reach the Claude Code publisher" in message
+    assert "HTTP 404" in message
+
+
 def test_claude_newest_stable_requires_npm_github_and_pointer_agreement(
     publisher_responses: PublisherResponses,
 ) -> None:
@@ -182,7 +224,7 @@ def test_transport_faults_retry_once_then_refuse(
     attempts: list[str] = []
 
     def flaky_once_then_success(
-        url: str, *, timeout_seconds: float,
+        url: str, *, timeout_seconds: float, deadline: float,
     ) -> tuple[int, bytes]:
         attempts.append(url)
         if url == CODEX_GITHUB_RELEASES and attempts.count(url) == 1:
@@ -196,7 +238,7 @@ def test_transport_faults_retry_once_then_refuse(
 
     attempts.clear()
 
-    def always_unreachable(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
+    def always_unreachable(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
         attempts.append(url)
         raise _publisher._TransportError("name resolution failed")
 
@@ -211,7 +253,7 @@ def test_server_faults_retry_once_then_refuse(
 ) -> None:
     attempts: list[str] = []
 
-    def always_overloaded(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
+    def always_overloaded(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
         attempts.append(url)
         return 503, b"overloaded"
 
@@ -226,7 +268,7 @@ def test_rate_limited_lookups_refuse_without_retry(
 ) -> None:
     attempts: list[str] = []
 
-    def rate_limited(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
+    def rate_limited(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
         attempts.append(url)
         return 429, b"rate limited"
 
@@ -242,7 +284,7 @@ def test_an_expired_lookup_deadline_stops_all_attempts(
     attempts: list[str] = []
     deadlines = iter([0.0, 10.5, 10.5])
 
-    def record(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
+    def record(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
         attempts.append(url)
         return 200, github_release("rust-v0.156.1")
 
@@ -259,7 +301,9 @@ def test_every_get_is_bounded_by_three_seconds_of_the_remaining_deadline(
 ) -> None:
     timeouts: list[float] = []
 
-    def record(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
+    def record(
+        url: str, *, timeout_seconds: float, deadline: float,
+    ) -> tuple[int, bytes]:
         timeouts.append(timeout_seconds)
         if url == CODEX_GITHUB_RELEASES:
             return 200, github_release("rust-v0.156.1")
@@ -268,6 +312,48 @@ def test_every_get_is_bounded_by_three_seconds_of_the_remaining_deadline(
     monkeypatch.setattr("_publisher._http_get", record)
     newest_stable_codex()
     assert timeouts == [3.0, 3.0]
+
+
+def test_a_slow_drip_response_cannot_outlive_the_shared_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SlowDrip:
+        status = 200
+
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def geturl(self) -> str:
+            return CODEX_GITHUB_RELEASES
+
+        def read(self, amount: int) -> bytes:
+            self.reads += 1
+            return b"x"  # never EOF: the body never completes
+
+        def __enter__(self) -> "SlowDrip":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    drip = SlowDrip()
+    # This test exercises the real transport function itself, so restore it
+    # over the offline guard before pinning its urlopen dependency.
+    monkeypatch.setattr("_publisher._http_get", real_http_get)
+    monkeypatch.setattr(
+        "_publisher.urllib.request.urlopen", lambda request, timeout: drip,
+    )
+    # Every clock check burns four seconds; the ten-second deadline must cut
+    # the endless body off after a bounded number of chunked reads.
+    ticks = iter([0.0, 4.0, 8.0, 12.0, 16.0, 20.0, 24.0, 28.0])
+    monkeypatch.setattr("_publisher.time.monotonic", lambda: next(ticks))
+
+    with pytest.raises(
+        RunAdmissionError, match="could not reach the Codex publisher",
+    ):
+        newest_stable_codex()
+
+    assert drip.reads <= 4
 
 
 def test_publisher_requests_carry_no_credentials(
@@ -304,7 +390,7 @@ def test_a_redirect_off_https_is_a_transport_fault(monkeypatch: pytest.MonkeyPat
     )
 
     with pytest.raises(_publisher._TransportError, match="HTTPS"):
-        _publisher._http_get(CODEX_GITHUB_RELEASES, timeout_seconds=3.0)
+        _publisher._http_get(CODEX_GITHUB_RELEASES, timeout_seconds=3.0, deadline=10.0)
 
 
 def test_installed_below_newest_stable_refuses_and_names_the_update_command() -> None:

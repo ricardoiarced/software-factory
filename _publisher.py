@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import time
+from typing import Any
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +25,7 @@ from _harness import RunAdmissionError
 _CONNECT_TIMEOUT_SECONDS = 3.0
 _TOTAL_TIMEOUT_SECONDS = 10.0
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+_READ_CHUNK_BYTES = 65536
 
 _GITHUB_API = "https://api.github.com"
 _NPM_REGISTRY = "https://registry.npmjs.org"
@@ -56,7 +58,30 @@ def _publisher_request(url: str) -> urllib.request.Request:
     )
 
 
-def _http_get(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
+def _read_bounded(response: Any, deadline: float) -> bytes:
+    """Read the body in chunks under one shared absolute deadline.
+
+    The per-recv socket timeout alone cannot bound a slow-drip response, so
+    each chunk is checked against the lookup's total deadline; an endless or
+    oversized body stops at the response bound and lets the caller classify
+    the oversize.
+    """
+
+    body = bytearray()
+    while True:
+        if time.monotonic() >= deadline:
+            raise _TransportError("the lookup deadline expired mid-response")
+        chunk = response.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            return bytes(body)
+        body += chunk
+        if len(body) > _MAX_RESPONSE_BYTES:
+            return bytes(body)
+
+
+def _http_get(
+    url: str, *, timeout_seconds: float, deadline: float,
+) -> tuple[int, bytes]:
     """Perform one unauthenticated GET and return its status and bounded body.
 
     Factory never reads or sends credentials: the request carries no
@@ -69,7 +94,7 @@ def _http_get(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             if not response.geturl().startswith("https://"):
                 raise _TransportError("redirect left HTTPS")
-            return response.status, response.read(_MAX_RESPONSE_BYTES + 1)
+            return response.status, _read_bounded(response, deadline)
     except urllib.error.HTTPError as error:
         return error.code, error.read(_MAX_RESPONSE_BYTES + 1)
     except _TransportError:
@@ -103,6 +128,7 @@ class _Lookup:
                 status, body = _http_get(
                     url,
                     timeout_seconds=min(_CONNECT_TIMEOUT_SECONDS, remaining),
+                    deadline=self._deadline,
                 )
             except _TransportError as error:
                 last_failure = str(error)
@@ -146,9 +172,7 @@ def _github_latest_stable(
     if status == 404:
         raise lookup._refusal(f"{url} published no stable release (HTTP 404)")
     if status != 200:
-        raise _metadata_failure(
-            lookup.harness, "GitHub Releases", f"HTTP {status}",
-        )
+        raise lookup._refusal(f"{url} answered HTTP {status}")
     document = _json_document(lookup.harness, "GitHub Releases", body)
     if not isinstance(document, dict):
         raise _metadata_failure(
@@ -182,8 +206,10 @@ def _npm_latest(lookup: _Lookup, package: str) -> str:
     quoted = package.replace("/", urllib.parse.quote("/", safe=""))
     url = f"{_NPM_REGISTRY}/-/package/{quoted}/dist-tags"
     status, body = lookup.get(url)
+    if status == 404:
+        raise lookup._refusal(f"{url} published no dist-tags (HTTP 404)")
     if status != 200:
-        raise _metadata_failure(lookup.harness, "npm dist-tags", f"HTTP {status}")
+        raise lookup._refusal(f"{url} answered HTTP {status}")
     document = _json_document(lookup.harness, "npm dist-tags", body)
     if not isinstance(document, dict):
         raise _metadata_failure(
@@ -229,9 +255,7 @@ def _pointer_latest(lookup: _Lookup, url: str) -> str:
 
     status, body = lookup.get(url)
     if status != 200:
-        raise _metadata_failure(
-            lookup.harness, "downloads.claude.ai latest pointer", f"HTTP {status}",
-        )
+        raise lookup._refusal(f"{url} answered HTTP {status}")
     if len(body) > _MAX_RESPONSE_BYTES:
         raise _metadata_failure(
             lookup.harness, "downloads.claude.ai latest pointer",

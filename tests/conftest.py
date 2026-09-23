@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+import _publisher
+
 
 @pytest.fixture(autouse=True)
 def codex_executable_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,7 +56,7 @@ def newest_stable_verification_passes_by_default(
 def publisher_lookups_stay_offline(monkeypatch: pytest.MonkeyPatch) -> None:
     """Refuse every in-process publisher GET and point subprocess GETs at a
     dead local proxy so no deterministic test reaches the live publishers."""
-    def refused(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
+    def refused(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
         raise AssertionError(f"unexpected publisher GET in tests: {url}")
 
     monkeypatch.setattr("_publisher._http_get", refused)
@@ -73,7 +75,7 @@ class PublisherResponses:
     def install(self, responses: dict[str, object]) -> None:
         calls = self.calls
 
-        def serve(url: str, *, timeout_seconds: float) -> tuple[int, bytes]:
+        def serve(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
             calls.append(url)
             entry = responses[url]
             if isinstance(entry, Exception):
@@ -89,6 +91,22 @@ class PublisherResponses:
 @pytest.fixture
 def publisher_responses(monkeypatch: pytest.MonkeyPatch) -> PublisherResponses:
     return PublisherResponses(monkeypatch)
+
+
+@pytest.fixture
+def live_newest_stable_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restore the real per-Run publisher verification over the passing
+    default so a test proves the production wiring, not the stub."""
+    monkeypatch.setattr(
+        "_codex.verify_codex_newest_stable",
+        _publisher.verify_codex_newest_stable,
+    )
+    monkeypatch.setattr(
+        "_claude.verify_claude_code_newest_stable",
+        _publisher.verify_claude_code_newest_stable,
+    )
 
 
 CODEX_GITHUB_RELEASES = "https://api.github.com/repos/openai/codex/releases/latest"

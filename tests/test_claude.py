@@ -34,13 +34,6 @@ def install_native_claude(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
 
 
-def restore_live_verification(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "_claude.verify_claude_code_newest_stable",
-        _publisher.verify_claude_code_newest_stable,
-    )
-
-
 def run_claude(project: Project) -> io.BytesIO:
     spool = io.BytesIO(b"# Run Request\n\n## Instruction\n\nFix")
     ClaudeCodeRunner().run(project, spool)
@@ -58,9 +51,9 @@ def agreeing_claude_publisher(responses: PublisherResponses, newest: str) -> Non
 def test_claude_run_refuses_an_installed_release_older_than_newest_stable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
+    live_newest_stable_verification: None,
 ) -> None:
     install_native_claude(tmp_path, monkeypatch, version="9.8.0")
-    restore_live_verification(monkeypatch)
     agreeing_claude_publisher(publisher_responses, "9.9.9")
 
     with pytest.raises(RunAdmissionError) as refused:
@@ -75,10 +68,10 @@ def test_claude_run_refuses_an_installed_release_older_than_newest_stable(
 def test_claude_run_refuses_a_local_version_failure_before_any_publisher_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
+    live_newest_stable_verification: None,
 ) -> None:
     # The default harness fake is silent, so the local version read refuses
     # on its own; the offline guard turns any publisher GET into a failure.
-    restore_live_verification(monkeypatch)
 
     with pytest.raises(RunAdmissionError, match="reported an unrecognized version"):
         run_claude(Project(tmp_path, tmp_path))
@@ -89,9 +82,9 @@ def test_claude_run_refuses_a_local_version_failure_before_any_publisher_lookup(
 def test_claude_run_reaches_the_empty_compatibility_set_when_installed_is_newest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
+    live_newest_stable_verification: None,
 ) -> None:
     install_native_claude(tmp_path, monkeypatch, version="9.9.9")
-    restore_live_verification(monkeypatch)
     agreeing_claude_publisher(publisher_responses, "9.9.9")
 
     with pytest.raises(RunAdmissionError, match=(
@@ -104,9 +97,9 @@ def test_claude_run_reaches_the_empty_compatibility_set_when_installed_is_newest
 def test_claude_run_refuses_when_the_publisher_lookup_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
+    live_newest_stable_verification: None,
 ) -> None:
     install_native_claude(tmp_path, monkeypatch, version="9.9.9")
-    restore_live_verification(monkeypatch)
     publisher_responses.install({
         CLAUDE_NPM_DIST_TAGS: _publisher._TransportError("connection refused"),
         CLAUDE_GITHUB_RELEASES: _publisher._TransportError("connection refused"),

@@ -208,11 +208,20 @@ def permission_profile_from(arguments: list[str]) -> dict[str, object]:
     return tomllib.loads("profile = " + serialized)["profile"]
 
 
+def version_reply(command: list[str]) -> subprocess.CompletedProcess[bytes] | None:
+    """The version-read response every certified-executable fake serves."""
+
+    if command[1] == "--version":
+        return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
+    return None
+
+
 def successful_inspection(
     command: list[str], **kwargs: object,
 ) -> subprocess.CompletedProcess[bytes]:
-    if command[1] == "--version":
-        return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
+    reply = version_reply(command)
+    if reply is not None:
+        return reply
     if command[1:3] == ["features", "list"]:
         return subprocess.CompletedProcess(command, 0, safe_feature_output(), b"")
     if command[1:3] == ["debug", "prompt-input"]:
@@ -223,14 +232,6 @@ def successful_inspection(
             command, 1, b"", MALFORMED_PROFILE_REJECTION,
         )
     return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
-
-
-def successful_run_inspection(
-    command: list[str], **kwargs: object,
-) -> subprocess.CompletedProcess[bytes]:
-    if command[1:] == ["--version"]:
-        return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
-    return successful_inspection(command, **kwargs)
 
 
 class SuccessfulProbeProcess:
@@ -302,7 +303,7 @@ def install_launch_fixture(
 ) -> None:
     make_executable(executable)
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.setattr("_codex.subprocess.run", successful_run_inspection)
+    monkeypatch.setattr("_codex.subprocess.run", successful_inspection)
     monkeypatch.setattr("_codex.socket.socket", lambda *args: ListeningSocket())
     install_compatibility_fixture(executable, monkeypatch)
 
@@ -1542,9 +1543,10 @@ def test_run_refuses_incomplete_or_unrecognized_prompt_input_evidence(
     def inspect(
         command: list[str], **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        if command[1] == "--version":
-            output = b"codex-cli 0.155.1\n"
-        elif command[1:3] == ["features", "list"]:
+        reply = version_reply(command)
+        if reply is not None:
+            return reply
+        if command[1:3] == ["features", "list"]:
             output = safe_feature_output()
         elif command[1:3] == ["mcp", "list"]:
             output = b"[]\n"
@@ -1715,8 +1717,9 @@ def test_run_requires_complete_strict_configuration_inspection(
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         inspected.append(command)
-        if command[1] == "--version":
-            return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
+        reply = version_reply(command)
+        if reply is not None:
+            return reply
         if command[1:3] == ["features", "list"]:
             return subprocess.CompletedProcess(command, 0, OFFICIAL_FEATURE_OUTPUT, b"")
         if command[1:3] == ["mcp", "list"]:
@@ -1766,8 +1769,9 @@ def test_run_refuses_a_timed_out_strict_configuration_inspector(
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes] | None:
         # The short limit belongs to the strict-configuration inspectors; the
         # version read that precedes them completes immediately.
-        if command[1] == "--version":
-            return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
+        reply = version_reply(command)
+        if reply is not None:
+            return reply
         assert kwargs["timeout"] == 0.25
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
@@ -1800,8 +1804,9 @@ def test_run_refuses_stderr_from_a_successful_strict_configuration_inspector(
     def inspect(
         command: list[str], **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        if command[1] == "--version":
-            return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
+        reply = version_reply(command)
+        if reply is not None:
+            return reply
         if command[1:3] == ["features", "list"]:
             return subprocess.CompletedProcess(
                 command, 0, safe_feature_output(), b"unknown warning\n",
@@ -1844,9 +1849,10 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
     launched = False
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if command[1] == "--version":
-            output = b"codex-cli 0.155.1\n"
-        elif command[1:3] == ["features", "list"]:
+        reply = version_reply(command)
+        if reply is not None:
+            return reply
+        if command[1:3] == ["features", "list"]:
             output = features
         else:
             output = mcp
@@ -1891,9 +1897,10 @@ def test_run_refuses_each_active_effective_capability(
     features = safe_feature_output(forbidden_feature)
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if command[1] == "--version":
-            output = b"codex-cli 0.155.1\n"
-        elif command[1:3] == ["features", "list"]:
+        reply = version_reply(command)
+        if reply is not None:
+            return reply
+        if command[1:3] == ["features", "list"]:
             output = features
         else:
             output = b"[]\n"
@@ -1933,9 +1940,10 @@ def test_run_refuses_active_or_ambiguous_extension_evidence(
     policy = install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        if command[1] == "--version":
-            output = b"codex-cli 0.155.1\n"
-        elif command[1:3] == ["features", "list"]:
+        reply = version_reply(command)
+        if reply is not None:
+            return reply
+        if command[1:3] == ["features", "list"]:
             output = features
         else:
             output = mcp
@@ -2017,6 +2025,7 @@ def test_run_uses_executable_fakes_for_strict_inspector_evidence(
 def test_run_refuses_an_installed_codex_older_than_newest_stable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
+    live_newest_stable_verification: None,
 ) -> None:
     executable = (
         tmp_path / ".codex" / "packages" / "standalone" / "releases" / "bin" / "codex"
@@ -2024,9 +2033,6 @@ def test_run_refuses_an_installed_codex_older_than_newest_stable(
     executable.parent.mkdir(parents=True)
     make_executable(executable, version="0.155.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.setattr(
-        "_codex.verify_codex_newest_stable", _publisher.verify_codex_newest_stable,
-    )
     publisher_responses.install({
         CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
         CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
@@ -2044,12 +2050,10 @@ def test_run_refuses_an_installed_codex_older_than_newest_stable(
 def test_run_refuses_a_local_version_failure_before_any_publisher_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
+    live_newest_stable_verification: None,
 ) -> None:
     # The default harness fake is silent, so the local version read refuses
     # on its own; the offline guard turns any publisher GET into a failure.
-    monkeypatch.setattr(
-        "_codex.verify_codex_newest_stable", _publisher.verify_codex_newest_stable,
-    )
 
     with pytest.raises(RunAdmissionError, match="reported an unrecognized version"):
         run(Project(tmp_path, tmp_path), io.BytesIO())
@@ -2060,14 +2064,12 @@ def test_run_refuses_a_local_version_failure_before_any_publisher_lookup(
 def test_run_refuses_an_uncertified_newest_release_and_names_the_factory_update(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
+    live_newest_stable_verification: None,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
     make_executable(executable, version="0.156.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    monkeypatch.setattr(
-        "_codex.verify_codex_newest_stable", _publisher.verify_codex_newest_stable,
-    )
     publisher_responses.install({
         CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
         CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),

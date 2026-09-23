@@ -54,14 +54,14 @@ def isolated_host_admission_probe_cache(
 
 
 def make_executable(path: Path, version: str = "0.155.1") -> None:
-    path.write_text(f"#!/bin/sh\nif [ \"$1\" = --version ]; then\n  echo 'codex {version}'\nfi\n")
+    path.write_text(f"#!/bin/sh\nif [ \"$1\" = --version ]; then\n  echo 'codex-cli {version}'\nfi\n")
     path.chmod(0o755)
 
 
 def make_inspector_executable(path: Path) -> None:
     script = """#!/bin/sh
 if [ "$1" = --version ]; then
-  echo 'codex 0.155.1'
+  echo 'codex-cli 0.155.1'
 elif [ "$1:$2" = 'features:list' ]; then
   printf '%s' "$FACTORY_FEATURES"
   exit "${FACTORY_FEATURE_EXIT:-0}"
@@ -214,7 +214,7 @@ def successful_run_inspection(
     command: list[str], **kwargs: object,
 ) -> subprocess.CompletedProcess[bytes]:
     if command[1:] == ["--version"]:
-        return subprocess.CompletedProcess(command, 0, b"codex 0.155.1\n", b"")
+        return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
     return successful_inspection(command, **kwargs)
 
 
@@ -313,7 +313,7 @@ def policy_with_recorded_host_admission_probe(
 def make_probe_executable(path: Path) -> None:
     script = """#!/bin/sh
 if [ "$1" = --version ]; then
-  echo 'codex 0.155.1'
+  echo 'codex-cli 0.155.1'
 elif [ "$1:$2" = 'features:list' ]; then
   printf '%s' "$FACTORY_FEATURES"
 elif [ "$1:$2" = 'mcp:list' ]; then
@@ -1070,7 +1070,7 @@ def test_run_refuses_an_executable_change_without_evaluating_it_before_launch(
         if command[1:] == ["--version"]:
             version_checks += 1
             return subprocess.CompletedProcess(
-                command, 0, b"codex 0.155.1\n", b"",
+                command, 0, b"codex-cli 0.155.1\n", b"",
             )
         return successful_inspection(command, **kwargs)
 
@@ -1350,7 +1350,7 @@ def test_cache_hit_still_rechecks_the_executable_identity(
         command: list[str], **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         if command[1:] == ["--version"]:
-            return subprocess.CompletedProcess(command, 0, b"codex 0.155.1\n", b"")
+            return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
         return successful_inspection(command, **kwargs)
 
     def launch(
@@ -1988,15 +1988,22 @@ def test_identity_refuses_multiple_policies_for_one_artifact(
         _match_compatibility(executable)
 
 
+@pytest.mark.parametrize("output", [
+    b"0.155.1\n",
+    b"codex 0.155.1\n",
+    b"codex-cli 0.155.1 extra\n",
+    b"codex-cli 0.155.1\r\n",
+    b"codex-cli 0.155.1\nmore\n",
+])
 def test_identity_refuses_malformed_version_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: bytes,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
     install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr(
         "_codex.subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, b"0.154.0\n", b""),
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, output, b""),
     )
 
     with pytest.raises(RunAdmissionError, match="reported an unrecognized version"):

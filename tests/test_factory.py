@@ -1018,7 +1018,9 @@ def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == b"factory: error: Codex Compatibility Set is empty; no Run is supported.\n"
+    assert result.stderr.endswith(
+        b" reported an unrecognized version; install a certified Codex release.\n"
+    )
 
 
 @pytest.mark.parametrize("case", ["outside", "bare", "missing-git", "inspection-failure"])
@@ -1165,12 +1167,12 @@ def test_run_accepts_documented_forms_through_cli(args: tuple[str, ...], tmp_pat
 
     assert result.returncode == 1
     assert result.stdout == b""
-    expected = (
-        b'factory: error: Project "api" is not registered.\n'
-        if "--project" in args or "--project=api" in args else
-        b"factory: error: Codex Compatibility Set is empty; no Run is supported.\n"
-    )
-    assert result.stderr == expected
+    if "--project" in args or "--project=api" in args:
+        assert result.stderr == b'factory: error: Project "api" is not registered.\n'
+    else:
+        assert result.stderr.endswith(
+            b" reported an unrecognized version; install a certified Codex release.\n"
+        )
 
 
 def test_run_parser_returns_instruction_selector_context_sources_and_force() -> None:
@@ -1225,8 +1227,9 @@ def test_only_exact_first_project_enters_administration(tmp_path: Path) -> None:
     assert administration.stdout == b"No projects registered.\n"
     assert administration.stderr == b""
     assert run.returncode == escaped.returncode == 1
-    assert b"Codex Compatibility Set is empty" in run.stderr
-    assert b"Codex Compatibility Set is empty" in escaped.stderr
+    rejection = b"reported an unrecognized version; install a certified Codex release."
+    assert rejection in run.stderr
+    assert rejection in escaped.stderr
 
 
 class _BrokenStream:

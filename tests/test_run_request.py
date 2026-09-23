@@ -7,12 +7,21 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import factory
-from _codex import RunAdmissionError
+from _harness import RunAdmissionError
 from _project import Project
+
+
+def _selected_harness(
+    handoff: Callable[[Project, io.BufferedRandom], int],
+) -> SimpleNamespace:
+    """A Runner stand-in whose run() is the recorded handoff."""
+
+    return SimpleNamespace(run=handoff)
 
 
 def run_arguments_for_selection(
@@ -82,7 +91,7 @@ def test_factory_returns_ordinary_codex_status_without_annotating_output(
         os.write(2, b"\xfecodex-stderr\n")
         return status
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -120,7 +129,7 @@ def test_registered_run_uses_exact_boundary_and_only_its_spec(
         return 0
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.chdir(project)
     for name in ("Api", "api"):
         monkeypatch.setattr(sys, "argv", ["factory", "--project", name, "Fix"])
@@ -157,7 +166,7 @@ def test_registered_run_revalidates_stale_boundary_without_discovery(
         return 0
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--project=api", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(project)
@@ -200,7 +209,7 @@ def test_registered_run_rejects_invalid_selection_before_admission(
         pytest.fail("Run Admission must not start after registered selection fails")
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--project", name, "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(project)
@@ -229,7 +238,7 @@ def test_run_without_selector_uses_containing_worktree_root(
         projects.append(selected)
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(nested)
@@ -254,7 +263,7 @@ def test_discovery_selects_nearest_marker_without_ancestor_spec(
         received.append((selected, spool.read()))
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(invocation)
@@ -291,7 +300,7 @@ def test_discovery_refuses_malformed_marker_instead_of_using_parent(
         received.append(boundary)
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(service)
@@ -322,7 +331,7 @@ def test_discovery_refuses_inaccessible_marker_instead_of_using_parent(
         pytest.fail("Codex must not run after an inaccessible Project Marker")
 
     monkeypatch.setattr(Path, "lstat", inaccessible_lstat)
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(service)
@@ -348,7 +357,7 @@ def test_discovery_accepts_contained_symlinked_marker_and_its_spec(
         received.append((selected, spool.read()))
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(invocation)
@@ -375,7 +384,7 @@ def test_explicit_path_refuses_escaping_project_marker(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Codex must not run with an escaping Project Marker")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(project), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(project)
@@ -402,7 +411,7 @@ def test_discovery_stays_inside_nested_repository(
         received.append((selected, spool.read()))
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(nested)
@@ -446,7 +455,7 @@ def test_discovery_uses_linked_worktree_or_submodule_root(
         projects.append(selected)
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(nested)
@@ -475,7 +484,7 @@ def test_explicit_run_hands_off_exact_request_bytes(
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
                                       "--file", "notes.txt", "Fix", "it"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"stdin")))
-    monkeypatch.setattr(factory, "_codex_run", handoff, raising=False)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff), raising=False)
     monkeypatch.chdir(tmp_path)
 
     assert factory.main() == 7
@@ -500,7 +509,7 @@ def test_standard_input_inspection_failure_refuses_before_run_admission(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Run Admission must not start when standard input cannot be checked")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "stdin", UnreadableStandardInput())
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
@@ -521,7 +530,7 @@ def test_closed_standard_input_refuses_before_run_admission(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Run Admission must not start when standard input is closed")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "stdin", closed_input)
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
@@ -551,7 +560,7 @@ def test_terminal_standard_input_is_never_read(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "stdin", TerminalInput())
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
@@ -578,7 +587,9 @@ sys.argv = ['factory', *sys.argv[2:]]
 def handoff(boundary, spool):
     sys.stdout.buffer.write(spool.read())
     return 0
-factory._codex_run = handoff
+class FakeRunner:
+    run = staticmethod(handoff)
+factory.select_harness = lambda _name: FakeRunner()
 raise SystemExit(factory.main())
 """
     command = [sys.executable, "-c", script, str(Path(factory.__file__).parent),
@@ -608,7 +619,7 @@ def test_standard_input_follows_file_context_and_preserves_payload_bytes(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(
         b"\xef\xbb\xbf\xc3\xa9\r\nlast\r")))
     monkeypatch.setattr(sys, "argv", [
@@ -637,7 +648,7 @@ def test_invalid_standard_input_refuses_before_run_admission(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Run Admission must not start after invalid standard input")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(payload)))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
@@ -660,7 +671,7 @@ def test_standard_input_read_failure_refuses_before_run_admission(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Run Admission must not start after a standard input read failure")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(FailingStream()))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
@@ -704,7 +715,7 @@ def test_absent_spec_and_empty_context_keep_only_required_envelope(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
                                       "--file", "empty", "Do", "work"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
@@ -790,7 +801,7 @@ def test_project_spec_parent_swap_refuses_before_codex(
 
     monkeypatch.setattr(os, "open", swap_before_use)
     monkeypatch.setattr(os, "supports_dir_fd", {*os.supports_dir_fd, swap_before_use})
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -847,7 +858,7 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
         received.append(spool.read())
         return 17
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     arguments = ["factory", "--path", str(tmp_path), "--file", "context"]
     monkeypatch.setattr(sys, "argv", [*arguments, "Fix"])
     assert factory.main() == 17
@@ -932,8 +943,9 @@ def test_parse_and_project_failures_precede_spooling_and_downstream_failures(
 
     monkeypatch.setattr(factory.tempfile, "TemporaryFile", create_spool)
     monkeypatch.setattr(
-        factory, "_codex_run", make_downstream_failure(
-            admission_attempts, downstream_failure))
+        factory, "select_harness",
+        lambda _name: _selected_harness(make_downstream_failure(
+            admission_attempts, downstream_failure)))
     monkeypatch.setattr(sys, "argv", arguments)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"\xff")))
     monkeypatch.chdir(project)
@@ -977,8 +989,9 @@ def test_project_selection_and_context_failures_precede_downstream_failures(
     arguments.extend(["--file", "context", "Fix"])
 
     monkeypatch.setattr(
-        factory, "_codex_run", make_downstream_failure(
-            admission_attempts, downstream_failure))
+        factory, "select_harness",
+        lambda _name: _selected_harness(make_downstream_failure(
+            admission_attempts, downstream_failure)))
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "invalid")
     monkeypatch.setattr(sys, "argv", arguments)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(standard_input)))
@@ -1025,7 +1038,7 @@ def test_each_project_selection_hands_off_one_complete_rewound_binary_spool(
         selection, tmp_path, project, monkeypatch, explicit_path=alias)
     arguments.extend(["--file", str(context), "Fix"])
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", arguments)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"standard input")))
     monkeypatch.chdir(invocation_dir)
@@ -1054,7 +1067,7 @@ def test_spool_is_private_rewound_and_closed_after_admission_refusal(
         spools.append(spool)
         raise RunAdmissionError("unsupported")
 
-    monkeypatch.setattr(factory, "_codex_run", refuse)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(refuse))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1084,7 +1097,7 @@ def test_spool_lifetime_covers_every_codex_handoff_outcome(
             raise KeyboardInterrupt
         return 31
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1117,8 +1130,9 @@ def test_rejected_composed_spools_are_closed_and_removed_before_admission(
     admission_attempts: list[Path] = []
 
     monkeypatch.setattr(
-        factory, "_codex_run", make_downstream_failure(
-            admission_attempts, "admission"))
+        factory, "select_harness",
+        lambda _name: _selected_harness(make_downstream_failure(
+            admission_attempts, "admission")))
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "0")
     monkeypatch.setattr(sys, "argv", [
         "factory", "--path", str(tmp_path), "--file", "context", "Fix",
@@ -1145,8 +1159,9 @@ def test_size_gate_and_rewind_failures_precede_run_admission(
     admission_attempts: list[Path] = []
 
     monkeypatch.setattr(
-        factory, "_codex_run", make_downstream_failure(
-            admission_attempts, "admission"))
+        factory, "select_harness",
+        lambda _name: _selected_harness(make_downstream_failure(
+            admission_attempts, "admission")))
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "0" if failure == "size gate" else "1")
     monkeypatch.setattr(sys, "argv", [
         "factory", "--path", str(tmp_path), "--file", "context", "Fix",
@@ -1185,7 +1200,7 @@ def test_explicit_subdirectory_does_not_inherit_ancestor_spec(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(boundary), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1221,7 +1236,7 @@ def test_context_path_with_nul_refuses_without_traceback(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Codex must not receive Context from an invalid file path")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--file", "bad\x00path", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1252,7 +1267,7 @@ def test_external_context_file_expands_from_invocation_and_keeps_original_labels
 
     monkeypatch.setenv("CONTEXT_FILE", "../../outside.txt")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "16")
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(boundary),
                                       "--file", "$CONTEXT_FILE", "--file", "linked.txt", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
@@ -1280,7 +1295,7 @@ def test_context_file_rejects_unset_or_empty_environment_variable(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Codex must not receive Context from an invalid path")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--file", "${CONTEXT_FILE}", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1299,7 +1314,7 @@ def test_directory_context_source_refuses_before_admission(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Codex must not receive a non-file Context Source")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--file", "directory", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1371,7 +1386,7 @@ def test_repeated_file_context_uses_original_json_labels_and_preserves_payload(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
                                       "--file", name, "--file", name, "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
@@ -1400,7 +1415,7 @@ def test_repeated_file_context_skips_empty_sources_and_preserves_each_payload(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", [
         "factory", "--path", str(tmp_path), "--file", "empty", "--file", "mixed",
         "--file", "bom-only", "--file", "unicode", "--file", "mixed",
@@ -1431,7 +1446,7 @@ def test_only_empty_file_context_sources_leave_no_context_section(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", [
         "factory", "--path", str(tmp_path), "--file", "empty",
         "--file", "bom-only", "--file", "empty", "Fix",
@@ -1476,7 +1491,7 @@ def test_later_file_context_source_is_validated_before_run(
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Codex must not receive Context after any source fails validation")
 
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", [
         "factory", "--path", str(tmp_path), "--file", "valid", "--file", "invalid", "Fix",
     ])
@@ -1502,7 +1517,7 @@ def test_crlf_blank_lines_need_no_added_separator(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
                                       "--file", "context", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"next")))
@@ -1557,7 +1572,7 @@ def test_spool_write_failure_identifies_spool_and_refuses_run(
         pytest.fail("Codex must not run after a spool write failure")
 
     monkeypatch.setattr(factory.tempfile, "TemporaryFile", lambda **kwargs: FailingSpool())
-    monkeypatch.setattr(factory, "_codex_run", unexpected_handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1579,7 +1594,7 @@ def test_instruction_crlf_blank_line_needs_no_added_separator(
         received.append(spool.read())
         return 0
 
-    monkeypatch.setattr(factory, "_codex_run", handoff)
+    monkeypatch.setattr(factory, "select_harness", lambda _name: _selected_harness(handoff))
     monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path),
                                       "--file", "context", "Fix\r\n\r\n"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))

@@ -1,6 +1,6 @@
 # Terminal Agent Dispatch
 
-This context describes sending work from a terminal to Codex in a chosen local project.
+This context describes sending work from a terminal to a selected Harness in a chosen local project.
 
 ## Language
 
@@ -15,6 +15,10 @@ _Avoid_: Input, attachment, background information
 **Context Source**:
 A user-authorized source of Context: one file explicitly named for a Run or piped standard input. File sources retain their supplied order, followed by standard input.
 _Avoid_: Attachment, input source
+
+**Harness**:
+The selected external agent CLI that performs one Run: the Codex CLI by default, or Claude Code by explicit selection. Each Harness is admitted only against its own compatibility set, and an unavailable or uncertified Harness fails closed without falling back to another.
+_Avoid_: Agent, backend, engine, provider
 
 **Three-Layer Run Model**:
 The separation of each Run into the Codex Foundation, Project Guidance, and Run Request layers.
@@ -54,7 +58,7 @@ The exact Codex executable artifacts and platform combinations certified by a Fa
 _Avoid_: Compatibility range, minimum Codex version
 
 **Run Admission**:
-The fail-closed checks that establish a Run can use a member of the Codex Compatibility Set and enforce the required isolation before Factory submits the Run Request.
+The fail-closed checks that establish a Run can use a member of the selected Harness's compatibility set and enforce the required isolation before Factory submits the Run Request.
 _Avoid_: Compatibility mode
 
 **Host Admission Probe**:
@@ -78,5 +82,5 @@ The local collection of project names and the canonical project paths they resol
 _Avoid_: Project list, catalog
 
 **Run**:
-One non-interactive Codex execution started for an instruction in a project.
+One non-interactive execution started for an instruction in a project by the selected Harness.
 _Avoid_: Job, task, session

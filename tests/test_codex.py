@@ -20,12 +20,18 @@ import pytest
 
 import factory
 from _codex import (
+    CodexRunner,
     _Codex01551Policy,
     _match_compatibility,
-    RunAdmissionError,
-    run,
 )
+from _harness import RunAdmissionError
 from _project import Project
+
+
+def run(project: Project, run_request_spool) -> int:
+    """Exercise the certified Runner exactly as the Factory command does."""
+
+    return CodexRunner().run(project, run_request_spool)
 
 
 HOST_PROBE_PROMPT = (
@@ -667,7 +673,7 @@ def test_run_creates_one_native_foreground_codex_process(
     git_root = tmp_path / "git root"
     git_root.mkdir()
     spool = io.BytesIO(b"# Run Request\n")
-    invocation = expected_invocation(executable, boundary, git_root)
+    invocation = tuple(expected_invocation(executable, boundary, git_root))
     install_launch_fixture(executable, monkeypatch)
 
     calls: list[tuple[list[str], dict[str, object], bool, int]] = []

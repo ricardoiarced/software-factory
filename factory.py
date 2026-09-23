@@ -11,7 +11,13 @@ import sys
 import tempfile
 from typing import BinaryIO
 
-from _codex import RunAdmissionError, run as _codex_run
+from _harness import (
+    DEFAULT_HARNESS,
+    HARNESS_NAMES,
+    RunAdmissionError,
+    UnknownHarnessError,
+    select_harness,
+)
 from _project import (
     GitInspectionError,
     Project,
@@ -34,7 +40,7 @@ from _project_registry import (
 
 
 ROOT_SYNOPSIS = """Usage:
-  factory [--project NAME | --path PATH] [--file PATH]... [--force] [--] INSTRUCTION...
+  factory [--harness codex|claude] [--project NAME | --path PATH] [--file PATH]... [--force] [--] INSTRUCTION...
   factory project COMMAND ...
   factory (-h | --help)
   factory --version
@@ -44,6 +50,8 @@ ROOT_HELP = ROOT_SYNOPSIS + """
 Run one Instruction in a selected Git-backed Project.
 
 Options:
+  --harness NAME  Select the Harness for the Run: codex (the default) or
+                  claude.
   --project NAME  Select a Project by its registered name.
   --path PATH     Select an explicit Project Boundary.
   --file PATH     Add a file as a Context Source; repeat to add more.
@@ -60,6 +68,10 @@ following argument is Instruction text, even if it resembles an option.
 Value options accept --option VALUE or --option=VALUE. Use the equals form
 when a value starts with -. Only -h has a short form.
 
+The selected Harness must pass its own latest-release and Run Admission
+checks before the Run Request is submitted. An unavailable or uncertified
+Harness fails closed; Factory never falls back to the other Harness.
+
 Context Sources are read after the Instruction: each --file in flag order,
 then non-terminal standard input (pipe or redirection). Empty sources add no
 Context. --force only bypasses the Context size warning; it never bypasses
@@ -70,6 +82,7 @@ factory -- project ... to start an Instruction with the word project.
 
 Examples:
   factory Fix the failing tests
+  factory --harness claude Fix the failing tests
   factory --project api --file error.log -- Diagnose this failure
   git diff | factory Review this patch
   factory --path ./services/api Update dependencies
@@ -117,6 +130,7 @@ class RunInputError(Exception):
 @dataclass(frozen=True)
 class RunArguments:
     instruction: str
+    harness: str
     selector: tuple[str, str] | None
     files: tuple[str, ...]
     force: bool
@@ -268,7 +282,9 @@ def _context_threshold() -> int:
 def _parse_run(args: list[str]) -> RunArguments:
     selectors: set[str] = set()
     seen_force = False
+    seen_harness = False
     selector: tuple[str, str] | None = None
+    harness = DEFAULT_HARNESS
     files: list[str] = []
     position = 0
     while position < len(args):
@@ -279,7 +295,7 @@ def _parse_run(args: list[str]) -> RunArguments:
         if not argument.startswith("-") or argument == "-":
             break
         option, has_equals, inline_value = argument.partition("=")
-        if option in ("--project", "--path", "--file"):
+        if option in ("--project", "--path", "--file", "--harness"):
             if has_equals:
                 value = inline_value
             else:
@@ -296,6 +312,13 @@ def _parse_run(args: list[str]) -> RunArguments:
                 if len(selectors) > 1:
                     raise UsageError("--project and --path cannot be combined")
                 selector = (option[2:], value)
+            elif option == "--harness":
+                if seen_harness:
+                    raise UsageError("--harness may appear only once")
+                seen_harness = True
+                if value not in HARNESS_NAMES:
+                    raise UsageError(f"unknown harness {_quoted(value)}")
+                harness = value
             else:
                 files.append(value)
         elif argument == "--force":
@@ -310,7 +333,7 @@ def _parse_run(args: list[str]) -> RunArguments:
     instruction = " ".join(args[position:])
     if not args[position:] or not instruction.strip():
         raise UsageError("an Instruction with non-whitespace text is required")
-    return RunArguments(instruction, selector, tuple(files), seen_force)
+    return RunArguments(instruction, harness, selector, tuple(files), seen_force)
 
 
 def _parse_project(args: list[str]) -> tuple[str, list[str]]:
@@ -457,7 +480,7 @@ def _dispatch() -> int:
                     spool.seek(0)
                 except OSError as error:
                     raise RunInputError(f"Run Request spool failed: {error}") from error
-                return _codex_run(project, spool)
+                return select_harness(run.harness).run(project, spool)
         return 1
     except UsageError as error:
         return _usage(error)
@@ -467,6 +490,8 @@ def _dispatch() -> int:
     except RegistryCommitUncertain as error:
         sys.stderr.write(f"factory: warning: {error}.\n")
         return 1
+    except UnknownHarnessError as error:
+        return _usage(UsageError(str(error)))
     except (RunInputError, RunAdmissionError, RegistryError) as error:
         sys.stderr.write(f"factory: error: {error}.\n")
         return 1

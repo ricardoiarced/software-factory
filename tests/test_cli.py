@@ -65,7 +65,9 @@ def test_built_wheel_installs_and_reports_distribution_version(tmp_path):
         capture_output=True,
     )
     assert help_result.returncode == 0
-    assert help_result.stdout.startswith(b"Usage:\n  factory [--project NAME")
+    assert help_result.stdout.startswith(
+        b"Usage:\n  factory [--harness codex|claude] [--project NAME",
+    )
     assert help_result.stderr == b""
 
     malformed = subprocess.run(

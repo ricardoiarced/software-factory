@@ -1,6 +1,5 @@
-"""Codex Run Admission and lifecycle boundary."""
+"""Codex Run Admission and the certified Codex Runner."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
 import errno
 import hashlib
@@ -15,18 +14,10 @@ import socket
 import stat
 import subprocess
 import tempfile
-from types import FrameType
-from typing import Any, BinaryIO, ClassVar
+from typing import BinaryIO, ClassVar
 
+from _harness import PreparedRun, RunAdmissionError, launch
 from _project import Project
-
-
-class RunAdmissionError(Exception):
-    """Codex cannot be launched under the certified compatibility contract."""
-
-    def __init__(self, message: str, *, executable: Path | None = None) -> None:
-        super().__init__(message)
-        self.executable = executable
 
 
 def _cache_directory() -> Path:
@@ -605,21 +596,6 @@ _COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = (
     ),
 )
 _VERSION_OUTPUT = re.compile(rb"codex-cli ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
-# Keep this to the foreground-group contract. Synchronous faults and
-# process-local timer/resource signals retain Factory's native dispositions.
-_CHILD_RUNTIME_SIGNALS = (
-    signal.SIGHUP,
-    signal.SIGINT,
-    signal.SIGQUIT,
-    signal.SIGTERM,
-    signal.SIGUSR1,
-)
-
-
-def _defer_runtime_signal_to_child(
-    _signal_number: int, _frame: FrameType | None,
-) -> None:
-    """Let the foreground child status decide the Run's signal outcome."""
 
 
 def _quoted_absolute_path(path: Path) -> str:
@@ -836,46 +812,20 @@ def _admit_run(project: Project) -> tuple[_Codex01551Policy, list[str]]:
     return policy, invocation
 
 
-def run(project: Project, run_request_spool: BinaryIO) -> int:
-    """Launch a Run only after exact artifact and host admission."""
+class CodexRunner:
+    """The certified Codex Runner: unchanged admission, shared lifecycle."""
 
-    policy, invocation = _admit_run(project)
-    executable = policy.canonical_path
-    previous_handlers: dict[
-        signal.Signals,
-        Callable[[int, FrameType | None], Any] | int | None,
-    ] = {}
-    try:
-        process = subprocess.Popen(
-            invocation,
-            cwd=project.boundary,
-            stdin=run_request_spool,
-            stdout=None,
-            stderr=None,
-            env=None,
-            shell=False,
-            start_new_session=False,
+    def admit(self, project: Project) -> PreparedRun:
+        """Establish all production evidence and freeze the launch plan."""
+
+        policy, invocation = _admit_run(project)
+        return PreparedRun(
+            harness="Codex",
+            executable=policy.canonical_path,
+            invocation=tuple(invocation),
         )
-    except OSError as error:
-        raise RunAdmissionError(
-            f"Codex executable {_quoted_absolute_path(executable)} could not start: "
-            f"{error.strerror or error}",
-            executable=executable,
-        ) from error
-    try:
-        for runtime_signal in _CHILD_RUNTIME_SIGNALS:
-            previous_handler = signal.getsignal(runtime_signal)
-            previous_handlers[runtime_signal] = previous_handler
-            if previous_handler != signal.SIG_IGN:
-                signal.signal(runtime_signal, _defer_runtime_signal_to_child)
-        status = process.wait()
-    finally:
-        for handled_signal, handler in previous_handlers.items():
-            signal.signal(handled_signal, handler)
-    if status < 0:
-        termination_signal = -status
-        if termination_signal != signal.SIGKILL:
-            signal.signal(termination_signal, signal.SIG_DFL)
-            signal.pthread_sigmask(signal.SIG_UNBLOCK, {termination_signal})
-        os.kill(os.getpid(), termination_signal)
-    return status
+
+    def run(self, project: Project, run_request_spool: BinaryIO) -> int:
+        """Admit, then launch one Run and return Codex's exit status."""
+
+        return launch(project, self.admit(project), run_request_spool)

@@ -1054,7 +1054,8 @@ def test_explicit_root_help_is_stable_stdout() -> None:
     assert wide.stderr == narrow.stderr == b""
     assert wide.stdout.startswith(
         b"Usage:\n"
-        b"  factory [--project NAME | --path PATH] [--file PATH]... [--force] [--] INSTRUCTION...\n"
+        b"  factory [--harness codex|claude] [--project NAME | --path PATH] "
+        b"[--file PATH]... [--force] [--] INSTRUCTION...\n"
         b"  factory project COMMAND ...\n"
         b"  factory (-h | --help)\n"
         b"  factory --version\n"
@@ -1066,6 +1067,10 @@ def test_explicit_root_help_is_stable_stdout() -> None:
         b"--file",
         b"standard input",
         b"--force",
+        b"codex (the default)",
+        b"latest-release and Run Admission",
+        b"never falls back to the other Harness",
+        b"factory --harness claude Fix the failing tests",
         b"factory -- project list",
         b"git diff | factory Review this patch",
     ):
@@ -1118,7 +1123,7 @@ def test_malformed_commands_have_relevant_usage_and_no_traceback(
     assert result.stdout == b""
     assert result.stderr.startswith(b"factory: error: ")
     assert (b"factory project add [--] NAME PATH" if args[:1] == ("project",) else
-            b"factory [--project NAME | --path PATH]") in result.stderr
+            b"factory [--harness codex|claude] [--project NAME | --path PATH]") in result.stderr
     assert hint in result.stderr
     assert b"Traceback" not in result.stderr
 
@@ -1182,9 +1187,59 @@ def test_run_parser_returns_instruction_selector_context_sources_and_force() -> 
     ])
 
     assert parsed.instruction == "  Fix  this   --file last\tword"
+    assert parsed.harness == "codex"
     assert parsed.selector == ("project", "api")
     assert parsed.files == ("first.txt", "first.txt")
     assert parsed.force is True
+
+
+def test_run_parser_returns_selected_harness() -> None:
+    assert _parse_run(["--harness", "claude", "Fix"]).harness == "claude"
+    assert _parse_run(["--harness=codex", "--file=x", "Fix"]).harness == "codex"
+    assert _parse_run([
+        "--file=x", "--force", "--harness=claude", "--", "Fix",
+    ]).harness == "claude"
+
+    trailing = _parse_run(["Fix", "--harness", "claude"])
+    assert trailing.harness == "codex"
+    assert trailing.instruction == "Fix --harness claude"
+
+
+def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) -> None:
+    git("init", "-q", cwd=tmp_path)
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
+
+    result = invoke(
+        "--harness", "claude", "Fix", cwd=tmp_path,
+        env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr == (
+        b"factory: error: Claude Compatibility Set is empty; update Factory "
+        b"to a release that certifies Claude Code.\n"
+    )
+
+
+def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
+    git("init", "-q", cwd=tmp_path)
+    explicit = invoke(
+        "--harness", "codex", "Fix", cwd=tmp_path,
+        env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
+    )
+    omitted = invoke(
+        "Fix", cwd=tmp_path,
+        env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
+    )
+
+    assert explicit.returncode == omitted.returncode == 1
+    assert explicit.stdout == omitted.stdout == b""
+    assert explicit.stderr == omitted.stderr
+    assert explicit.stderr.endswith(
+        b" reported an unrecognized version; install a certified Codex release.\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1198,6 +1253,12 @@ def test_run_parser_returns_instruction_selector_context_sources_and_force() -> 
         (("--project", "--", "Fix"), b"--project requires a value"),
         (("--file=", "Fix"), b"--file requires a non-empty value"),
         (("--path",), b"--path requires a non-empty value"),
+        (("--harness", "claude", "--harness", "codex", "Fix"), b"--harness may appear only once"),
+        (("--harness=", "Fix"), b"--harness requires a non-empty value"),
+        (("--harness",), b"--harness requires a non-empty value"),
+        (("--harness", "-claude", "Fix"), b"--harness requires a value"),
+        (("--harness", "vim", "Fix"), b'unknown harness "vim"'),
+        (("--harness=vim", "Fix"), b'unknown harness "vim"'),
         (("--force=1", "Fix"), b"unknown option"),
         (("--unknown", "Fix"), b"unknown option"),
         (("--", " \t", "\n"), b"non-whitespace text is required"),
@@ -1205,7 +1266,9 @@ def test_run_parser_returns_instruction_selector_context_sources_and_force() -> 
     ids=[
         "duplicate-project", "duplicate-path", "conflicting-selectors", "duplicate-force",
         "separate-dash-file", "separate-terminator-selector", "empty-equals-file",
-        "missing-path", "force-has-no-value", "unknown-option", "blank-instruction",
+        "missing-path", "duplicate-harness", "empty-equals-harness", "missing-harness",
+        "separate-dash-harness", "unknown-separate-harness", "unknown-equals-harness",
+        "force-has-no-value", "unknown-option", "blank-instruction",
     ],
 )
 def test_run_grammar_failures_exit_two(args: tuple[str, ...], reason: bytes) -> None:

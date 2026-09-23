@@ -42,8 +42,11 @@ HOST_PROBE_PROMPT_INPUT = json.dumps([{
 }], separators=(",", ":"))
 MALFORMED_PROFILE_REJECTION = (
     b'Error: invalid type: string "{", expected struct PermissionProfileToml\n'
-    b'in `permissions`\n'
+    b'in `permissions`\n\n'
 )
+OFFICIAL_FEATURE_OUTPUT = (
+    Path(__file__).parent / "data" / "codex-0.155.1-features.txt"
+).read_bytes()
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +76,7 @@ elif [ "$1:$2" = 'debug:prompt-input' ]; then
 elif [ "$1" = sandbox ]; then
   if [ "$7" = factory-malformed ]; then
     printf '%s\n' 'Error: invalid type: string "{", expected struct PermissionProfileToml' 'in `permissions`' >&2
+    printf '\n' >&2
     exit 1
   fi
   printf 'factory-host-admission-probe-v1\n'
@@ -85,23 +89,15 @@ fi
 
 
 def safe_feature_output(active_feature: str | None = None) -> bytes:
-    feature_lines = [
-        ("apps", "stable", False),
-        ("hooks", "stable", False),
-        ("plugins", "stable", False),
-        ("remote_plugin", "stable", False),
-        ("browser_use", "stable", False),
-        ("browser_use_external", "stable", False),
-        ("browser_use_full_cdp", "stable", False),
-        ("computer_use", "stable", False),
-        ("multi_agent", "stable", False),
-        ("memories", "stable", False),
-        ("skip_host_skill_discovery", "under development", True),
-    ]
-    return b"".join(
-        f"{name:<29}{stage:<20}{str(value or name == active_feature).lower()}\n".encode()
-        for name, stage, value in feature_lines
-    )
+    if active_feature is None:
+        return OFFICIAL_FEATURE_OUTPUT
+    lines = OFFICIAL_FEATURE_OUTPUT.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.split(maxsplit=1)[0] == active_feature.encode():
+            assert line.endswith(b"false\n")
+            lines[index] = line[:-6] + b"true\n"
+            return b"".join(lines)
+    raise AssertionError(f"unknown fixture feature: {active_feature}")
 
 
 def certify(
@@ -145,6 +141,7 @@ def expected_configuration(executable: Path, git_root: Path) -> list[str]:
     return [
         "-c", "approval_policy=\"never\"",
         "-c", "project_doc_max_bytes=0",
+        "-c", "skills.include_instructions=false",
         "-c", "project_root_markers=[]",
         "-c", "allow_login_shell=false",
         "-c", "shell_environment_policy.inherit=\"core\"",
@@ -155,7 +152,8 @@ def expected_configuration(executable: Path, git_root: Path) -> list[str]:
         "-c", "features.remote_plugin=false",
         "-c", "features.browser_use=false",
         "-c", "features.browser_use_external=false",
-        "-c", "features.browser_use_full_cdp=false",
+        "-c", "features.browser_use_full_cdp_access=false",
+        "-c", "features.in_app_browser=false",
         "-c", "features.computer_use=false",
         "-c", "features.multi_agent=false",
         "-c", "features.memories=false",
@@ -334,6 +332,7 @@ elif [ "$1" = sandbox ]; then
       printf '%s' "$FACTORY_NEGATIVE_PROFILE_STDERR" >&2
     else
       printf '%s\n' 'Error: invalid type: string "{", expected struct PermissionProfileToml' 'in `permissions`' >&2
+      printf '\n' >&2
     fi
     exit "${FACTORY_NEGATIVE_PROFILE_EXIT:-1}"
   fi
@@ -1645,19 +1644,7 @@ def test_run_requires_complete_strict_configuration_inspection(
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         inspected.append(command)
         if command[1:3] == ["features", "list"]:
-            return subprocess.CompletedProcess(command, 0, (
-                b"apps                         stable             false\n"
-                b"hooks                        stable             false\n"
-                b"plugins                      stable             false\n"
-                b"remote_plugin                stable             false\n"
-                b"browser_use                  stable             false\n"
-                b"browser_use_external         stable             false\n"
-                b"browser_use_full_cdp         stable             false\n"
-                b"computer_use                 stable             false\n"
-                b"multi_agent                  stable             false\n"
-                b"memories                     stable             false\n"
-                b"skip_host_skill_discovery    under development  true\n"
-            ), b"")
+            return subprocess.CompletedProcess(command, 0, OFFICIAL_FEATURE_OUTPUT, b"")
         if command[1:3] == ["mcp", "list"]:
             return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
         if command[1:3] == ["debug", "prompt-input"]:
@@ -1799,7 +1786,8 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
     "remote_plugin",
     "browser_use",
     "browser_use_external",
-    "browser_use_full_cdp",
+    "browser_use_full_cdp_access",
+    "in_app_browser",
     "computer_use",
     "multi_agent",
     "memories",
@@ -1892,32 +1880,11 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
 
 @pytest.mark.parametrize("features, mcp, environment", [
     (
-        b"apps                         stable             false\n"
-        b"hooks                        stable             false\n"
-        b"plugins                      stable             false\n"
-        b"remote_plugin                stable             false\n"
-        b"browser_use                  stable             false\n"
-        b"browser_use_external         stable             false\n"
-        b"browser_use_full_cdp         stable             false\n"
-        b"computer_use                 stable             false\n"
-        b"multi_agent                  stable             false\n"
-        b"memories                     stable             false\n"
-        b"skip_host_skill_discovery    under development  true\n",
+        safe_feature_output(),
         b"[]\n", {},
     ),
     (
-        b"apps                         stable             false\n"
-        b"hooks                        stable             false\n"
-        b"plugins                      stable             false\n"
-        b"remote_plugin                stable             false\n"
-        b"browser_use                  stable             false\n"
-        b"browser_use_external         stable             false\n"
-        b"browser_use_full_cdp         stable             false\n"
-        b"computer_use                 stable             false\n"
-        b"multi_agent                  stable             false\n"
-        b"memories                     stable             false\n"
-        b"skip_host_skill_discovery    under development  true\n"
-        b"future_feature               stable             true\n",
+        safe_feature_output() + b"future_feature               stable             true\n",
         b"[]\n", {},
     ),
     (b"apps                         stable             true\n", b"[]\n", {}),
@@ -1942,11 +1909,7 @@ def test_run_uses_executable_fakes_for_strict_inspector_evidence(
     if environment:
         with pytest.raises(RunAdmissionError, match="strict configuration"):
             run(Project(tmp_path, tmp_path), io.BytesIO())
-    elif (
-        features.startswith(b"apps                         stable             false\n")
-        and b"future_feature" not in features
-        and mcp == b"[]\n"
-    ):
+    elif features == safe_feature_output() and mcp == b"[]\n":
         spool = tmp_path / "request"
         spool.write_bytes(b"# Run Request\n")
         with spool.open("rb") as request:
@@ -2124,6 +2087,7 @@ def test_run_refuses_when_codex_is_missing_from_path(
 def test_run_canonicalizes_a_direct_codex_executable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
     make_executable(executable)
@@ -2139,6 +2103,7 @@ def test_run_canonicalizes_a_direct_codex_executable(
 def test_run_canonicalizes_a_symlinked_codex_executable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     executable = tmp_path / "installation" / "codex-real"
     executable.parent.mkdir()
     make_executable(executable)

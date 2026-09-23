@@ -524,10 +524,26 @@ def wait_for_runtime_marker(
 
 
 def wait_for_signal_runtime(ready: Path, factory_pid: int) -> tuple[int, int]:
-    wait_for_runtime_marker(
-        ready, factory_pid, "signal runtime did not become ready",
-    )
-    child_pid, process_group = ready.read_text().split()
+    # The runtime shim creates the marker and then writes into it, so poll
+    # for the pid/process-group content itself: a bare existence check can
+    # observe the file between creation and write.
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            tokens = ready.read_text().split()
+        except FileNotFoundError:
+            tokens = []
+        if len(tokens) == 2:
+            break
+        if time.monotonic() >= deadline:
+            try:
+                os.killpg(factory_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(factory_pid, 0)
+            pytest.fail("signal runtime did not become ready")
+        time.sleep(0.01)
+    child_pid, process_group = tokens
     return int(child_pid), int(process_group)
 
 

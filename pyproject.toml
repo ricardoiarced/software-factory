@@ -12,7 +12,7 @@ dependencies = ["platformdirs>=4"]
 factory = "factory:main"
 
 [tool.setuptools]
-py-modules = ["factory", "_harness", "_codex", "_claude", "_project", "_project_guidance", "_project_registry"]
+py-modules = ["factory", "_harness", "_codex", "_claude", "_publisher", "_project", "_project_guidance", "_project_registry"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

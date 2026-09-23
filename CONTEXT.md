@@ -69,6 +69,10 @@ _Avoid_: Compatibility mode
 A cacheable synthetic sandbox check that proves the current host enforces the certified permission boundary required for Run Admission.
 _Avoid_: Sandbox detection
 
+**Newest-Stable Verification**:
+The live per-Run publisher check that identifies each Harness's newest stable release and refuses a Run whose installed release is older, unstable, or unverifiable. Factory performs one unauthenticated lookup per Harness, cross-checks the authoritative publisher surfaces before trusting any of them, and treats transport faults, disagreeing surfaces, and rate limits as refusals — never as a stale allow. A release at or above the verified newest stable still requires membership in the selected Harness's Compatibility Set.
+_Avoid_: Version check, update check, cached release lookup
+
 **Project Spec**:
 Optional guidance stored at `<Project Boundary>/.agent/spec.md` and prepended to each instruction sent from that project. Factory never inherits a Project Spec from above the selected boundary, and a symlinked spec is valid only when its resolved target remains inside the boundary.
 _Avoid_: Instructions file, context file

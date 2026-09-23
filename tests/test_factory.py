@@ -1217,10 +1217,45 @@ def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) 
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == (
-        b"factory: error: Claude Compatibility Set is empty; update Factory "
-        b"to a release that certifies Claude Code.\n"
+    # The silent harness fake refuses at the earliest local step; only the
+    # quoted executable path varies with the temporary directory.
+    assert result.stderr.startswith(b'factory: error: Claude Code executable "')
+    assert result.stderr.endswith(
+        b" reported an unrecognized version; "
+        b"install a stable Claude Code release.\n",
     )
+
+
+@pytest.mark.parametrize(("harness", "version_output", "label"), [
+    ("codex", "codex-cli 9.9.9\n", "Codex"),
+    ("claude", "9.9.9 (Claude Code)\n", "Claude Code"),
+])
+def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
+    tmp_path: Path, harness: str, version_output: str, label: str,
+) -> None:
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    executable = fake_bin / harness
+    executable.write_text(f"#!/bin/sh\nprintf '{version_output}'\n")
+    executable.chmod(0o755)
+    git("init", "-q", cwd=tmp_path)
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
+
+    result = invoke(
+        "--harness", harness, "Fix", cwd=tmp_path,
+        env={
+            "XDG_CONFIG_HOME": str(tmp_path / "config"),
+            "PATH": os.pathsep.join((str(fake_bin), os.environ["PATH"])),
+        },
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr.startswith(
+        f"factory: error: Factory could not reach the {label} publisher".encode(),
+    )
+    assert result.stderr.endswith(b"check connectivity and retry.\n")
 
 
 def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:

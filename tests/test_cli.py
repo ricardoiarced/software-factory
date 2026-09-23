@@ -17,7 +17,13 @@ import pytest
 PROJECT = Path(__file__).resolve().parents[1]
 
 
-def test_built_wheel_installs_and_reports_distribution_version(tmp_path):
+def test_built_wheel_installs_and_reports_distribution_version(
+    tmp_path, monkeypatch,
+):
+    # Build isolation installs its backend through pip; the offline guard's
+    # dead proxy is for publisher lookups, not this local packaging step.
+    for variable in ("HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(variable, raising=False)
     artifacts = tmp_path / "dist"
     subprocess.run(
         [sys.executable, "-m", "build", "--sdist", "--wheel", "--outdir", str(artifacts)],

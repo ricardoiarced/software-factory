@@ -18,14 +18,23 @@ import tomllib
 
 import pytest
 
+import _publisher
 import factory
 from _codex import (
     CodexRunner,
     _Codex01551Policy,
     _match_compatibility,
+    _reported_version,
 )
 from _harness import RunAdmissionError
 from _project import Project
+from conftest import (
+    CODEX_GITHUB_RELEASES,
+    CODEX_NPM_DIST_TAGS,
+    PublisherResponses,
+    github_release,
+    npm_dist_tags,
+)
 
 
 def run(project: Project, run_request_spool) -> int:
@@ -202,6 +211,8 @@ def permission_profile_from(arguments: list[str]) -> dict[str, object]:
 def successful_inspection(
     command: list[str], **kwargs: object,
 ) -> subprocess.CompletedProcess[bytes]:
+    if command[1] == "--version":
+        return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
     if command[1:3] == ["features", "list"]:
         return subprocess.CompletedProcess(command, 0, safe_feature_output(), b"")
     if command[1:3] == ["debug", "prompt-input"]:
@@ -294,6 +305,38 @@ def install_launch_fixture(
     monkeypatch.setattr("_codex.subprocess.run", successful_run_inspection)
     monkeypatch.setattr("_codex.socket.socket", lambda *args: ListeningSocket())
     install_compatibility_fixture(executable, monkeypatch)
+
+
+def install_faked_launch_fixture(
+    executable: Path, monkeypatch: pytest.MonkeyPatch, status: int,
+) -> None:
+    """Serve the version read from the executable while faking only the launch."""
+
+    class Process:
+        def __init__(self, command: list[str], **kwargs: object) -> None:
+            self.args = command
+            self._version_read = command[1] == "--version"
+
+        def __enter__(self) -> "Process":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def communicate(
+            self, input: object = None, timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            assert self._version_read
+            return b"codex-cli 0.155.1\n", b""
+
+        def poll(self) -> int:
+            return 0 if self._version_read else status
+
+        def wait(self) -> int:
+            assert not self._version_read
+            return status
+
+    monkeypatch.setattr("_codex.subprocess.Popen", Process)
 
 
 def policy_with_recorded_host_admission_probe(
@@ -1000,10 +1043,8 @@ def test_run_uses_the_project_selection_git_root_without_rediscovery(
 
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     monkeypatch.setattr(_Codex01551Policy, "prepare_run", prepare_run)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
-        "Process", (), {"wait": lambda self: 17},
-    )())
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
+    install_faked_launch_fixture(executable, monkeypatch, status=17)
 
     project = Project(boundary=boundary, enclosing_git_root=selected_git_root)
 
@@ -1037,10 +1078,8 @@ def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
 
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     monkeypatch.setattr(_Codex01551Policy, "prepare_run", prepare_run)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr("_codex.subprocess.Popen", lambda *args, **kwargs: type(
-        "Process", (), {"wait": lambda self: 17},
-    )())
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
+    install_faked_launch_fixture(executable, monkeypatch, status=17)
 
     assert run(Project(boundary, git_root), io.BytesIO()) == 17
     assert calls == [(boundary, git_root)]
@@ -1497,13 +1536,15 @@ def test_run_refuses_incomplete_or_unrecognized_prompt_input_evidence(
     make_executable(executable)
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     launched = False
 
     def inspect(
         command: list[str], **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        if command[1:3] == ["features", "list"]:
+        if command[1] == "--version":
+            output = b"codex-cli 0.155.1\n"
+        elif command[1:3] == ["features", "list"]:
             output = safe_feature_output()
         elif command[1:3] == ["mcp", "list"]:
             output = b"[]\n"
@@ -1668,12 +1709,14 @@ def test_run_requires_complete_strict_configuration_inspection(
     git_root.mkdir()
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
 
     inspected: list[list[str]] = []
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         inspected.append(command)
+        if command[1] == "--version":
+            return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
         if command[1:3] == ["features", "list"]:
             return subprocess.CompletedProcess(command, 0, OFFICIAL_FEATURE_OUTPUT, b"")
         if command[1:3] == ["mcp", "list"]:
@@ -1695,7 +1738,8 @@ def test_run_requires_complete_strict_configuration_inspection(
 
     assert run(Project(boundary, git_root), io.BytesIO()) == 0
     configuration = expected_configuration(executable, git_root)
-    assert inspected[:2] == [
+    assert inspected[0][1] == "--version"
+    assert inspected[1:3] == [
         [os.fspath(executable), "features", "list", *configuration],
         [os.fspath(executable), "mcp", "list", "--json", *configuration],
     ]
@@ -1716,10 +1760,14 @@ def test_run_refuses_a_timed_out_strict_configuration_inspector(
     policy = install_compatibility_fixture(
         executable, monkeypatch, host_probe_timeout_seconds=0.25,
     )
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     launched = False
 
-    def inspect(command: list[str], **kwargs: object) -> None:
+    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes] | None:
+        # The short limit belongs to the strict-configuration inspectors; the
+        # version read that precedes them completes immediately.
+        if command[1] == "--version":
+            return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
         assert kwargs["timeout"] == 0.25
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
@@ -1746,12 +1794,14 @@ def test_run_refuses_stderr_from_a_successful_strict_configuration_inspector(
     make_executable(executable)
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     launched = False
 
     def inspect(
         command: list[str], **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
+        if command[1] == "--version":
+            return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
         if command[1:3] == ["features", "list"]:
             return subprocess.CompletedProcess(
                 command, 0, safe_feature_output(), b"unknown warning\n",
@@ -1790,11 +1840,16 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
     make_executable(executable, version="0.155.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     launched = False
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        output = features if command[1:3] == ["features", "list"] else mcp
+        if command[1] == "--version":
+            output = b"codex-cli 0.155.1\n"
+        elif command[1:3] == ["features", "list"]:
+            output = features
+        else:
+            output = mcp
         return subprocess.CompletedProcess(command, 0, output, b"")
 
     def launch(*args: object, **kwargs: object) -> None:
@@ -1831,12 +1886,17 @@ def test_run_refuses_each_active_effective_capability(
     make_executable(executable, version="0.155.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     launched = False
     features = safe_feature_output(forbidden_feature)
 
     def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        output = features if command[1:3] == ["features", "list"] else b"[]\n"
+        if command[1] == "--version":
+            output = b"codex-cli 0.155.1\n"
+        elif command[1:3] == ["features", "list"]:
+            output = features
+        else:
+            output = b"[]\n"
         return subprocess.CompletedProcess(command, 0, output, b"")
 
     def launch(*args: object, **kwargs: object) -> None:
@@ -1871,13 +1931,17 @@ def test_run_refuses_active_or_ambiguous_extension_evidence(
     make_executable(executable, version="0.155.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
-    monkeypatch.setattr(
-        "_codex.subprocess.run",
-        lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0, features if command[1:3] == ["features", "list"] else mcp, b"",
-        ),
-    )
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
+    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if command[1] == "--version":
+            output = b"codex-cli 0.155.1\n"
+        elif command[1:3] == ["features", "list"]:
+            output = features
+        else:
+            output = mcp
+        return subprocess.CompletedProcess(command, 0, output, b"")
+
+    monkeypatch.setattr("_codex.subprocess.run", inspect)
 
     with pytest.raises(RunAdmissionError, match=expected_reason):
         run(Project(tmp_path, tmp_path), io.BytesIO())
@@ -1897,7 +1961,7 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     monkeypatch.setenv("FACTORY_MCP", "[]\n")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "0")
     policy = install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     (tmp_path / "context").write_text("context")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
@@ -1935,7 +1999,7 @@ def test_run_uses_executable_fakes_for_strict_inspector_evidence(
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     policy = install_compatibility_fixture(executable, monkeypatch)
-    monkeypatch.setattr("_codex._match_compatibility", lambda path: policy)
+    monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
 
     if environment:
         with pytest.raises(RunAdmissionError, match="strict configuration"):
@@ -1950,6 +2014,73 @@ def test_run_uses_executable_fakes_for_strict_inspector_evidence(
             run(Project(tmp_path, tmp_path), io.BytesIO())
 
 
+def test_run_refuses_an_installed_codex_older_than_newest_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    publisher_responses: PublisherResponses,
+) -> None:
+    executable = (
+        tmp_path / ".codex" / "packages" / "standalone" / "releases" / "bin" / "codex"
+    )
+    executable.parent.mkdir(parents=True)
+    make_executable(executable, version="0.155.1")
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr(
+        "_codex.verify_codex_newest_stable", _publisher.verify_codex_newest_stable,
+    )
+    publisher_responses.install({
+        CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+    })
+
+    with pytest.raises(RunAdmissionError) as refused:
+        run(Project(tmp_path, tmp_path), io.BytesIO())
+
+    message = str(refused.value)
+    assert "0.155.1" in message and "0.156.1" in message
+    assert "older than the newest stable release" in message
+    assert "curl -fsSL https://chatgpt.com/codex/install.sh | sh" in message
+
+
+def test_run_refuses_a_local_version_failure_before_any_publisher_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    publisher_responses: PublisherResponses,
+) -> None:
+    # The default harness fake is silent, so the local version read refuses
+    # on its own; the offline guard turns any publisher GET into a failure.
+    monkeypatch.setattr(
+        "_codex.verify_codex_newest_stable", _publisher.verify_codex_newest_stable,
+    )
+
+    with pytest.raises(RunAdmissionError, match="reported an unrecognized version"):
+        run(Project(tmp_path, tmp_path), io.BytesIO())
+
+    assert publisher_responses.calls == []
+
+
+def test_run_refuses_an_uncertified_newest_release_and_names_the_factory_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    publisher_responses: PublisherResponses,
+) -> None:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir()
+    make_executable(executable, version="0.156.1")
+    monkeypatch.setenv("PATH", os.fspath(executable.parent))
+    monkeypatch.setattr(
+        "_codex.verify_codex_newest_stable", _publisher.verify_codex_newest_stable,
+    )
+    publisher_responses.install({
+        CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+    })
+
+    with pytest.raises(RunAdmissionError) as refused:
+        run(Project(tmp_path, tmp_path), io.BytesIO())
+
+    message = str(refused.value)
+    assert "version is not in the Codex Compatibility Set" in message
+    assert "update Factory to a release that certifies Codex 0.156.1" in message
+
+
 def test_identity_matches_an_exact_private_compatibility_fixture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1957,7 +2088,7 @@ def test_identity_matches_an_exact_private_compatibility_fixture(
     make_executable(executable)
     install_compatibility_fixture(executable, monkeypatch)
 
-    assert _match_compatibility(executable) == certify(executable)
+    assert _match_compatibility(executable, "0.155.1") == certify(executable)
 
 
 def test_identity_refuses_multiple_policies_for_one_artifact(
@@ -1970,7 +2101,7 @@ def test_identity_refuses_multiple_policies_for_one_artifact(
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", (first, second))
 
     with pytest.raises(RunAdmissionError, match="matches multiple policies"):
-        _match_compatibility(executable)
+        _match_compatibility(executable, "0.155.1")
 
 
 @pytest.mark.parametrize("output", [
@@ -1980,19 +2111,18 @@ def test_identity_refuses_multiple_policies_for_one_artifact(
     b"codex-cli 0.155.1\r\n",
     b"codex-cli 0.155.1\nmore\n",
 ])
-def test_identity_refuses_malformed_version_output(
+def test_version_report_refuses_malformed_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: bytes,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
-    install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr(
         "_codex.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, output, b""),
     )
 
     with pytest.raises(RunAdmissionError, match="reported an unrecognized version"):
-        _match_compatibility(executable)
+        _reported_version(executable)
 
 
 def test_identity_refuses_a_changed_digest(
@@ -2005,7 +2135,7 @@ def test_identity_refuses_a_changed_digest(
     executable.chmod(0o755)
 
     with pytest.raises(RunAdmissionError, match="SHA-256 does not match"):
-        _match_compatibility(executable)
+        _match_compatibility(executable, "0.155.1")
 
 
 def test_identity_refuses_another_platform(
@@ -2026,7 +2156,7 @@ def test_identity_refuses_another_platform(
     )
 
     with pytest.raises(RunAdmissionError, match="platform does not match"):
-        _match_compatibility(executable)
+        _match_compatibility(executable, "0.155.1")
 
 
 def test_identity_refuses_another_architecture(
@@ -2047,7 +2177,7 @@ def test_identity_refuses_another_architecture(
     )
 
     with pytest.raises(RunAdmissionError, match="platform does not match"):
-        _match_compatibility(executable)
+        _match_compatibility(executable, "0.155.1")
 
 
 def test_identity_uses_the_canonical_target_of_a_symlink(
@@ -2061,7 +2191,7 @@ def test_identity_uses_the_canonical_target_of_a_symlink(
     symlink.symlink_to(executable)
     install_compatibility_fixture(executable, monkeypatch)
 
-    assert _match_compatibility(symlink.resolve()) == certify(executable)
+    assert _match_compatibility(symlink.resolve(), "0.155.1") == certify(executable)
 
 
 def test_identity_refuses_a_replaced_filesystem_object(
@@ -2076,7 +2206,7 @@ def test_identity_refuses_a_replaced_filesystem_object(
     replacement.replace(executable)
 
     with pytest.raises(RunAdmissionError, match="filesystem identity does not match"):
-        _match_compatibility(executable)
+        _match_compatibility(executable, "0.155.1")
 
 
 def test_identity_refuses_replacement_between_version_and_artifact_read(
@@ -2098,7 +2228,7 @@ def test_identity_refuses_replacement_between_version_and_artifact_read(
     monkeypatch.setattr(Path, "open", replace_before_open)
 
     with pytest.raises(RunAdmissionError, match="filesystem identity does not match"):
-        _match_compatibility(executable)
+        _match_compatibility(executable, "0.155.1")
 
 
 def test_run_refuses_when_codex_is_missing_from_path(

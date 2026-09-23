@@ -16,8 +16,17 @@ import subprocess
 import tempfile
 from typing import BinaryIO, ClassVar
 
-from _harness import PreparedRun, RunAdmissionError, _quoted_absolute_path, launch
+from _harness import (
+    PreparedRun,
+    RunAdmissionError,
+    _quoted_absolute_path,
+    inspection_failure,
+    launch,
+    reported_version,
+    resolve_executable,
+)
 from _project import Project
+from _publisher import verify_codex_newest_stable
 
 
 def _cache_directory() -> Path:
@@ -598,102 +607,17 @@ _COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = (
 _VERSION_OUTPUT = re.compile(rb"codex-cli ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
 
 
-def _inspection_failure(path: Path, error: OSError) -> RunAdmissionError:
-    cause = error.strerror or str(error)
-    return RunAdmissionError(
-        f"Codex executable {_quoted_absolute_path(path)} could not be inspected: "
-        f"{cause}; check its permissions"
-    )
-
-
 def _resolve_executable() -> Path:
-    first_failure: RunAdmissionError | None = None
-    for directory in os.get_exec_path():
-        candidate = Path(directory or os.curdir) / "codex"
-        try:
-            candidate.lstat()
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        except OSError as error:
-            if first_failure is None:
-                first_failure = _inspection_failure(candidate, error)
-            continue
-
-        try:
-            executable = candidate.resolve(strict=True)
-            metadata = executable.stat()
-        except FileNotFoundError:
-            failure = RunAdmissionError(
-                f"Codex executable {_quoted_absolute_path(candidate)} is a dangling symlink; "
-                "repair or remove it from PATH"
-            )
-        except RuntimeError:
-            failure = RunAdmissionError(
-                f"Codex executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
-                "repair or remove it from PATH"
-            )
-        except OSError as error:
-            if error.errno == errno.ELOOP:
-                failure = RunAdmissionError(
-                    f"Codex executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
-                    "repair or remove it from PATH"
-                )
-            else:
-                failure = _inspection_failure(candidate, error)
-        else:
-            if not stat.S_ISREG(metadata.st_mode):
-                failure = RunAdmissionError(
-                    f"Codex executable {_quoted_absolute_path(executable)} "
-                    "is not a regular file; "
-                    "install Codex or remove it from PATH"
-                )
-            elif not os.access(executable, os.X_OK):
-                failure = RunAdmissionError(
-                    f"Codex executable {_quoted_absolute_path(executable)} is not executable; "
-                    "grant execute permission or replace it"
-                )
-            else:
-                return executable
-        if first_failure is None:
-            first_failure = failure
-
-    if first_failure is not None:
-        raise first_failure
-    raise RunAdmissionError(
-        'Codex executable "codex" was not found on PATH; '
-        "install Codex or add it to PATH"
-    )
+    return resolve_executable("codex", "Codex")
 
 
 def _reported_version(executable: Path) -> str:
-    try:
-        result = subprocess.run(
-            [os.fspath(executable), "--version"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    except OSError as error:
-        raise RunAdmissionError(
-            f"Codex executable {_quoted_absolute_path(executable)} could not report its version: "
-            f"{error.strerror or error}; check its permissions",
-            executable=executable,
-        ) from error
-    if result.returncode:
-        raise RunAdmissionError(
-            f"Codex executable {_quoted_absolute_path(executable)} could not report its version: "
-            f"exit status {result.returncode}",
-            executable=executable,
-        )
-    match = _VERSION_OUTPUT.fullmatch(result.stdout)
-    if match is None:
-        raise RunAdmissionError(
-            f"Codex executable {_quoted_absolute_path(executable)} reported an unrecognized version; "
-            "install a certified Codex release",
-            executable=executable,
-        )
-    return match.group(1).decode("ascii")
+    return reported_version(
+        executable,
+        pattern=_VERSION_OUTPUT,
+        label="Codex",
+        remedy="install a certified Codex release",
+    )
 
 
 def _artifact_identity(executable: Path) -> tuple[str, tuple[int, int]]:
@@ -704,14 +628,13 @@ def _artifact_identity(executable: Path) -> tuple[str, tuple[int, int]]:
             metadata = os.fstat(artifact.fileno())
             digest = hashlib.file_digest(artifact, "sha256").hexdigest()
     except OSError as error:
-        raise _inspection_failure(executable, error) from error
+        raise inspection_failure("Codex", executable, error) from error
     return digest, (metadata.st_dev, metadata.st_ino)
 
 
-def _match_compatibility(executable: Path) -> _Codex01551Policy:
+def _match_compatibility(executable: Path, version: str) -> _Codex01551Policy:
     """Return the sole policy whose complete immutable identity matches."""
 
-    version = _reported_version(executable)
     digest, filesystem_identity = _artifact_identity(executable)
     operating_system = platform.system()
     architecture = platform.machine()
@@ -732,7 +655,8 @@ def _match_compatibility(executable: Path) -> _Codex01551Policy:
     if matches:
         raise RunAdmissionError(
             f"Codex executable {_quoted_absolute_path(executable)} matches multiple policies "
-            "in the Codex Compatibility Set; install the certified artifact",
+            "in the Codex Compatibility Set; update Factory to ship a consistent "
+            "Codex Compatibility Set",
             executable=executable,
         )
 
@@ -752,7 +676,7 @@ def _match_compatibility(executable: Path) -> _Codex01551Policy:
         reason = "filesystem identity does not match the Codex Compatibility Set"
     raise RunAdmissionError(
         f"Codex executable {_quoted_absolute_path(executable)} {reason}; "
-        "install the certified artifact",
+        f"update Factory to a release that certifies Codex {version}",
         executable=executable,
     )
 
@@ -779,7 +703,7 @@ def _recheck_artifact(policy: _Codex01551Policy) -> None:
             digest = hashlib.file_digest(artifact, "sha256").hexdigest()
         path_metadata_after_hash = executable.stat()
     except OSError as error:
-        raise _inspection_failure(executable, error) from error
+        raise inspection_failure("Codex", executable, error) from error
 
     if (
         digest != policy.sha256
@@ -792,7 +716,12 @@ def _recheck_artifact(policy: _Codex01551Policy) -> None:
 
 
 def _admit_run(project: Project) -> tuple[_Codex01551Policy, list[str]]:
-    """Establish the complete production evidence and strict invocation."""
+    """Establish the complete production evidence and strict invocation.
+
+    The order is fixed: local executable resolution and installed-version
+    read, then the live newest-stable lookup and its refusal classification,
+    then the exact-tuple Compatibility Set match.
+    """
 
     executable = _resolve_executable()
     if not _COMPATIBILITY_SET:
@@ -800,7 +729,9 @@ def _admit_run(project: Project) -> tuple[_Codex01551Policy, list[str]]:
             "Codex Compatibility Set is empty; no Run is supported",
             executable=executable,
         )
-    policy = _match_compatibility(executable)
+    version = _reported_version(executable)
+    verify_codex_newest_stable(executable, version)
+    policy = _match_compatibility(executable, version)
     invocation = policy.prepare_run(
         project.boundary, project.enclosing_git_root,
     )

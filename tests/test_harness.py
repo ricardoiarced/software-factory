@@ -1,6 +1,7 @@
 """Harness selection and the fail-closed Runner interface."""
 
 import io
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -46,7 +47,18 @@ def test_codex_runner_admit_freezes_the_matched_launch_plan(
     )
 
 
-def test_claude_runner_refuses_admission_and_never_launches(tmp_path: Path) -> None:
+def test_claude_runner_refuses_admission_and_never_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A version-reporting fake gets admission past the local version read;
+    # no tuple is certified, so the empty Compatibility Set still refuses.
+    executable_directory = tmp_path / "claude-fake"
+    executable_directory.mkdir()
+    executable = executable_directory / "claude"
+    executable.write_text("#!/bin/sh\nprintf '9.9.9 (Claude Code)\\n'\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", os.fspath(executable_directory))
+
     runner = ClaudeCodeRunner()
     project = Project(tmp_path, tmp_path)
     spool = io.BytesIO(b"# Run Request\n\n## Instruction\n\nFix")

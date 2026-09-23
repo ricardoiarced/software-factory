@@ -2,10 +2,13 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import errno
 import json
 import os
 from pathlib import Path
+import re
 import signal
+import stat
 import subprocess
 from types import FrameType
 from typing import Any, BinaryIO, Protocol
@@ -82,6 +85,111 @@ def select_harness(name: str) -> Runner:
 
 def _quoted_absolute_path(path: Path) -> str:
     return json.dumps(str(path.absolute()), ensure_ascii=False)
+
+
+def inspection_failure(label: str, path: Path, error: OSError) -> RunAdmissionError:
+    cause = error.strerror or str(error)
+    return RunAdmissionError(
+        f"{label} executable {_quoted_absolute_path(path)} could not be inspected: "
+        f"{cause}; check its permissions"
+    )
+
+
+def resolve_executable(name: str, label: str) -> Path:
+    """Resolve one Harness executable from PATH as an executable regular file."""
+
+    label_quoted = json.dumps(name)
+    first_failure: RunAdmissionError | None = None
+    for directory in os.get_exec_path():
+        candidate = Path(directory or os.curdir) / name
+        try:
+            candidate.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as error:
+            if first_failure is None:
+                first_failure = inspection_failure(label, candidate, error)
+            continue
+
+        try:
+            executable = candidate.resolve(strict=True)
+            metadata = executable.stat()
+        except FileNotFoundError:
+            failure = RunAdmissionError(
+                f"{label} executable {_quoted_absolute_path(candidate)} is a dangling symlink; "
+                "repair or remove it from PATH"
+            )
+        except RuntimeError:
+            failure = RunAdmissionError(
+                f"{label} executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
+                "repair or remove it from PATH"
+            )
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                failure = RunAdmissionError(
+                    f"{label} executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
+                    "repair or remove it from PATH"
+                )
+            else:
+                failure = inspection_failure(label, candidate, error)
+        else:
+            if not stat.S_ISREG(metadata.st_mode):
+                failure = RunAdmissionError(
+                    f"{label} executable {_quoted_absolute_path(executable)} "
+                    "is not a regular file; "
+                    f"install {label} or remove it from PATH"
+                )
+            elif not os.access(executable, os.X_OK):
+                failure = RunAdmissionError(
+                    f"{label} executable {_quoted_absolute_path(executable)} is not executable; "
+                    "grant execute permission or replace it"
+                )
+            else:
+                return executable
+        if first_failure is None:
+            first_failure = failure
+
+    if first_failure is not None:
+        raise first_failure
+    raise RunAdmissionError(
+        f"{label} executable {label_quoted} was not found on PATH; "
+        f"install {label} or add it to PATH"
+    )
+
+
+def reported_version(
+    executable: Path, *, pattern: re.Pattern[bytes], label: str, remedy: str,
+) -> str:
+    """Read the installed release's self-reported version string."""
+
+    try:
+        result = subprocess.run(
+            [os.fspath(executable), "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise RunAdmissionError(
+            f"{label} executable {_quoted_absolute_path(executable)} could not report its version: "
+            f"{error.strerror or error}; check its permissions",
+            executable=executable,
+        ) from error
+    if result.returncode:
+        raise RunAdmissionError(
+            f"{label} executable {_quoted_absolute_path(executable)} could not report its version: "
+            f"exit status {result.returncode}",
+            executable=executable,
+        )
+    match = pattern.fullmatch(result.stdout)
+    if match is None:
+        raise RunAdmissionError(
+            f"{label} executable {_quoted_absolute_path(executable)} reported an unrecognized version; "
+            f"{remedy}",
+            executable=executable,
+        )
+    return match.group(1).decode("ascii")
 
 
 # Keep this to the foreground-group contract. Synchronous faults and

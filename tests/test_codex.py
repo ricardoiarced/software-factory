@@ -20,12 +20,18 @@ import pytest
 
 import factory
 from _codex import (
+    CodexRunner,
     _Codex01551Policy,
     _match_compatibility,
-    RunAdmissionError,
-    run,
 )
+from _harness import RunAdmissionError
 from _project import Project
+
+
+def run(project: Project, run_request_spool) -> int:
+    """Exercise the certified Runner exactly as the Factory command does."""
+
+    return CodexRunner().run(project, run_request_spool)
 
 
 HOST_PROBE_PROMPT = (
@@ -518,10 +524,26 @@ def wait_for_runtime_marker(
 
 
 def wait_for_signal_runtime(ready: Path, factory_pid: int) -> tuple[int, int]:
-    wait_for_runtime_marker(
-        ready, factory_pid, "signal runtime did not become ready",
-    )
-    child_pid, process_group = ready.read_text().split()
+    # The runtime shim creates the marker and then writes into it, so poll
+    # for the pid/process-group content itself: a bare existence check can
+    # observe the file between creation and write.
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            tokens = ready.read_text().split()
+        except FileNotFoundError:
+            tokens = []
+        if len(tokens) == 2:
+            break
+        if time.monotonic() >= deadline:
+            try:
+                os.killpg(factory_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(factory_pid, 0)
+            pytest.fail("signal runtime did not become ready")
+        time.sleep(0.01)
+    child_pid, process_group = tokens
     return int(child_pid), int(process_group)
 
 
@@ -667,7 +689,7 @@ def test_run_creates_one_native_foreground_codex_process(
     git_root = tmp_path / "git root"
     git_root.mkdir()
     spool = io.BytesIO(b"# Run Request\n")
-    invocation = expected_invocation(executable, boundary, git_root)
+    invocation = tuple(expected_invocation(executable, boundary, git_root))
     install_launch_fixture(executable, monkeypatch)
 
     calls: list[tuple[list[str], dict[str, object], bool, int]] = []

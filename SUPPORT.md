@@ -36,6 +36,11 @@ with the matching diagnostic from the Codex Compatibility Set check, and a
 host whose kernel identity or sandbox behavior changed is refused by the
 Host Admission Probe.
 
+Selecting Claude Code with `--harness claude` always fails closed today: no
+Claude Code release has completed real-host certification, so the Claude
+Compatibility Set is empty and every selected Run is refused before the Run
+Request is submitted. Factory never falls back to another Harness.
+
 Certification decisions — certified or rejected — are recorded under
 `certification/results/`. A rejected tuple stays unsupported until a fresh
 real-host certification run establishes that exact artifact, operating

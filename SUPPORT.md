@@ -15,21 +15,26 @@ architecture, or Codex artifact to another.
 ## Advertised tuples
 
 ```json
-[]
+[
+  {
+    "codex_version": "0.155.1",
+    "official_sha256": "0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761",
+    "operating_system": "Linux",
+    "architecture": "x86_64"
+  }
+]
 ```
 
-No Codex artifact has completed real-host certification, so Factory supports
-no Run on any platform today. The package still installs and serves help,
-version, and `factory project` administration, but every Run fails closed
-before a Codex process starts. When a Codex executable resolves on `PATH`,
-the refusal is:
-
-```text
-factory: error: Codex Compatibility Set is empty; no Run is supported.
-```
-
-and when none resolves, Run Admission refuses earlier with the exact
-diagnostic for that host.
+Exactly one Codex artifact has completed real-host certification: the
+official `0.155.1` x86_64-unknown-linux-musl standalone executable, certified
+on the tested Linux host recorded under `certification/results/`. The package
+still installs and serves help, version, and `factory project` administration
+everywhere, and every Run that does not resolve to exactly this artifact on
+an identical host fails closed before a Codex process starts: a different
+version, digest, platform, canonical path, or filesystem identity is refused
+with the matching diagnostic from the Codex Compatibility Set check, and a
+host whose kernel identity or sandbox behavior changed is refused by the
+Host Admission Probe.
 
 Certification decisions — certified or rejected — are recorded under
 `certification/results/`. A rejected tuple stays unsupported until a fresh

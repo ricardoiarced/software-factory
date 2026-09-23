@@ -61,7 +61,7 @@ class _Codex01551Policy:
 
     version: ClassVar[str] = "0.155.1"
     _feature_output: ClassVar[re.Pattern[bytes]] = re.compile(
-        rb"([a-z][a-z0-9_]*) {2,}"
+        rb"([a-z][a-z0-9_.]*) {2,}"
         rb"(stable|under development|experimental|deprecated|removed)"
         rb" {2,}(true|false)\n"
     )
@@ -72,7 +72,8 @@ class _Codex01551Policy:
         ("remote_plugin", False),
         ("browser_use", False),
         ("browser_use_external", False),
-        ("browser_use_full_cdp", False),
+        ("browser_use_full_cdp_access", False),
+        ("in_app_browser", False),
         ("computer_use", False),
         ("multi_agent", False),
         ("memories", False),
@@ -81,7 +82,7 @@ class _Codex01551Policy:
     _host_probe_success: ClassVar[bytes] = b"factory-host-admission-probe-v1\n"
     _malformed_profile_rejection: ClassVar[bytes] = (
         b'Error: invalid type: string "{", expected struct PermissionProfileToml\n'
-        b'in `permissions`\n'
+        b'in `permissions`\n\n'
     )
     _host_probe_project_guidance: ClassVar[str] = (
         "factory-host-admission-project-guidance-v1"
@@ -152,6 +153,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         return [
             "-c", "approval_policy=\"never\"",
             "-c", "project_doc_max_bytes=0",
+            "-c", "skills.include_instructions=false",
             "-c", "project_root_markers=[]",
             "-c", "allow_login_shell=false",
             "-c", "shell_environment_policy.inherit=\"core\"",
@@ -162,7 +164,8 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             "-c", "features.remote_plugin=false",
             "-c", "features.browser_use=false",
             "-c", "features.browser_use_external=false",
-            "-c", "features.browser_use_full_cdp=false",
+            "-c", "features.browser_use_full_cdp_access=false",
+            "-c", "features.in_app_browser=false",
             "-c", "features.computer_use=false",
             "-c", "features.multi_agent=false",
             "-c", "features.memories=false",
@@ -244,24 +247,26 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                     "unrecognized feature output",
                 )
             name = match.group(1).decode("ascii")
-            if name not in required_states:
-                raise self._strict_configuration_failure(
-                    "unrecognized feature output",
-                )
             if name in states:
                 raise self._strict_configuration_failure(
                     "contradictory feature output",
                 )
             states[name] = match.group(3) == b"true"
-        if states != required_states:
-            for name, required_state in required_states.items():
-                if name in states and states[name] != required_state:
-                    raise self._strict_configuration_failure(
-                        f"forbidden capability {name} is active",
-                    )
+        for name, required_state in required_states.items():
+            if name in states and states[name] != required_state:
+                raise self._strict_configuration_failure(
+                    f"forbidden capability {name} is active",
+                )
+        if not required_states.keys() <= states.keys():
             raise self._strict_configuration_failure(
                 "incomplete feature output",
             )
+        # Pin the complete official feature inventory, including rows outside
+        # the explicitly forbidden set. New or changed capabilities fail closed.
+        if hashlib.sha256(features).hexdigest() != (
+            "05bd1b9621f494b5941f2180af1cef83898e9ed33c1e6d0229c51291eca71997"
+        ):
+            raise self._strict_configuration_failure("unrecognized feature output")
 
         mcp = self._run_inspector(
             [os.fspath(self.canonical_path), "mcp", "list", "--json", *configuration],
@@ -586,9 +591,19 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         return self._invocation(project_boundary, enclosing_git_root)
 
 
-# Certification adds complete exact policies here. Keeping production empty is
-# fail-closed until an artifact has passed the real-host certification suite.
-_COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = ()
+# Certified by the 2026-09-22 Linux x86_64 real-host decision for issue #92.
+_COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = (
+    _Codex01551Policy(
+        sha256="0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761",
+        operating_system="Linux",
+        architecture="x86_64",
+        canonical_path=Path(
+            "/home/ricardoiarced/.codex/packages/standalone/releases/"
+            "0.155.1-x86_64-unknown-linux-musl/bin/codex"
+        ),
+        filesystem_identity=(2096, 13422),
+    ),
+)
 _VERSION_OUTPUT = re.compile(rb"codex-cli ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
 # Keep this to the foreground-group contract. Synchronous faults and
 # process-local timer/resource signals retain Factory's native dispositions.
@@ -822,7 +837,7 @@ def _admit_run(project: Project) -> tuple[_Codex01551Policy, list[str]]:
 
 
 def run(project: Project, run_request_spool: BinaryIO) -> int:
-    """Refuse every Run until a Codex artifact and host tuple is certified."""
+    """Launch a Run only after exact artifact and host admission."""
 
     policy, invocation = _admit_run(project)
     executable = policy.canonical_path

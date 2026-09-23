@@ -805,6 +805,7 @@ def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
 ) -> None:
     import subprocess
 
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "context").write_bytes(b"\xef\xbb\xbfcaf\xc3\xa9")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "4")
@@ -881,6 +882,7 @@ def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     threshold: str, payload: bytes, expected: str,
 ) -> None:
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "context").write_bytes(payload)
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", threshold)
@@ -1335,6 +1337,7 @@ def test_force_preserves_project_context_threshold_and_run_admission_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     failure: str, expected: str,
 ) -> None:
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "context").write_bytes(b"\xff")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "invalid" if failure == "threshold" else "0")

@@ -82,8 +82,19 @@ def test_uncommitted_digest_cannot_select_an_executable_for_certification(
         load_committed_selection(tmp_path, candidate)
 
 
-def test_rejected_tuple_leaves_the_production_compatibility_set_empty() -> None:
-    assert _codex._COMPATIBILITY_SET == ()
+def test_only_the_certified_linux_tuple_enters_the_production_compatibility_set() -> None:
+    assert len(_codex._COMPATIBILITY_SET) == 1
+    policy = _codex._COMPATIBILITY_SET[0]
+    assert policy.version == "0.155.1"
+    assert policy.sha256 == (
+        "0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761"
+    )
+    assert (policy.operating_system, policy.architecture) == ("Linux", "x86_64")
+    assert policy.canonical_path == Path(
+        "/home/ricardoiarced/.codex/packages/standalone/releases/"
+        "0.155.1-x86_64-unknown-linux-musl/bin/codex"
+    )
+    assert policy.filesystem_identity == (2096, 13422)
 
 
 def test_every_named_candidate_has_a_recorded_support_decision() -> None:

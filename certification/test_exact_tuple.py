@@ -57,10 +57,8 @@ PRODUCTION_CHECKS = (
 )
 
 # Per-Harness requirements: the certification of each first-scope tuple
-# records exactly these. The Codex probe derives every isolation property,
-# Project Spec Exclusivity suppression included. The Claude probe fixture is
-# the real-host Claude probe's deliverable, so the probe-derived properties
-# stay not-established and a Claude tuple cannot certify until it lands.
+# records exactly these. Each harness's real-host probe derives its
+# isolation properties, Project Spec Exclusivity suppression included.
 CODEX_EVIDENCE_PROPERTIES = tuple(
     name for name in EVIDENCE_PROPERTIES if name != "managed-policy-refusal"
 )
@@ -79,6 +77,19 @@ CLAUDE_PRODUCTION_CHECKS = (
     "newest-stable-verification",
     "managed-policy-gate",
     "sandbox-dependency-preflight",
+)
+# The properties one passing Claude Host Admission Probe derives on the
+# host: inside-boundary success and the required runtime read through the
+# admitted tools, every forbidden read and write denied, the network
+# denial control proven to detect egress before the sandboxed Run stayed
+# quiet (the negative control), and suppressed guidance left undiscovered.
+CLAUDE_PROBE_EVIDENCE_PROPERTIES = tuple(
+    name for name in EVIDENCE_PROPERTIES if name not in (
+        "inference-run",
+        "stale-version-refusal",
+        "wrong-digest-refusal",
+        "managed-policy-refusal",
+    )
 )
 
 EvidenceStatus = Literal["not-established", "established"]
@@ -317,12 +328,8 @@ def _certify_claude(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Establish one Claude Code tuple's evidence through the production path.
-
-    The Host Admission Probe fixture is the real-host Claude probe's
-    deliverable: the probe-derived isolation properties stay not-established
-    and the tuple cannot certify until it lands.
-    """
+    """Establish one Claude Code tuple's evidence through the production path,
+    including the real-host Host Admission Probe."""
 
     executable = _claude._resolve_executable()
     report["canonical_executable"] = str(executable)
@@ -401,13 +408,19 @@ def _certify_claude(
         return
     report["evidence"]["stale-version-refusal"] = "established"
 
-    invocation = policy._invocation()
-    prepared = PreparedRun(
-        harness="Claude Code",
-        executable=executable,
-        invocation=tuple(invocation),
-        environment=_claude._ENVIRONMENT_PINS,
+    # The complete production path from the top, now including the real-host
+    # Host Admission Probe against a fresh probe cache: admission must pass
+    # unmodified with the candidate policy installed.
+    monkeypatch.setattr(
+        _claude, "_cache_directory", lambda: tmp_path / "fresh-probe-cache",
     )
+    admitted_policy, invocation = _claude._admit_run(Project(tmp_path, tmp_path))
+    if admitted_policy is not policy:
+        raise RunAdmissionError(
+            "production admission returned a different policy",
+            executable=executable,
+        )
+    report["production_checks"]["host-admission-probe"] = "established"
     for required in (
         "-p", "--restricted", "--safe-mode", "--strict-mcp-config",
         "--permission-mode", "dontAsk", "--settings",
@@ -417,6 +430,13 @@ def _certify_claude(
                 f"the certified invocation lost {required!r}",
                 executable=executable,
             )
+    report["production_checks"]["strict-invocation-builder"] = "established"
+    prepared = PreparedRun(
+        harness="Claude Code",
+        executable=executable,
+        invocation=tuple(invocation),
+        environment=_claude._ENVIRONMENT_PINS,
+    )
     if set(name for name, _ in _claude._ENVIRONMENT_PINS) > {
         name for name, _ in prepared.environment
     }:
@@ -424,7 +444,14 @@ def _certify_claude(
             "the certified launch plan lost the nonessential-traffic pins",
             executable=executable,
         )
-    report["production_checks"]["strict-invocation-builder"] = "established"
+
+    # The probe planted forbidden project guidance, extensions, and
+    # configuration, attempted every admitted and forbidden operation
+    # through Bash and the native tools, and asserted each outcome from
+    # observed evidence; passing admission proves these isolation
+    # properties on this host.
+    for name in CLAUDE_PROBE_EVIDENCE_PROPERTIES:
+        report["evidence"][name] = "established"
 
     boundary, source, original = _inference_project(tmp_path / "claude-inference")
     _perform_inference_run(
@@ -439,10 +466,7 @@ def _certify_claude(
         )
     report["evidence"]["inference-run"] = "established"
 
-    report["failure"] = (
-        "the Claude Host Admission Probe fixture is the real-host Claude "
-        "probe's deliverable, so the tuple cannot certify until it lands"
-    )
+    report["result"] = "certified"
 
 
 def _selected_certification(

@@ -28,8 +28,10 @@ def make_candidate_repository(tmp_path: Path) -> Path:
 
 def candidate_document(digest: str = "a" * 64) -> dict[str, object]:
     return {
-        "schema": 1,
-        "codex_version": "0.155.1",
+        "schema": 2,
+        "harness": "codex",
+        "harness_version": "0.155.1",
+        "install_channel": "github-asset",
         "official_sha256": digest,
         "official_source": "https://github.com/openai/codex/releases/tag/rust-v0.155.1",
         "operating_system": "Linux",
@@ -37,8 +39,10 @@ def candidate_document(digest: str = "a" * 64) -> dict[str, object]:
     }
 
 
-def commit_candidate(root: Path, candidate: Path) -> None:
-    candidate.write_text(json.dumps(candidate_document()) + "\n")
+def commit_candidate(
+    root: Path, candidate: Path, document: dict[str, object] | None = None,
+) -> None:
+    candidate.write_text(json.dumps(document or candidate_document()) + "\n")
     subprocess.run(
         ["git", "add", candidate.relative_to(root)], cwd=root, check=True,
     )
@@ -55,7 +59,9 @@ def test_certification_loads_one_exact_committed_candidate(tmp_path: Path) -> No
 
     selection = load_committed_selection(tmp_path, candidate)
 
+    assert selection.harness == "codex"
     assert selection.version == "0.155.1"
+    assert selection.install_channel == "github-asset"
     assert selection.official_sha256 == "a" * 64
     assert selection.operating_system == "Linux"
     assert selection.architecture == "x86_64"
@@ -78,6 +84,118 @@ def test_uncommitted_digest_cannot_select_an_executable_for_certification(
 
     with pytest.raises(
         SelectionError, match="must exactly match a file committed at HEAD",
+    ):
+        load_committed_selection(tmp_path, candidate)
+
+
+def test_certification_refuses_the_retired_schema_one_manifest(
+    tmp_path: Path,
+) -> None:
+    """Exactly one manifest schema exists; schema value 1 cannot select."""
+
+    candidates = make_candidate_repository(tmp_path)
+    candidate = candidates / "linux-x86_64.json"
+    document = candidate_document()
+    document["schema"] = 1
+    commit_candidate(tmp_path, candidate, document)
+
+    with pytest.raises(SelectionError, match="schema is not supported"):
+        load_committed_selection(tmp_path, candidate)
+
+
+def test_certification_refuses_a_manifest_with_unrecognized_fields(
+    tmp_path: Path,
+) -> None:
+    candidates = make_candidate_repository(tmp_path)
+    candidate = candidates / "linux-x86_64.json"
+    document = candidate_document()
+    document["schema"] = 1
+    document["codex_version"] = document.pop("harness_version")
+    commit_candidate(tmp_path, candidate, document)
+
+    with pytest.raises(
+        SelectionError, match="fields are incomplete or unrecognized",
+    ):
+        load_committed_selection(tmp_path, candidate)
+
+
+@pytest.mark.parametrize(
+    ("harness", "install_channel"),
+    [
+        ("cursor", "npm"),
+        ("claude", "github-asset"),
+        ("codex", "native-installer"),
+    ],
+)
+def test_certification_requires_a_certified_harness_and_channel(
+    tmp_path: Path, harness: str, install_channel: str,
+) -> None:
+    candidates = make_candidate_repository(tmp_path)
+    candidate = candidates / "linux-x86_64.json"
+    document = candidate_document()
+    document["harness"] = harness
+    document["install_channel"] = install_channel
+    commit_candidate(tmp_path, candidate, document)
+
+    with pytest.raises(
+        SelectionError, match="not a certified Harness|not certified for",
+    ):
+        load_committed_selection(tmp_path, candidate)
+
+
+@pytest.mark.parametrize(
+    ("harness", "install_channel", "official_source"),
+    [
+        (
+            "codex",
+            "npm",
+            "https://www.npmjs.com/package/@openai/codex-linux-x64",
+        ),
+        (
+            "claude",
+            "npm",
+            "https://www.npmjs.com/package/@anthropic-ai/claude-code",
+        ),
+        (
+            "claude",
+            "native-installer",
+            "https://downloads.claude.ai/claude-code-releases/stable/manifest.json",
+        ),
+    ],
+)
+def test_certification_selects_every_first_scope_artifact_family(
+    tmp_path: Path, harness: str, install_channel: str, official_source: str,
+) -> None:
+    candidates = make_candidate_repository(tmp_path)
+    candidate = candidates / "linux-x86_64.json"
+    document = candidate_document()
+    document["harness"] = harness
+    document["install_channel"] = install_channel
+    document["official_source"] = official_source
+    commit_candidate(tmp_path, candidate, document)
+
+    selection = load_committed_selection(tmp_path, candidate)
+
+    assert selection.harness == harness
+    assert selection.install_channel == install_channel
+    assert selection.official_source == official_source
+
+
+def test_certification_pins_official_source_to_the_artifact_family(
+    tmp_path: Path,
+) -> None:
+    candidates = make_candidate_repository(tmp_path)
+    candidate = candidates / "linux-x86_64.json"
+    document = candidate_document()
+    document["install_channel"] = "npm"
+    document["official_source"] = (
+        "https://github.com/openai/codex/releases/tag/rust-v0.155.1"
+    )
+    commit_candidate(tmp_path, candidate, document)
+
+    with pytest.raises(
+        SelectionError,
+        match="official_source does not name the artifact family",
     ):
         load_committed_selection(tmp_path, candidate)
 

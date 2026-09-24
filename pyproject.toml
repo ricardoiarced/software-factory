@@ -17,5 +17,5 @@ py-modules = ["factory", "_harness", "_codex", "_claude", "_publisher", "_projec
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "real_host_certification: exercises a selected real Codex artifact and host",
+    "real_host_certification: certifies one selected real Harness artifact and host tuple",
 ]

@@ -17,7 +17,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="run the explicitly selected real-host certification suite",
     )
     group.addoption(
-        "--codex-candidate",
+        "--harness-candidate",
         help="committed candidate manifest beneath certification/candidates",
     )
 
@@ -40,10 +40,10 @@ def certification_selection(
     if not pytestconfig.getoption("real_host_certification"):
         pytest.skip("real-host certification was not explicitly selected")
 
-    candidate = pytestconfig.getoption("codex_candidate")
+    candidate = pytestconfig.getoption("harness_candidate")
     if not isinstance(candidate, str) or not candidate:
         raise pytest.UsageError(
-            "--codex-candidate is required for real-host certification",
+            "--harness-candidate is required for real-host certification",
         )
     try:
         return load_committed_selection(pytestconfig.rootpath, candidate)

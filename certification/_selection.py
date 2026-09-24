@@ -13,11 +13,38 @@ class SelectionError(Exception):
     """The real-host certification candidate is not trustworthy."""
 
 
+# Manifest schema 2 names the certified tuple (harness, version, artifact
+# family / install channel, OS, architecture). Exactly one schema exists;
+# schema-1 Codex manifests migrated when schema 2 landed.
+_SCHEMA = 2
+
+_HARNESSES = ("codex", "claude")
+
+# The install channels of the certified first scope. A channel names the
+# artifact family whose official distribution surface anchors the digest.
+_INSTALL_CHANNELS = {
+    "codex": ("github-asset", "npm"),
+    "claude": ("native-installer", "npm"),
+}
+
+# npm-family digests anchor the unpacked platform binary and are
+# cross-checked against the registry's dist-integrity before review;
+# their official source is the npm package page.
+_SOURCE_PREFIXES = {
+    ("codex", "github-asset"): "https://github.com/openai/codex/releases/",
+    ("codex", "npm"): "https://www.npmjs.com/package/",
+    ("claude", "native-installer"): "https://",
+    ("claude", "npm"): "https://www.npmjs.com/package/",
+}
+
+
 @dataclass(frozen=True)
 class CertificationSelection:
-    """The independently named Codex artifact and platform tuple."""
+    """The independently named Harness artifact, channel, and platform tuple."""
 
+    harness: str
     version: str
+    install_channel: str
     official_sha256: str
     official_source: str
     operating_system: str
@@ -117,7 +144,9 @@ def load_committed_selection(
         raise SelectionError("candidate manifest is not strict JSON") from error
     expected_fields = {
         "schema",
-        "codex_version",
+        "harness",
+        "harness_version",
+        "install_channel",
         "official_sha256",
         "official_source",
         "operating_system",
@@ -125,25 +154,39 @@ def load_committed_selection(
     }
     if not isinstance(document, dict) or set(document) != expected_fields:
         raise SelectionError("candidate manifest fields are incomplete or unrecognized")
-    if type(document["schema"]) is not int or document["schema"] != 1:
+    if type(document["schema"]) is not int or document["schema"] != _SCHEMA:
         raise SelectionError("candidate manifest schema is not supported")
     for name in expected_fields - {"schema"}:
         value = document[name]
         if not isinstance(value, str) or not value or value.strip() != value:
             raise SelectionError(f"candidate manifest {name} is not an exact string")
+    harness = document["harness"]
+    if harness not in _HARNESSES:
+        raise SelectionError(
+            f"candidate manifest harness {harness!r} is not a certified Harness",
+        )
+    install_channel = document["install_channel"]
+    if install_channel not in _INSTALL_CHANNELS[harness]:
+        raise SelectionError(
+            f"candidate manifest install channel {install_channel!r} is not "
+            f"certified for {harness}",
+        )
     digest = document["official_sha256"]
     if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise SelectionError(
             "candidate manifest official_sha256 is not a lowercase SHA-256 digest",
         )
     official_source = document["official_source"]
-    if not official_source.startswith("https://github.com/openai/codex/releases/"):
+    if not official_source.startswith(_SOURCE_PREFIXES[(harness, install_channel)]):
         raise SelectionError(
-            "candidate manifest official_source is not an official Codex release",
+            "candidate manifest official_source does not name the artifact "
+            "family's official distribution surface",
         )
 
     return CertificationSelection(
-        version=document["codex_version"],
+        harness=harness,
+        version=document["harness_version"],
+        install_channel=install_channel,
         official_sha256=digest,
         official_source=official_source,
         operating_system=document["operating_system"],

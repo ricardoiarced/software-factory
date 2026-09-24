@@ -6,6 +6,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import signal
 import stat
@@ -14,6 +15,23 @@ from types import FrameType
 from typing import Any, BinaryIO, Protocol
 
 from _project import Project
+
+
+def factory_version() -> str:
+    """Return the installed Factory distribution version."""
+
+    from importlib.metadata import version
+
+    return version("software-factory")
+
+
+def host_identity() -> dict[str, str]:
+    """Return the OS/kernel facts whose change invalidates probe evidence."""
+
+    return {
+        "release": platform.release(),
+        "version": platform.version(),
+    }
 
 
 class RunAdmissionError(Exception):
@@ -33,13 +51,15 @@ class PreparedRun:
     """A frozen launch plan established by completed Run Admission.
 
     ``harness`` names the selected Harness for Factory-owned diagnostics,
-    ``executable`` is the admitted artifact, and ``invocation`` is its exact
-    launch command.
+    ``executable`` is the admitted artifact, ``invocation`` is its exact
+    launch command, and ``environment`` pins certified variable values over
+    the inherited host environment (empty for a pure pass-through).
     """
 
     harness: str
     executable: Path
     invocation: tuple[str, ...]
+    environment: tuple[tuple[str, str], ...] = ()
 
 
 class Runner(Protocol):
@@ -217,11 +237,15 @@ def launch(
     Factory invokes the admitted executable directly without a shell, with
     the Project Boundary as the child working directory and the composed Run
     Request spool as its standard input. Standard output, standard error, and
-    the host environment pass through unchanged; Factory shares the child's
+    the host environment pass through unchanged except for the certified
+    environment pins of the admitted launch plan; Factory shares the child's
     foreground process group, returns its ordinary exit status, and
     re-exposes signal termination as the same signal.
     """
 
+    environment = (
+        {**os.environ, **dict(prepared.environment)} if prepared.environment else None
+    )
     previous_handlers: dict[
         signal.Signals,
         Callable[[int, FrameType | None], Any] | int | None,
@@ -233,7 +257,7 @@ def launch(
             stdin=run_request_spool,
             stdout=None,
             stderr=None,
-            env=None,
+            env=environment,
             shell=False,
             start_new_session=False,
         )

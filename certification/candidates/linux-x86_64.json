@@ -1,6 +1,8 @@
 {
-  "schema": 1,
-  "codex_version": "0.155.1",
+  "schema": 2,
+  "harness": "codex",
+  "harness_version": "0.155.1",
+  "install_channel": "github-asset",
   "official_sha256": "0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761",
   "official_source": "https://github.com/openai/codex/releases/tag/rust-v0.155.1",
   "operating_system": "Linux",

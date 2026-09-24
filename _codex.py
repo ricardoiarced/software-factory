@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 import errno
 import hashlib
-from importlib.metadata import version
 import json
 import os
 from pathlib import Path
@@ -20,6 +19,8 @@ from _harness import (
     PreparedRun,
     RunAdmissionError,
     _quoted_absolute_path,
+    factory_version as _factory_version,
+    host_identity as _host_identity,
     inspection_failure,
     launch,
     reported_version,
@@ -33,19 +34,6 @@ def _cache_directory() -> Path:
     from platformdirs import user_cache_path
 
     return user_cache_path("factory", appauthor=False)
-
-
-def _factory_version() -> str:
-    return version("software-factory")
-
-
-def _host_identity() -> dict[str, str]:
-    """Return the OS/kernel facts whose change invalidates probe evidence."""
-
-    return {
-        "release": platform.release(),
-        "version": platform.version(),
-    }
 
 
 @dataclass(frozen=True)

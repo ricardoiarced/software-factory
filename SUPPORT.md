@@ -4,20 +4,23 @@ Factory release verification and platform support are separate claims. The
 deterministic suite and the packaging smoke tests prove behavior and
 packaging; they are never evidence that a host enforces Project Data
 Isolation. Factory advertises support only for the exact tuples below — each
-names one Codex version, one official executable SHA-256, one operating
-system, and one architecture that completed real-host certification and that
-production Run Admission embeds in `_codex._COMPATIBILITY_SET`. This
-document and that embedded set are kept equal by
+names one Harness, one Harness version, one artifact family install channel,
+one official executable SHA-256, one operating system, and one architecture
+that completed real-host certification and that production Run Admission
+embeds in `_codex._COMPATIBILITY_SET` or `_claude._CLAUDE_COMPATIBILITY_SET`.
+This document and those embedded sets are kept equal by
 `tests/test_platform_claims.py`; no tuple is advertised without certified
 real-host evidence, and certified evidence never generalizes from one host,
-architecture, or Codex artifact to another.
+architecture, or Harness artifact to another.
 
 ## Advertised tuples
 
 ```json
 [
   {
-    "codex_version": "0.155.1",
+    "harness": "codex",
+    "harness_version": "0.155.1",
+    "install_channel": "github-asset",
     "official_sha256": "0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761",
     "operating_system": "Linux",
     "architecture": "x86_64"

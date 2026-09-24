@@ -61,6 +61,22 @@ _Avoid_: Compatibility range, minimum Codex version
 The exact Claude Code executable artifacts and platform combinations certified by a Factory release to enforce Project Data Isolation.
 _Avoid_: Compatibility range, minimum Claude Code version
 
+**Artifact Family**:
+The packaging of one Harness release that a Compatibility Set tuple is certified against — a publisher release asset, a native installer, or an npm package whose digest anchors the unpacked platform binary. Different families of the same Harness version certify separately and never stand in for one another.
+_Avoid_: Package format, release flavor
+
+**Candidate Manifest**:
+The committed reviewed file beneath `certification/candidates/` that selects exactly one Harness tuple for real-host certification: schema, Harness, Harness version, install channel, official executable SHA-256, official source, OS, and architecture. The manifest bytes must match `HEAD`, and the digest is reviewed independently of the installed binary, so a runtime-provided executable can never become certification evidence.
+_Avoid_: Config file, candidate list
+
+**Certification Record**:
+The recorded result of one real-host certification run: the emitted report's identity — Harness, install channel, Harness version, official digest and source, OS, architecture — plus each established evidence property and production check, or the exact admission failure on rejection. A record authorizes, never performs, the addition of its exact tuple to a Compatibility Set, and evidence never rides over from a previous Factory version.
+_Avoid_: Test log, CI output
+
+**Publication Gate**:
+The release rule that a Factory version ships only when CI is green and fresh Certification Records dated at or after the release commit exist for every certified tuple. A recertifying release replaces the affected Harness's Compatibility Set tuples wholesale rather than letting stale tuples accumulate.
+_Avoid_: Release checklist, signing step
+
 **Run Admission**:
 The fail-closed checks that establish a Run can use a member of the selected Harness's compatibility set and enforce the required isolation before Factory submits the Run Request.
 _Avoid_: Compatibility mode

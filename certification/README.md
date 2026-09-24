@@ -79,12 +79,20 @@ per Harness in the emitted report:
   `host-admission-probe`, `newest-stable-verification`, and, for Claude
   Code, `managed-policy-gate` and `sandbox-dependency-preflight`.
 
-A Claude Code tuple cannot certify yet: the Claude Host Admission Probe
-fixture is still a pending deliverable, so the Claude probe stage fails
-closed and a Claude selection always records a rejection naming it. Its
-inference Run therefore launches through the shared lifecycle from the
-certified invocation and environment pins rather than through production
-admission, which refuses at the unimplemented probe stage.
+A Claude Code tuple runs the complete production path, including the
+real-host Host Admission Probe. The certified recipe's inline settings
+compute a sandbox read fence from the canonical Project Boundary at launch —
+`denyRead` names the boundary's parent (parent and sibling data wherever the
+boundary lives) and the home directory, `allowRead` keeps the boundary and
+the installed Harness runtime readable, and `sandbox.credentials` denies
+`~/.ssh` and `~/.aws` outright. The probe plants credential canaries at
+those denied paths, expects every read of them to fail, and asserts from
+observed evidence that no canary content reached the session. The uncached
+managed-policy gate classifies each doctor-reported Managed-Policy Surface
+strictly: present, configured, and uninspected surfaces refuse; a
+not-fetched surface attributed to a custom `ANTHROPIC_BASE_URL` is an
+unavailable surface that allows admission with a recorded residual-risk
+notice; any other not-fetched wording or unrecognized shape refuses.
 
 The result is emitted as one line prefixed with
 `FACTORY_REAL_HOST_CERTIFICATION=`. Its JSON document records the Factory

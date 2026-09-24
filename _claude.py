@@ -1,5 +1,6 @@
 """Claude Code Run Admission and the certified Claude Code Runner."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -11,8 +12,9 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
-from typing import BinaryIO, ClassVar
+from typing import BinaryIO, ClassVar, Iterator
 
 from _harness import (
     PreparedRun,
@@ -50,6 +52,12 @@ _MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
 _MANAGED_SETTINGS_DROP_INS = Path("/etc/claude-code/managed-settings.d")
 _MANAGED_MCP = Path("/etc/claude-code/managed-mcp.json")
 _DOCTOR_POLICY_MARKERS = ("Managed settings (remote)", "Organization policy")
+# The one not-fetched shape that carries no-signal: the doctor attributes the
+# empty fetch to the custom endpoint being set, so the surface cannot deliver
+# policy at all. Bare or network-flavored not-fetched wordings refuse.
+_DOCTOR_UNAVAILABLE_ATTRIBUTION = "with a custom ANTHROPIC_BASE_URL"
+# The doctor states of a policy surface that report no policy.
+_DOCTOR_BENIGN_STATES = ("absent", "skipped")
 _DOCTOR_TIMEOUT_SECONDS = 10.0
 
 
@@ -105,6 +113,8 @@ class _ProbeFixture:
     tmp_write_tool: Path
     tmp_hook_canary: Path
     guidance_canary: Path
+    ssh_canary: Path
+    aws_canary: Path
     report: Path
     port: int = 0
 
@@ -119,9 +129,16 @@ def _forbidden_guidance_text(sentinel: str) -> str:
     )
 
 
-def _build_probe_fixture(root: Path, temporary_root: Path) -> _ProbeFixture:
+def _build_probe_fixture(
+    root: Path, temporary_root: Path, home: Path | None = None,
+) -> _ProbeFixture:
     """Plant the complete probe fixture: boundary, escapes, and forbidden
-    instruction sources, settings, extensions, and configuration."""
+    instruction sources, settings, extensions, and configuration.
+
+    The credential-canary paths are resolved under ``home`` — the live HOME
+    in production, so they name the exact paths the certified settings
+    deny — but nothing is planted there until the probe Run executes.
+    """
 
     boundary = root / "boundary"
     sibling = root / "sibling"
@@ -131,6 +148,7 @@ def _build_probe_fixture(root: Path, temporary_root: Path) -> _ProbeFixture:
     (boundary / ".claude-plugin").mkdir()
     sibling.mkdir()
     temporary_root.mkdir(parents=True, exist_ok=True)
+    home = home if home is not None else Path.home()
 
     sentinel = _ClaudePolicy._probe_forbidden_guidance
     guidance = _forbidden_guidance_text(sentinel)
@@ -213,6 +231,8 @@ def _build_probe_fixture(root: Path, temporary_root: Path) -> _ProbeFixture:
         tmp_write_tool=tmp_write_tool,
         tmp_hook_canary=tmp_hook_canary,
         guidance_canary=boundary / "factory-forbidden-guidance-canary.txt",
+        ssh_canary=home / ".ssh" / "factory-probe-credential-canary.txt",
+        aws_canary=home / ".aws" / "factory-probe-credential-canary.txt",
         report=boundary / _ClaudePolicy._probe_report_name,
     )
 
@@ -245,12 +265,43 @@ def _doctor_failure(cause: str) -> RunAdmissionError:
     )
 
 
-def _managed_doctor_lines(output: str) -> tuple[str, ...]:
-    """Return the doctor lines that report a configured policy source.
+def _classify_doctor_policy_line(line: str) -> str:
+    """Classify one doctor policy-marker line for the managed-policy gate.
 
-    The exact line shapes of the installed release are pinned by the
-    real-host probe; an unrecognized shape refuses fail-closed upstream
-    because the doctor evidence cannot be inspected at all.
+    ``benign`` — the surface reports no policy (``absent``, ``skipped``);
+    ``unavailable`` — the doctor could not fetch the surface and attributes
+    that to the custom endpoint, so the surface cannot deliver policy at all
+    and the line carries no-signal; ``refuse`` — a configured or present
+    surface, a not-fetched wording with any other reason, or an unrecognized
+    shape.
+    """
+
+    if "not fetched" in line:
+        if _DOCTOR_UNAVAILABLE_ATTRIBUTION in line:
+            return "unavailable"
+        return "refuse"
+    state = line.partition(": ")[2].strip()
+    if state in _DOCTOR_BENIGN_STATES:
+        return "benign"
+    return "refuse"
+
+
+def _surface_unavailable_policy_notice() -> None:
+    """Emit the admission-diagnostics notice for an admission that succeeded
+    on an unavailable managed-policy surface."""
+
+    sys.stderr.write(
+        "factory: warning: remote managed-policy surfaces unavailable — "
+        "custom endpoint; residual risk accepted.\n",
+    )
+
+
+def _managed_doctor_lines(output: str) -> tuple[str, ...]:
+    """Return the doctor lines that name a managed-policy surface.
+
+    Each returned line is classified by _classify_doctor_policy_line; the
+    exact line shapes of the installed release are pinned by the real-host
+    probe, and an unrecognized shape refuses fail-closed.
     """
 
     return tuple(
@@ -261,7 +312,13 @@ def _managed_doctor_lines(output: str) -> tuple[str, ...]:
 
 
 def _require_no_managed_policy(executable: Path) -> None:
-    """Refuse whenever any managed-policy source is detected."""
+    """Refuse whenever any managed-policy source is detected.
+
+    The doctor's not-fetched notices attributed to the custom endpoint are an
+    unavailable surface carrying no-signal: admission succeeds and records
+    the residual risk with a notice. Every other unavailable, configured, or
+    unrecognized shape refuses.
+    """
 
     if _MANAGED_SETTINGS.exists():
         raise _managed_policy_failure(
@@ -305,11 +362,16 @@ def _require_no_managed_policy(executable: Path) -> None:
     )
     if not output.strip():
         raise _doctor_failure("the doctor reported nothing to inspect")
-    lines = _managed_doctor_lines(output)
-    if lines:
-        raise _managed_policy_failure(
-            f"claude doctor reports a managed policy source ({lines[0]!r})",
-        )
+    unavailable = False
+    for line in _managed_doctor_lines(output):
+        verdict = _classify_doctor_policy_line(line)
+        if verdict == "refuse":
+            raise _managed_policy_failure(
+                f"claude doctor reports a managed policy source ({line!r})",
+            )
+        unavailable = unavailable or verdict == "unavailable"
+    if unavailable:
+        _surface_unavailable_policy_notice()
 
 
 def _sandbox_dependency_failure(dependency: str) -> RunAdmissionError:
@@ -362,8 +424,16 @@ class _ClaudePolicy:
     # The probe prompt is a deterministic script: every admitted operation
     # must succeed, every forbidden operation must fail, and Factory asserts
     # each outcome from observed evidence, never from flag presence.
+    # Every embedded Bash command must parse cleanly: a command the shell
+    # parser cannot analyze asks the person, and under --permission-mode
+    # dontAsk in a non-interactive session that ask is denied — a forbidden
+    # step could then record "failed" for the wrong reason. A deterministic
+    # test parses each Bash step to guard this.
     _probe_forbidden_guidance: ClassVar[str] = (
         "factory-host-admission-forbidden-guidance-v1"
+    )
+    _probe_credential_canary: ClassVar[str] = (
+        "factory-host-admission-credential-canary-v1"
     )
     _probe_report_name: ClassVar[str] = "factory-probe-report.json"
     _network_control_timeout_seconds: ClassVar[float] = 10.0
@@ -417,6 +487,14 @@ class _ClaudePolicy:
             "Bash: `printf 'probe-write\\n' > {tmp_write}`",
         ),
         (
+            "bash-read-ssh", "failed",
+            "Bash: `cat {ssh_canary}` (a planted credential canary)",
+        ),
+        (
+            "bash-read-aws", "failed",
+            "Bash: `cat {aws_canary}` (a planted credential canary)",
+        ),
+        (
             "bash-read-symlink", "failed",
             "Bash: `cat escape-read-symlink.txt`",
         ),
@@ -462,7 +540,29 @@ class _ClaudePolicy:
         ),
     )
 
-    def _settings_document(self) -> str:
+    def _read_fence(self, boundary: Path) -> dict[str, list[str]]:
+        """The sandbox read fence computed from the canonical Project
+        Boundary: deny the boundary's parent — covering parent and sibling
+        data wherever the boundary lives — and home-directory content
+        outside the boundary, while keeping the boundary and the installed
+        Harness runtime readable. The probe's inside-success assertions
+        catch any runtime path this fence misses."""
+
+        denied = sorted({os.fspath(boundary.parent), os.fspath(Path.home())})
+        allowed = [os.fspath(boundary), os.fspath(self.canonical_path)]
+        return {"denyRead": denied, "allowRead": allowed}
+
+    def _credential_entries(self) -> dict[str, list[str]]:
+        """The credential paths the sandbox denies outright: Factory needs no
+        readable-but-masked credential path, so deny is the stronger and
+        only entry the certified recipe carries."""
+
+        home = Path.home()
+        return {"deny": sorted(
+            [os.fspath(home / ".ssh"), os.fspath(home / ".aws")],
+        )}
+
+    def _settings_document(self, boundary: Path) -> str:
         """The inline certified settings: sandbox fail-closed with a read fence."""
 
         return json.dumps(
@@ -472,10 +572,14 @@ class _ClaudePolicy:
                 },
                 "sandbox": {
                     "allowUnsandboxedCommands": False,
+                    "credentials": self._credential_entries(),
                     "enabled": True,
                     "excludedCommands": [],
                     "failIfUnavailable": True,
-                    "filesystem": {"disabled": False},
+                    "filesystem": {
+                        "disabled": False,
+                        **self._read_fence(boundary),
+                    },
                     "network": {"allow": [], "strictAllowlist": True},
                 },
             },
@@ -484,12 +588,13 @@ class _ClaudePolicy:
             separators=(",", ":"),
         )
 
-    def _invocation(self) -> list[str]:
+    def _invocation(self, boundary: Path) -> list[str]:
         """The exact certified candidate recipe as one launch command.
 
         The Project Boundary is the sole working directory: the shared
         lifecycle launches with it as the child's cwd, and --restricted
-        confines the native file tools to those working directories.
+        confines the native file tools to those working directories. The
+        inline settings compute the read fence from this boundary.
         """
 
         return [
@@ -501,19 +606,26 @@ class _ClaudePolicy:
             "--tools", self._admitted_tools,
             "--allowedTools", self._admitted_tools,
             "--permission-mode", "dontAsk",
-            "--settings", self._settings_document(),
+            "--settings", self._settings_document(boundary),
         ]
 
-    def _probe_prompt(self, fixture: _ProbeFixture) -> str:
-        """The deterministic probe script submitted as the Run Request."""
+    def _probe_substitutions(self, fixture: _ProbeFixture) -> dict[str, str]:
+        """The placeholder values the probe step directives interpolate."""
 
-        substitutions = {
+        return {
             "tmp_read": os.fspath(fixture.tmp_read),
             "tmp_write": os.fspath(fixture.tmp_write),
             "tmp_write_tool": os.fspath(fixture.tmp_write_tool),
             "executable": os.fspath(self.canonical_path),
             "port": str(fixture.port),
+            "ssh_canary": os.fspath(fixture.ssh_canary),
+            "aws_canary": os.fspath(fixture.aws_canary),
         }
+
+    def _probe_prompt(self, fixture: _ProbeFixture) -> str:
+        """The deterministic probe script submitted as the Run Request."""
+
+        substitutions = self._probe_substitutions(fixture)
         steps = "\n".join(
             f"{number}. {identifier} — {directive.format(**substitutions)}"
             for number, (identifier, _, directive) in enumerate(
@@ -684,12 +796,17 @@ class _ClaudePolicy:
         fixture's on-disk state must all agree with the certified boundary."""
 
         sentinel = self._probe_forbidden_guidance.encode("ascii")
+        credential_sentinel = self._probe_credential_canary.encode("ascii")
         if report_bytes is None:
             raise self._host_probe_failure("the probe report was not written")
         for captured in (stdout, stderr, report_bytes):
             if sentinel in captured:
                 raise self._host_probe_failure(
                     "planted forbidden guidance reached the probe session",
+                )
+            if credential_sentinel in captured:
+                raise self._host_probe_failure(
+                    "a planted credential canary reached the probe session",
                 )
         try:
             report = json.loads(report_bytes)
@@ -784,6 +901,67 @@ class _ClaudePolicy:
             raise self._host_probe_failure(
                 "the planted settings hook executed",
             )
+        for canary in (fixture.ssh_canary, fixture.aws_canary):
+            try:
+                content = canary.read_text(encoding="utf-8")
+            except FileNotFoundError as error:
+                raise self._host_probe_failure(
+                    "a planted credential canary was missing "
+                    f"({canary.parent.name})",
+                ) from error
+            if not content.startswith(self._probe_credential_canary):
+                raise self._host_probe_failure(
+                    "a planted credential canary was modified",
+                )
+
+    @contextmanager
+    def _planted_credential_canaries(
+        self, fixture: _ProbeFixture,
+    ) -> Iterator[None]:
+        """Plant the credential canaries the probe expects denied, then
+        remove them — and any directory the planting created — afterwards."""
+
+        planted: list[Path] = []
+        created_directories: list[Path] = []
+        try:
+            for canary in (fixture.ssh_canary, fixture.aws_canary):
+                if not canary.parent.exists():
+                    canary.parent.mkdir(mode=0o700, parents=True)
+                    created_directories.append(canary.parent)
+                canary.write_text(
+                    f"{self._probe_credential_canary} {canary.parent.name}\n",
+                    encoding="utf-8",
+                )
+                os.chmod(canary, 0o600)
+                planted.append(canary)
+        except OSError as error:
+            for canary in planted:
+                try:
+                    canary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for directory in created_directories:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+            raise self._host_probe_failure(
+                "the credential canaries could not be planted: "
+                f"{error.strerror or error}",
+            ) from error
+        try:
+            yield
+        finally:
+            for canary in planted:
+                try:
+                    canary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for directory in created_directories:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
 
     def _run_host_admission_probe(self) -> None:
         """Run one inference-based probe of the certified boundary on this
@@ -797,62 +975,63 @@ class _ClaudePolicy:
             ) as raw_root:
                 root = Path(raw_root)
                 fixture = _build_probe_fixture(root, temporary_root)
-                with socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM,
-                ) as listener:
-                    listener.bind(("127.0.0.1", 0))
-                    listener.listen(2)
-                    fixture = replace(
-                        fixture, port=listener.getsockname()[1],
-                    )
-                    self._assert_network_control(listener, fixture.port)
-                    request = root / "probe-request.spool"
-                    request.write_bytes(
-                        b"# Run Request\n\n## Instruction\n\n"
-                        + self._probe_prompt(fixture).encode("utf-8"),
-                    )
-                    with request.open("rb") as spool:
-                        process = subprocess.Popen(
-                            self._invocation(),
-                            cwd=fixture.boundary,
-                            stdin=spool,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            start_new_session=True,
-                            env=self._probe_environment(),
+                with self._planted_credential_canaries(fixture):
+                    with socket.socket(
+                        socket.AF_INET, socket.SOCK_STREAM,
+                    ) as listener:
+                        listener.bind(("127.0.0.1", 0))
+                        listener.listen(2)
+                        fixture = replace(
+                            fixture, port=listener.getsockname()[1],
                         )
-                        try:
-                            stdout, stderr = process.communicate(
-                                timeout=self.probe_timeout_seconds,
+                        self._assert_network_control(listener, fixture.port)
+                        request = root / "probe-request.spool"
+                        request.write_bytes(
+                            b"# Run Request\n\n## Instruction\n\n"
+                            + self._probe_prompt(fixture).encode("utf-8"),
+                        )
+                        with request.open("rb") as spool:
+                            process = subprocess.Popen(
+                                self._invocation(fixture.boundary),
+                                cwd=fixture.boundary,
+                                stdin=spool,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                start_new_session=True,
+                                env=self._probe_environment(),
                             )
-                        except subprocess.TimeoutExpired as error:
                             try:
-                                os.killpg(process.pid, signal.SIGKILL)
-                            except ProcessLookupError:
-                                pass
-                            process.communicate()
+                                stdout, stderr = process.communicate(
+                                    timeout=self.probe_timeout_seconds,
+                                )
+                            except subprocess.TimeoutExpired as error:
+                                try:
+                                    os.killpg(process.pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+                                process.communicate()
+                                raise self._host_probe_failure(
+                                    "timed out",
+                                ) from error
+                        if process.returncode:
+                            detail = stderr.decode(
+                                "utf-8", errors="replace",
+                            ).strip()[:400]
                             raise self._host_probe_failure(
-                                "timed out",
-                            ) from error
-                    if process.returncode:
-                        detail = stderr.decode(
-                            "utf-8", errors="replace",
-                        ).strip()[:400]
-                        raise self._host_probe_failure(
-                            f"exit status {process.returncode}"
-                            + (f" with: {detail}" if detail else ""),
-                        )
-                    self._assert_no_sandboxed_connection(listener)
-                report_bytes = (
-                    fixture.report.read_bytes()
-                    if fixture.report.is_file() else None
-                )
-                self._assert_probe_outcomes(
-                    fixture=fixture,
-                    report_bytes=report_bytes,
-                    stdout=stdout,
-                    stderr=stderr,
-                )
+                                f"exit status {process.returncode}"
+                                + (f" with: {detail}" if detail else ""),
+                            )
+                        self._assert_no_sandboxed_connection(listener)
+                    report_bytes = (
+                        fixture.report.read_bytes()
+                        if fixture.report.is_file() else None
+                    )
+                    self._assert_probe_outcomes(
+                        fixture=fixture,
+                        report_bytes=report_bytes,
+                        stdout=stdout,
+                        stderr=stderr,
+                    )
         except OSError as error:
             raise self._host_probe_failure(
                 error.strerror or str(error),
@@ -865,7 +1044,7 @@ class _ClaudePolicy:
         if not self._has_cached_host_probe_success(cache_payload):
             self._run_host_admission_probe()
             self._store_host_probe_success(cache_payload)
-        return self._invocation()
+        return self._invocation(project_boundary)
 
 
 def _artifact_identity(executable: Path) -> tuple[str, tuple[int, int]]:

@@ -89,6 +89,10 @@ _Avoid_: Sandbox detection
 The live per-Run publisher check that identifies each Harness's newest stable release and refuses a Run whose installed release is older, unstable, or unverifiable. Factory performs one unauthenticated lookup per Harness, cross-checks the authoritative publisher surfaces before trusting any of them, and treats transport faults, disagreeing surfaces, and rate limits as refusals — never as a stale allow. A release at or above the verified newest stable still requires membership in the selected Harness's Compatibility Set.
 _Avoid_: Version check, update check, cached release lookup
 
+**Managed-Policy Surface**:
+Any channel through which organization-managed configuration can reach the Harness: the managed settings file, managed settings drop-ins, managed MCP configuration, remote managed settings, organization policy, and the server policy cache. Each surface is present (on disk), configured (the Harness reports it active), unavailable (the Harness reports the channel cannot deliver policy, with the reason attributed), or uninspected (inspection evidence is missing or unreadable). Run Admission refuses a Run on present, configured, and uninspected surfaces; an unavailable surface allows the Run with a recorded residual-risk notice.
+_Avoid_: Managed policy source, organization configuration
+
 **Project Spec**:
 Optional guidance stored at `<Project Boundary>/.agent/spec.md` and prepended to each instruction sent from that project. Factory never inherits a Project Spec from above the selected boundary, and a symlinked spec is valid only when its resolved target remains inside the boundary.
 _Avoid_: Instructions file, context file

@@ -1,5 +1,6 @@
 """Claude Code Run Admission: the live newest-stable gate, fail-closed launch."""
 
+import contextlib
 import errno
 import io
 import json
@@ -226,6 +227,98 @@ def test_claude_run_refuses_a_doctor_reported_policy_source(
         _claude._require_no_managed_policy(executable)
 
 
+@pytest.mark.parametrize(
+    ("line", "verdict"),
+    [
+        (
+            "Managed settings (remote): not fetched — not available with a "
+            "custom ANTHROPIC_BASE_URL",
+            "unavailable",
+        ),
+        (
+            "Organization policy: not fetched with a custom ANTHROPIC_BASE_URL",
+            "unavailable",
+        ),
+        ("Organization policy: not fetched", "refuse"),
+        ("Organization policy: not fetched (network unreachable)", "refuse"),
+        ("Managed settings (remote): not fetched by the proxy", "refuse"),
+        ("Managed settings (remote): enabled for example.com", "refuse"),
+        ("Organization policy: configured", "refuse"),
+        ("Managed settings (remote): absent", "benign"),
+        ("Organization policy: skipped", "benign"),
+        ("Managed settings (remote): something new", "refuse"),
+        ("Organization policy", "refuse"),
+    ],
+)
+def test_the_doctor_policy_line_classifier_pins_the_strict_shapes(
+    line: str, verdict: str,
+) -> None:
+    assert _claude._classify_doctor_policy_line(line) == verdict
+
+
+@pytest.mark.parametrize(
+    "doctor_output",
+    [
+        "Managed settings (remote): not fetched — not available with a "
+        "custom ANTHROPIC_BASE_URL\\n"
+        "Organization policy: not fetched with a custom ANTHROPIC_BASE_URL\\n",
+        "Managed settings (remote): absent\\nOrganization policy: skipped\\n",
+    ],
+    ids=["unavailable", "benign"],
+)
+def test_the_managed_policy_gate_allows_unavailable_and_benign_surfaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    doctor_output: str,
+) -> None:
+    executable_directory = tmp_path / "claude-fake"
+    executable_directory.mkdir()
+    executable = executable_directory / "claude"
+    make_doctor_aware_claude(
+        executable, "9.9.9", doctor_output=doctor_output,
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable_directory))
+
+    _claude._require_no_managed_policy(executable)
+
+    stderr = capfd.readouterr().err
+    if "not fetched" in doctor_output:
+        assert (
+            "remote managed-policy surfaces unavailable — custom endpoint; "
+            "residual risk accepted" in stderr
+        )
+    else:
+        assert stderr == ""
+
+
+def test_the_managed_policy_gate_refuses_a_configured_line_after_an_unavailable_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    executable_directory = tmp_path / "claude-fake"
+    executable_directory.mkdir()
+    executable = executable_directory / "claude"
+    make_doctor_aware_claude(
+        executable,
+        "9.9.9",
+        doctor_output=(
+            "Organization policy: not fetched with a custom "
+            "ANTHROPIC_BASE_URL\\n"
+            "Managed settings (remote): configured\\n"
+        ),
+    )
+    monkeypatch.setenv("PATH", os.fspath(executable_directory))
+
+    with pytest.raises(
+        RunAdmissionError, match="claude doctor reports a managed policy source",
+    ):
+        _claude._require_no_managed_policy(executable)
+
+    assert capfd.readouterr().err == ""
+
+
 @pytest.mark.parametrize("doctor_status", [1, 2])
 def test_the_managed_policy_gate_fails_closed_when_doctor_cannot_be_inspected(
     tmp_path: Path,
@@ -352,11 +445,14 @@ def test_claude_admission_skips_the_linux_sandbox_preflight_off_linux(
 
 
 def test_the_certified_claude_invocation_has_the_exact_candidate_recipe_shape(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    home = tmp_path / "home"
+    boundary = tmp_path / "project"
     executable = tmp_path / "claude"
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
     policy = _claude._ClaudePolicy(
         version="9.9.9",
         sha256="a" * 64,
@@ -370,15 +466,27 @@ def test_the_certified_claude_invocation_has_the_exact_candidate_recipe_shape(
         "permissions": {"blockReadsOutsideWorkingDirectories": True},
         "sandbox": {
             "allowUnsandboxedCommands": False,
+            "credentials": {
+                "deny": [
+                    os.fspath(home / ".aws"),
+                    os.fspath(home / ".ssh"),
+                ],
+            },
             "enabled": True,
             "excludedCommands": [],
             "failIfUnavailable": True,
-            "filesystem": {"disabled": False},
+            "filesystem": {
+                "allowRead": [os.fspath(boundary), os.fspath(executable)],
+                "denyRead": sorted(
+                    [os.fspath(boundary.parent), os.fspath(home)],
+                ),
+                "disabled": False,
+            },
             "network": {"allow": [], "strictAllowlist": True},
         },
     }
 
-    invocation = policy._invocation()
+    invocation = policy._invocation(boundary)
 
     assert invocation == [
         os.fspath(executable),
@@ -394,6 +502,33 @@ def test_the_certified_claude_invocation_has_the_exact_candidate_recipe_shape(
         ),
     ]
     assert json.loads(invocation[invocation.index("--settings") + 1]) == settings
+
+
+def test_the_certified_read_fence_deduplicates_a_boundary_directly_under_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    boundary = home / "project"
+    executable = tmp_path / "claude"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    policy = _claude._ClaudePolicy(
+        version="9.9.9",
+        sha256="a" * 64,
+        operating_system="Linux",
+        architecture="x86_64",
+        install_channel="native-installer",
+        canonical_path=executable,
+        filesystem_identity=(2096, 1),
+    )
+
+    fence = policy._read_fence(boundary)
+
+    assert fence == {
+        "denyRead": [os.fspath(home)],
+        "allowRead": [os.fspath(boundary), os.fspath(executable)],
+    }
 
 
 def test_the_certified_claude_launch_plan_pins_the_nonessential_traffic_environment(
@@ -414,7 +549,7 @@ def test_the_certified_claude_launch_plan_pins_the_nonessential_traffic_environm
     prepared = PreparedRun(
         harness="Claude Code",
         executable=executable,
-        invocation=tuple(policy._invocation()),
+        invocation=tuple(policy._invocation(tmp_path)),
         environment=_claude._ENVIRONMENT_PINS,
     )
     assert prepared.environment == (
@@ -616,7 +751,22 @@ def policy_with_recorded_host_admission_probe(
 
 
 def probe_fixture(tmp_path: Path) -> _claude._ProbeFixture:
-    return _claude._build_probe_fixture(tmp_path / "root", tmp_path / "tmp")
+    return _claude._build_probe_fixture(
+        tmp_path / "root", tmp_path / "tmp", home=tmp_path / "home",
+    )
+
+
+def plant_credential_canaries(
+    policy: _claude._ClaudePolicy, fixture: _claude._ProbeFixture,
+) -> None:
+    """Plant the credential canaries exactly as the real probe does."""
+
+    for canary in (fixture.ssh_canary, fixture.aws_canary):
+        canary.parent.mkdir(parents=True, exist_ok=True)
+        canary.write_text(
+            f"{policy._probe_credential_canary} {canary.parent.name}\n",
+            encoding="utf-8",
+        )
 
 
 def simulated_probe_success(
@@ -627,6 +777,7 @@ def simulated_probe_success(
     fixture.bash_write_inside.write_text("probe-write\n", encoding="utf-8")
     fixture.tool_write_inside.write_text("probe-write\n", encoding="utf-8")
     fixture.edit_target.write_text("beta\n", encoding="utf-8")
+    plant_credential_canaries(policy, fixture)
     report_bytes = (json.dumps({
         "operations": {
             identifier: outcome
@@ -651,7 +802,7 @@ def test_run_reuses_a_complete_host_admission_probe_success(
     second = policy.prepare_run(tmp_path)
 
     assert probes == ["ran"]
-    assert first == second == policy._invocation()
+    assert first == second == policy._invocation(tmp_path)
 
 
 @pytest.mark.parametrize("replacement", [
@@ -875,7 +1026,151 @@ def test_the_claude_probe_fixture_plants_the_forbidden_guidance_and_boundaries(
         fixture.tmp_read,
     ):
         assert read_target.read_text(encoding="utf-8") == "outside-boundary\n"
+    assert fixture.ssh_canary == (
+        tmp_path / "home" / ".ssh" / "factory-probe-credential-canary.txt"
+    )
+    assert fixture.aws_canary == (
+        tmp_path / "home" / ".aws" / "factory-probe-credential-canary.txt"
+    )
+    assert not fixture.ssh_canary.exists()
+    assert not fixture.aws_canary.exists()
     assert not fixture.report.exists()
+
+
+def test_the_claude_probe_steps_read_the_planted_credential_canaries(
+    tmp_path: Path,
+) -> None:
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+
+    prompt = policy._probe_prompt(fixture)
+    expected = {
+        identifier: outcome for identifier, outcome, _ in policy._probe_steps
+    }
+
+    assert os.fspath(fixture.ssh_canary) in prompt
+    assert os.fspath(fixture.aws_canary) in prompt
+    assert expected["bash-read-ssh"] == "failed"
+    assert expected["bash-read-aws"] == "failed"
+
+
+def test_every_claude_probe_bash_step_parses_cleanly(tmp_path: Path) -> None:
+    """A command the shell parser cannot analyze asks the person, and under
+    --permission-mode dontAsk in a non-interactive session that ask is
+    denied — a forbidden step could then fail for the wrong reason."""
+
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    substitutions = policy._probe_substitutions(fixture)
+    bash_steps = [
+        (identifier, directive[len("Bash: `"):directive.index("`", len("Bash: `"))])
+        for identifier, _, directive in policy._probe_steps
+        if directive.startswith("Bash: `")
+    ]
+
+    assert len(bash_steps) >= 10
+
+    for identifier, command in bash_steps:
+        parsed = subprocess.run(
+            ["bash", "-n", "-c", command.format(**substitutions)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert parsed.returncode == 0, (
+            f"{identifier} does not parse: {parsed.stderr.decode()}"
+        )
+
+
+def test_the_probe_plants_and_cleans_the_credential_canaries(
+    tmp_path: Path,
+) -> None:
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+
+    with policy._planted_credential_canaries(fixture):
+        for canary in (fixture.ssh_canary, fixture.aws_canary):
+            assert canary.read_text(encoding="utf-8") == (
+                f"{policy._probe_credential_canary} {canary.parent.name}\n"
+            )
+            assert canary.stat().st_mode & 0o777 == 0o600
+
+    for canary in (fixture.ssh_canary, fixture.aws_canary):
+        assert not canary.exists()
+    assert not fixture.ssh_canary.parent.exists()
+    assert not fixture.aws_canary.parent.exists()
+
+
+def test_the_probe_canary_planting_keeps_pre_existing_directories(
+    tmp_path: Path,
+) -> None:
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    fixture.ssh_canary.parent.mkdir(parents=True)
+
+    with policy._planted_credential_canaries(fixture):
+        pass
+
+    assert fixture.ssh_canary.parent.is_dir()
+    assert not fixture.ssh_canary.exists()
+    assert not fixture.aws_canary.parent.exists()
+
+
+def test_the_probe_refuses_when_credential_canaries_cannot_be_planted(
+    tmp_path: Path,
+) -> None:
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    fixture.ssh_canary.parent.mkdir(parents=True)
+    fixture.ssh_canary.mkdir()
+
+    with pytest.raises(
+        RunAdmissionError,
+        match="the credential canaries could not be planted",
+    ):
+        with policy._planted_credential_canaries(fixture):
+            pass
+
+    assert not fixture.aws_canary.exists()
+
+
+def test_the_claude_probe_refuses_unplanted_modified_or_leaked_canaries(
+    tmp_path: Path,
+) -> None:
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    sentinel = policy._probe_credential_canary.encode("ascii")
+    report_bytes = simulated_probe_success(policy, fixture)
+
+    fixture.ssh_canary.unlink()
+    fixture.aws_canary.unlink()
+    with pytest.raises(RunAdmissionError, match="credential canary was missing"):
+        policy._assert_probe_outcomes(
+            fixture=fixture, report_bytes=report_bytes, stdout=b"", stderr=b"",
+        )
+
+    plant_credential_canaries(policy, fixture)
+    fixture.ssh_canary.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(RunAdmissionError, match="credential canary was modified"):
+        policy._assert_probe_outcomes(
+            fixture=fixture, report_bytes=report_bytes, stdout=b"", stderr=b"",
+        )
+
+    plant_credential_canaries(policy, fixture)
+    with pytest.raises(
+        RunAdmissionError, match="credential canary reached the probe session",
+    ):
+        policy._assert_probe_outcomes(
+            fixture=fixture, report_bytes=report_bytes,
+            stdout=sentinel, stderr=b"",
+        )
+    with pytest.raises(
+        RunAdmissionError, match="credential canary reached the probe session",
+    ):
+        policy._assert_probe_outcomes(
+            fixture=fixture, report_bytes=report_bytes + sentinel,
+            stdout=b"", stderr=b"",
+        )
 
 
 def test_the_claude_probe_accepts_the_recorded_success_outcomes(
@@ -1107,6 +1402,11 @@ def test_run_refuses_a_timed_out_claude_host_probe(
 ) -> None:
     policy = make_probe_policy(tmp_path)
     monkeypatch.setattr(_claude, "_cache_directory", lambda: tmp_path / "cache")
+    monkeypatch.setattr(
+        _claude._ClaudePolicy,
+        "_planted_credential_canaries",
+        lambda self, fixture: contextlib.nullcontext(),
+    )
     monkeypatch.setattr(
         _claude._ClaudePolicy,
         "_assert_network_control",

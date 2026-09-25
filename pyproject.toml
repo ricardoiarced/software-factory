@@ -19,3 +19,23 @@ testpaths = ["tests"]
 markers = [
     "real_host_certification: certifies one selected real Harness artifact and host tuple",
 ]
+
+[dependency-groups]
+dev = ["pytest", "platformdirs", "build", "ruff", "pyright"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.pyright]
+include = [
+    "factory.py",
+    "_harness.py",
+    "_codex.py",
+    "_claude.py",
+    "_publisher.py",
+    "_project.py",
+    "_project_guidance.py",
+    "_project_registry.py",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"

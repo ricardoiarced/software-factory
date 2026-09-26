@@ -1,16 +1,16 @@
 """Shared Harness selection, the Runner interface, and the Run lifecycle."""
 
-from collections.abc import Callable
-from dataclasses import dataclass
 import errno
 import json
 import os
-from pathlib import Path
 import platform
 import re
 import signal
 import stat
 import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from types import FrameType
 from typing import Any, BinaryIO, Protocol
 
@@ -184,8 +184,7 @@ def reported_version(
         result = subprocess.run(
             [os.fspath(executable), "--version"],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
     except OSError as error:

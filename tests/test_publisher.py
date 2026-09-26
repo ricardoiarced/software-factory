@@ -365,7 +365,15 @@ def test_every_get_is_bounded_by_three_seconds_of_the_remaining_deadline(
 def test_a_slow_drip_response_cannot_outlive_the_shared_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The real transport function itself runs here, so restore it over the
+    offline guard before pinning its urlopen dependency. Every clock check
+    burns four seconds; the ten-second deadline must cut the endless body
+    off after a bounded number of chunked reads.
+    """
+
     class SlowDrip:
+        """An endless body: every read returns one byte and EOF never arrives."""
+
         status: int = 200
 
         def __init__(self) -> None:
@@ -376,7 +384,7 @@ def test_a_slow_drip_response_cannot_outlive_the_shared_deadline(
 
         def read(self, amount: int) -> bytes:
             self.reads += 1
-            return b"x"  # never EOF: the body never completes
+            return b"x"
 
         def __enter__(self) -> Self:
             return self
@@ -385,15 +393,11 @@ def test_a_slow_drip_response_cannot_outlive_the_shared_deadline(
             return None
 
     drip = SlowDrip()
-    # This test exercises the real transport function itself, so restore it
-    # over the offline guard before pinning its urlopen dependency.
     monkeypatch.setattr("_publisher._http_get", real_http_get)
     monkeypatch.setattr(
         "_publisher.urllib.request.urlopen",
         lambda request, timeout: drip,
     )
-    # Every clock check burns four seconds; the ten-second deadline must cut
-    # the endless body off after a bounded number of chunked reads.
     ticks = iter([0.0, 4.0, 8.0, 12.0, 16.0, 20.0, 24.0, 28.0])
     monkeypatch.setattr("_publisher.time.monotonic", lambda: next(ticks))
 
@@ -421,6 +425,10 @@ def test_publisher_requests_carry_no_credentials(
 def test_a_redirect_off_https_is_a_transport_fault(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The real transport function itself runs here, so restore it over the
+    offline guard before pinning its urlopen dependency.
+    """
+
     class Redirected:
         def geturl(self) -> str:
             return "http://mirror.example.invalid/releases/latest"
@@ -434,8 +442,6 @@ def test_a_redirect_off_https_is_a_transport_fault(
         def __exit__(self, *args: object) -> None:
             return None
 
-    # This test exercises the real transport function itself, so restore it
-    # over the offline guard before pinning its urlopen dependency.
     monkeypatch.setattr("_publisher._http_get", real_http_get)
     monkeypatch.setattr(
         "_publisher.urllib.request.urlopen",

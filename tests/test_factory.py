@@ -1532,6 +1532,9 @@ def test_run_parser_returns_selected_harness() -> None:
 
 
 def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) -> None:
+    """The silent harness fake refuses at the earliest local step; only the
+    quoted executable path varies with the temporary directory.
+    """
     git("init", "-q", cwd=tmp_path)
     (tmp_path / ".agent").mkdir()
     (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
@@ -1546,8 +1549,6 @@ def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) 
 
     assert result.returncode == 1
     assert result.stdout == b""
-    # The silent harness fake refuses at the earliest local step; only the
-    # quoted executable path varies with the temporary directory.
     assert result.stderr.startswith(b'factory: error: Claude Code executable "')
     assert result.stderr.endswith(
         b" reported an unrecognized version; install a stable Claude Code release.\n",

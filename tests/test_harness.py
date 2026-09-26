@@ -54,8 +54,9 @@ def test_claude_runner_refuses_admission_and_never_launches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A version-reporting fake gets admission past the local version read;
-    # no tuple is certified, so the empty Compatibility Set still refuses.
+    """A version-reporting fake gets admission past the local version read;
+    no tuple is certified, so the empty Compatibility Set still refuses.
+    """
     executable_directory = tmp_path / "claude-fake"
     executable_directory.mkdir()
     executable = executable_directory / "claude"

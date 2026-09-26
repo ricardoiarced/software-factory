@@ -8,11 +8,10 @@ and no test exists without a normative statement that needs it.
 """
 
 import ast
-from pathlib import Path
 import re
+from pathlib import Path
 
 from certification.test_exact_tuple import EVIDENCE_PROPERTIES, PRODUCTION_CHECKS
-
 
 PROJECT = Path(__file__).resolve().parents[1]
 MATRIX = PROJECT / "docs" / "traceability.md"

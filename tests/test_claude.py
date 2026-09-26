@@ -5,21 +5,15 @@ import errno
 import io
 import json
 import os
-from pathlib import Path
 import platform
 import socket
 import subprocess
 import tempfile
 import threading
-from typing import BinaryIO
+from pathlib import Path
+from typing import BinaryIO, Self
 
 import pytest
-
-import _claude
-import _publisher
-from _claude import ClaudeCodeRunner
-from _harness import PreparedRun, RunAdmissionError, launch
-from _project import Project
 from conftest import (
     CLAUDE_GITHUB_RELEASES,
     CLAUDE_LATEST_POINTER,
@@ -28,6 +22,12 @@ from conftest import (
     github_release,
     npm_dist_tags,
 )
+
+import _claude
+import _publisher
+from _claude import ClaudeCodeRunner
+from _harness import PreparedRun, RunAdmissionError, launch
+from _project import Project
 
 
 def make_claude_executable(path: Path, version: str) -> None:
@@ -94,7 +94,7 @@ def run_claude(project: Project) -> io.BytesIO:
 
 def agreeing_claude_publisher(responses: PublisherResponses, newest: str) -> None:
     responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(**{"latest": newest, "stable": "9.7.3"}),
+        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest=newest, stable="9.7.3"),
         CLAUDE_GITHUB_RELEASES: github_release(f"v{newest}"),
         CLAUDE_LATEST_POINTER: f"{newest}\n".encode(),
     })
@@ -231,8 +231,10 @@ def test_claude_run_refuses_a_doctor_reported_policy_source(
     ("line", "verdict"),
     [
         (
-            "Managed settings (remote): not fetched — not available with a "
-            "custom ANTHROPIC_BASE_URL",
+            (
+                "Managed settings (remote): not fetched — not available with a "
+                "custom ANTHROPIC_BASE_URL"
+            ),
             "unavailable",
         ),
         (
@@ -259,9 +261,11 @@ def test_the_doctor_policy_line_classifier_pins_the_strict_shapes(
 @pytest.mark.parametrize(
     "doctor_output",
     [
-        "Managed settings (remote): not fetched — not available with a "
-        "custom ANTHROPIC_BASE_URL\\n"
-        "Organization policy: not fetched with a custom ANTHROPIC_BASE_URL\\n",
+        (
+            "Managed settings (remote): not fetched — not available with a "
+            "custom ANTHROPIC_BASE_URL\\n"
+            "Organization policy: not fetched with a custom ANTHROPIC_BASE_URL\\n"
+        ),
         "Managed settings (remote): absent\\nOrganization policy: skipped\\n",
     ],
     ids=["unavailable", "benign"],
@@ -573,7 +577,7 @@ def test_the_shared_lifecycle_applies_the_certified_environment_pins(
     executable.chmod(0o755)
     monkeypatch.setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "unset-by-host")
 
-    descriptor, name = tempfile.mkstemp(dir=tmp_path)
+    descriptor, _name = tempfile.mkstemp(dir=tmp_path)
     with os.fdopen(descriptor, "r+b") as spool:
         spool.write(b"# Run Request\n\n## Instruction\n\nFix")
         spool.flush()
@@ -603,7 +607,7 @@ def test_the_shared_lifecycle_inherits_the_host_environment_without_pins(
     executable.chmod(0o755)
     monkeypatch.setenv("FACTORY_PASS_THROUGH_VARIABLE", "inherited")
 
-    descriptor, name = tempfile.mkstemp(dir=tmp_path)
+    descriptor, _name = tempfile.mkstemp(dir=tmp_path)
     with os.fdopen(descriptor, "r+b") as spool:
         spool.write(b"# Run Request\n\n## Instruction\n\nFix")
         spool.flush()
@@ -867,7 +871,7 @@ def test_run_reprobes_after_claude_artifact_changes(
 def test_failed_host_admission_probe_is_not_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, policy, probes = policy_with_recorded_host_admission_probe(
+    _, policy, _probes = policy_with_recorded_host_admission_probe(
         tmp_path, monkeypatch,
     )
     attempts = 0
@@ -1073,8 +1077,7 @@ def test_every_claude_probe_bash_step_parses_cleanly(tmp_path: Path) -> None:
     for identifier, command in bash_steps:
         parsed = subprocess.run(
             ["bash", "-n", "-c", command.format(**substitutions)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
         assert parsed.returncode == 0, (
@@ -1127,9 +1130,8 @@ def test_the_probe_refuses_when_credential_canaries_cannot_be_planted(
     with pytest.raises(
         RunAdmissionError,
         match="the credential canaries could not be planted",
-    ):
-        with policy._planted_credential_canaries(fixture):
-            pass
+    ), policy._planted_credential_canaries(fixture):
+        pass
 
     assert not fixture.aws_canary.exists()
 
@@ -1360,7 +1362,7 @@ def test_the_claude_probe_asserts_a_quiet_network_listener(
 
 
 class _TimedOutProbeProcess:
-    pid = 2 ** 28
+    pid: int = 2 ** 28
 
     def __init__(self) -> None:
         self._timed_out = False
@@ -1375,7 +1377,7 @@ class _TimedOutProbeProcess:
 
 
 class _QuietListener:
-    def __enter__(self) -> "_QuietListener":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:

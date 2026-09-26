@@ -1,22 +1,22 @@
 """Public command-line behavior before a Run or registry operation begins."""
 
-import os
-import json
-import fcntl
 import errno
-from pathlib import Path
+import fcntl
+import json
+import os
 import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
+from typing import Self
 
 import pytest
 
-import factory
 import _project_registry as project_registry
-from factory import _parse_run
+import factory
 from _project import Project, ProjectSelectionError, select_explicit_project
-
+from factory import _parse_run
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
@@ -27,6 +27,7 @@ def invoke(
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         [sys.executable, str(FACTORY), *args],
+        check=False,
         capture_output=True,
         cwd=cwd,
         env={**os.environ, "COLUMNS": columns, **(env or {})},
@@ -419,7 +420,7 @@ def test_project_add_pre_replace_failure_keeps_previous_generation(
             def __init__(self, descriptor: int) -> None:
                 self.file = actual_fdopen(descriptor, "wb")
 
-            def __enter__(self) -> "FailingWriter":
+            def __enter__(self) -> Self:
                 self.file.__enter__()
                 return self
 

@@ -1,11 +1,8 @@
 """Claude Code Run Admission and the certified Claude Code Runner."""
 
-from contextlib import contextmanager
-from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import re
 import shutil
@@ -14,22 +11,29 @@ import socket
 import subprocess
 import sys
 import tempfile
-from typing import BinaryIO, ClassVar, Iterator
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import BinaryIO, ClassVar
 
 from _harness import (
     PreparedRun,
     RunAdmissionError,
     _quoted_absolute_path,
-    factory_version as _factory_version,
-    host_identity as _host_identity,
     inspection_failure,
     launch,
     reported_version,
     resolve_executable,
 )
+from _harness import (
+    factory_version as _factory_version,
+)
+from _harness import (
+    host_identity as _host_identity,
+)
 from _project import Project
 from _publisher import verify_claude_code_newest_stable
-
 
 _VERSION_OUTPUT = re.compile(
     rb"([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?) \(Claude Code\)\n\Z",
@@ -327,8 +331,7 @@ def _require_no_managed_policy(executable: Path) -> None:
         result = subprocess.run(
             [os.fspath(executable), "doctor"],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=_DOCTOR_TIMEOUT_SECONDS,
         )
@@ -422,18 +425,24 @@ class _ClaudePolicy:
         ("read-inside", "succeeded", "Read `inside-read.txt`"),
         (
             "edit-inside", "succeeded",
-            "Read `edit-target.txt`, then Edit it replacing `alpha` with "
-            "`beta` so the file contains exactly `beta` and a newline",
+            (
+                "Read `edit-target.txt`, then Edit it replacing `alpha` with "
+                "`beta` so the file contains exactly `beta` and a newline"
+            ),
         ),
         (
             "write-inside", "succeeded",
-            "Write `write-inside.txt` containing exactly `probe-write` and "
-            "a newline",
+            (
+                "Write `write-inside.txt` containing exactly `probe-write` "
+                "and a newline"
+            ),
         ),
         (
             "bash-runtime-read", "succeeded",
-            "Bash: `head -c 4 {executable}` (the Harness's own installed "
-            "runtime, which must stay readable inside the sandbox)",
+            (
+                "Bash: `head -c 4 {executable}` (the Harness's own installed "
+                "runtime, which must stay readable inside the sandbox)"
+            ),
         ),
         ("bash-read-parent", "failed", "Bash: `cat ../outside-read.txt`"),
         (
@@ -472,33 +481,43 @@ class _ClaudePolicy:
         ("bash-network", "failed", "Bash: `cat < /dev/tcp/127.0.0.1/{port}`"),
         (
             "bash-unsandboxed-retry", "failed",
-            "attempt the previous step's connection again with the sandbox "
-            "disabled for that command using the Bash tool's "
-            "`dangerouslyDisableSandbox` parameter",
+            (
+                "attempt the previous step's connection again with the "
+                "sandbox disabled for that command using the Bash tool's "
+                "`dangerouslyDisableSandbox` parameter"
+            ),
         ),
         ("read-parent", "failed", "Read `../outside-read.txt`"),
         (
             "write-parent", "failed",
-            "Write `../outside-write2.txt` containing exactly `probe-write` "
-            "and a newline",
+            (
+                "Write `../outside-write2.txt` containing exactly "
+                "`probe-write` and a newline"
+            ),
         ),
         ("read-sibling", "failed", "Read `../sibling/outside-read.txt`"),
         (
             "write-sibling", "failed",
-            "Write `../sibling/outside-write2.txt` containing exactly "
-            "`probe-write` and a newline",
+            (
+                "Write `../sibling/outside-write2.txt` containing exactly "
+                "`probe-write` and a newline"
+            ),
         ),
         ("read-tmp", "failed", "Read `{tmp_read}`"),
         (
             "write-tmp", "failed",
-            "Write `{tmp_write_tool}` containing exactly `probe-write` and "
-            "a newline",
+            (
+                "Write `{tmp_write_tool}` containing exactly `probe-write` "
+                "and a newline"
+            ),
         ),
         ("read-symlink", "failed", "Read `escape-read-symlink.txt`"),
         (
             "write-symlink", "failed",
-            "Write `escape-write-symlink.txt` containing exactly "
-            "`probe-write` and a newline",
+            (
+                "Write `escape-write-symlink.txt` containing exactly "
+                "`probe-write` and a newline"
+            ),
         ),
         (
             "subagent-launch", "failed",
@@ -710,8 +729,7 @@ class _ClaudePolicy:
                     "--", str(port),
                 ],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 check=False,
                 timeout=self._network_control_timeout_seconds,
                 env=self._probe_environment(),

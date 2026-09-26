@@ -20,8 +20,9 @@ the pins in `pyproject.toml`. All commands run from the repo root.
 - Persistent env instead of ephemeral: `uv venv && uv pip install -e . pytest platformdirs build ruff pyright`, then plain `python -m pytest -q` / `ruff check .` / `pyright` (the deterministic-suite CI job does the equivalent `pip install platformdirs pytest build`; the Conformance job uses the project-mode `uv run` forms below)
 - Build / package: `python -m build` — CI (`.github/workflows/release-verification.yml`) requires exactly one `py3-none-any.whl` and one `.tar.gz`
 - Lint: `uv run ruff check .`
+- Format: `uv run ruff format .` (CI enforces the `--check` form)
 - Typecheck: `uv run pyright` (production modules only; both configured in `pyproject.toml` `[tool.ruff]` / `[tool.pyright]`)
-- Conformance: CI (`.github/workflows/conformance.yml`) counts ruff findings, production pyright errors, and banned `#` comments on every push and PR, and enforces the no-regression ratchet — each count must not exceed the baseline ref's count at run time (`docs/conventions-enforcement.md`)
+- Conformance: CI (`.github/workflows/conformance.yml`) runs the format check and counts ruff findings, production pyright errors, and banned `#` comments on every push and PR — the format check fails on any regression, and each count must not exceed the baseline ref's count at run time (`docs/conventions-enforcement.md`)
 
 ## Structure
 - `factory.py` — CLI entry point (`factory:main`), orchestration, Run Requests
@@ -43,6 +44,7 @@ the statement rows in `docs/traceability.md` and the tests they name.
 - Protocol-based interfaces: Define architectural contracts using typing.Protocol for statically verifiable duck-typing rather than relying on abstract base classes or runtime NotImplementedError exceptions.
 - Strictly typed classes: Full attribute annotations, explicit `__init__ -> None` returns, and modern typing.Self for factory or builder methods instead of string forward references.
 - Strict typing: full annotations on parameters and returns (modern `X | None` style).
+- Formatting: `ruff format` at the pinned ruff version, default settings — no `[tool.ruff.format]` overrides.
 - Code should be self-explanatory — `#` comments are banned except pragmas (`# noqa`, `# type: ignore`); docstrings are fine.
 - Keep functions and modules small and focused; private helpers are `_`-prefixed.
 - A change is accepted only when the full deterministic suite passes (`uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`) and the Conformance check is green (`.github/workflows/conformance.yml`); real-host certification is maintainer-only and never implied by green tests.

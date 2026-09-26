@@ -18,7 +18,8 @@ def codex_executable_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
     monkeypatch.setenv(
-        "PATH", os.pathsep.join((str(executable_directory), os.environ["PATH"])),
+        "PATH",
+        os.pathsep.join((str(executable_directory), os.environ["PATH"])),
     )
 
 
@@ -31,7 +32,8 @@ def claude_executable_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
     monkeypatch.setenv(
-        "PATH", os.pathsep.join((str(executable_directory), os.environ["PATH"])),
+        "PATH",
+        os.pathsep.join((str(executable_directory), os.environ["PATH"])),
     )
 
 
@@ -56,7 +58,10 @@ def newest_stable_verification_passes_by_default(
 def publisher_lookups_stay_offline(monkeypatch: pytest.MonkeyPatch) -> None:
     """Refuse every in-process publisher GET and point subprocess GETs at a
     dead local proxy so no deterministic test reaches the live publishers."""
-    def refused(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
+
+    def refused(
+        url: str, *, timeout_seconds: float, deadline: float
+    ) -> tuple[int, bytes]:
         raise AssertionError(f"unexpected publisher GET in tests: {url}")
 
     monkeypatch.setattr("_publisher._http_get", refused)
@@ -75,7 +80,9 @@ class PublisherResponses:
     def install(self, responses: dict[str, object]) -> None:
         calls = self.calls
 
-        def serve(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
+        def serve(
+            url: str, *, timeout_seconds: float, deadline: float
+        ) -> tuple[int, bytes]:
             calls.append(url)
             entry = responses[url]
             if isinstance(entry, Exception):
@@ -123,12 +130,14 @@ CLAUDE_LATEST_POINTER = "https://downloads.claude.ai/claude-code-releases/latest
 def github_release(tag: str, *, prerelease: bool = False) -> bytes:
     """One recorded GitHub releases/latest document."""
 
-    return json.dumps({
-        "tag_name": tag,
-        "draft": False,
-        "prerelease": prerelease,
-        "assets": [{"name": "artifact.tar.gz"}],
-    }).encode("utf-8")
+    return json.dumps(
+        {
+            "tag_name": tag,
+            "draft": False,
+            "prerelease": prerelease,
+            "assets": [{"name": "artifact.tar.gz"}],
+        }
+    ).encode("utf-8")
 
 
 def npm_dist_tags(**tags: str) -> bytes:

@@ -88,7 +88,10 @@ def _read_bounded(response: _ReadableResponse, deadline: float) -> bytes:
 
 
 def _http_get(
-    url: str, *, timeout_seconds: float, deadline: float,
+    url: str,
+    *,
+    timeout_seconds: float,
+    deadline: float,
 ) -> tuple[int, bytes]:
     """Perform one unauthenticated GET and return its status and bounded body.
 
@@ -162,7 +165,9 @@ def _metadata_failure(harness: str, surface: str, detail: str) -> RunAdmissionEr
 
 
 def _json_document(
-    harness: str, surface: str, body: bytes,
+    harness: str,
+    surface: str,
+    body: bytes,
 ) -> object:
     if len(body) > _MAX_RESPONSE_BYTES:
         raise _metadata_failure(harness, surface, "response exceeds the size bound")
@@ -173,7 +178,9 @@ def _json_document(
 
 
 def _github_latest_stable(
-    lookup: _Lookup, repository: str, tag_prefix: str,
+    lookup: _Lookup,
+    repository: str,
+    tag_prefix: str,
 ) -> str:
     url = f"{_GITHUB_API}/repos/{repository}/releases/latest"
     status, body = lookup.get(url)
@@ -184,27 +191,35 @@ def _github_latest_stable(
     document = _json_document(lookup.harness, "GitHub Releases", body)
     if not isinstance(document, dict):
         raise _metadata_failure(
-            lookup.harness, "GitHub Releases", "response is not an object",
+            lookup.harness,
+            "GitHub Releases",
+            "response is not an object",
         )
     tag = document.get("tag_name")
     if not isinstance(tag, str) or not tag.startswith(tag_prefix):
         raise _metadata_failure(
-            lookup.harness, "GitHub Releases", f"unrecognized tag_name {tag!r}",
+            lookup.harness,
+            "GitHub Releases",
+            f"unrecognized tag_name {tag!r}",
         )
     for flag in ("draft", "prerelease"):
         if document.get(flag) is not False:
             raise _metadata_failure(
-                lookup.harness, "GitHub Releases",
+                lookup.harness,
+                "GitHub Releases",
                 f"{tag} is published with {flag} set",
             )
     if not isinstance(document.get("assets"), list):
         raise _metadata_failure(
-            lookup.harness, "GitHub Releases", "assets is not a list",
+            lookup.harness,
+            "GitHub Releases",
+            "assets is not a list",
         )
-    version = tag[len(tag_prefix):]
+    version = tag[len(tag_prefix) :]
     if parse_stable_version(version) is None:
         raise _metadata_failure(
-            lookup.harness, "GitHub Releases",
+            lookup.harness,
+            "GitHub Releases",
             f"tag {tag} does not name a stable release",
         )
     return version
@@ -221,19 +236,23 @@ def _npm_latest(lookup: _Lookup, package: str) -> str:
     document = _json_document(lookup.harness, "npm dist-tags", body)
     if not isinstance(document, dict):
         raise _metadata_failure(
-            lookup.harness, "npm dist-tags", "response is not an object",
+            lookup.harness,
+            "npm dist-tags",
+            "response is not an object",
         )
     latest = document.get("latest")
     if not isinstance(latest, str) or parse_stable_version(latest) is None:
         raise _metadata_failure(
-            lookup.harness, "npm dist-tags",
+            lookup.harness,
+            "npm dist-tags",
             f"latest dist-tag {latest!r} does not name a stable release",
         )
     return latest
 
 
 def _disagreement_failure(
-    harness: str, observations: tuple[tuple[str, str], ...],
+    harness: str,
+    observations: tuple[tuple[str, str], ...],
 ) -> RunAdmissionError:
     listed = "; ".join(
         f"{surface} reports {version}" for surface, version in observations
@@ -266,20 +285,23 @@ def _pointer_latest(lookup: _Lookup, url: str) -> str:
         raise lookup._refusal(f"{url} answered HTTP {status}")
     if len(body) > _MAX_RESPONSE_BYTES:
         raise _metadata_failure(
-            lookup.harness, "downloads.claude.ai latest pointer",
+            lookup.harness,
+            "downloads.claude.ai latest pointer",
             "response exceeds the size bound",
         )
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError:
         raise _metadata_failure(
-            lookup.harness, "downloads.claude.ai latest pointer",
+            lookup.harness,
+            "downloads.claude.ai latest pointer",
             "response is not UTF-8 text",
         ) from None
     text = text.removesuffix("\n")
     if parse_stable_version(text) is None:
         raise _metadata_failure(
-            lookup.harness, "downloads.claude.ai latest pointer",
+            lookup.harness,
+            "downloads.claude.ai latest pointer",
             f"pointer {text!r} does not name a stable release",
         )
     return text
@@ -345,7 +367,10 @@ def claude_code_update_command(executable: Path) -> str:
 
 
 def require_newest_stable(
-    harness: str, installed: str, newest: str, update_command: str,
+    harness: str,
+    installed: str,
+    newest: str,
+    update_command: str,
 ) -> None:
     """Classify the installed release against the verified newest stable.
 
@@ -375,7 +400,10 @@ def verify_codex_newest_stable(executable: Path, installed: str) -> str:
 
     newest = newest_stable_codex()
     require_newest_stable(
-        "Codex", installed, newest, codex_update_command(executable),
+        "Codex",
+        installed,
+        newest,
+        codex_update_command(executable),
     )
     return newest
 
@@ -385,6 +413,9 @@ def verify_claude_code_newest_stable(executable: Path, installed: str) -> str:
 
     newest = newest_stable_claude_code()
     require_newest_stable(
-        "Claude Code", installed, newest, claude_code_update_command(executable),
+        "Claude Code",
+        installed,
+        newest,
+        claude_code_update_command(executable),
     )
     return newest

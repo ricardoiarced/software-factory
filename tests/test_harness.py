@@ -33,7 +33,8 @@ def test_select_harness_refuses_an_unregistered_name() -> None:
 
 
 def test_codex_runner_admit_freezes_the_matched_launch_plan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "codex-artifact"
     invocation = [str(executable), "exec", "-"]
@@ -43,12 +44,15 @@ def test_codex_runner_admit_freezes_the_matched_launch_plan(
     prepared = CodexRunner().admit(Project(tmp_path, tmp_path))
 
     assert prepared == PreparedRun(
-        harness="Codex", executable=executable, invocation=tuple(invocation),
+        harness="Codex",
+        executable=executable,
+        invocation=tuple(invocation),
     )
 
 
 def test_claude_runner_refuses_admission_and_never_launches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A version-reporting fake gets admission past the local version read;
     # no tuple is certified, so the empty Compatibility Set still refuses.
@@ -72,7 +76,8 @@ def test_claude_runner_refuses_admission_and_never_launches(
     ):
         runner.admit(project)
     with pytest.raises(
-        RunAdmissionError, match="Claude Compatibility Set is empty",
+        RunAdmissionError,
+        match="Claude Compatibility Set is empty",
     ):
         runner.run(project, spool)
 

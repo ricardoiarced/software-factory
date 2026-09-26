@@ -30,7 +30,9 @@ from _publisher import (
 )
 
 
-def test_stable_release_semver_parsing_rejects_prerelease_build_and_malformed_versions() -> None:
+def test_stable_release_semver_parsing_rejects_prerelease_build_and_malformed_versions() -> (
+    None
+):
     assert parse_stable_version("0.156.1") == (0, 156, 1)
     assert parse_stable_version("2.1.281") == (2, 1, 281)
 
@@ -47,10 +49,14 @@ def test_stable_release_semver_parsing_rejects_prerelease_build_and_malformed_ve
 def test_codex_newest_stable_requires_github_and_npm_agreement(
     publisher_responses: PublisherResponses,
 ) -> None:
-    publisher_responses.install({
-        CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1", alpha="0.157.0-alpha.1"),
-    })
+    publisher_responses.install(
+        {
+            CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
+            CODEX_NPM_DIST_TAGS: npm_dist_tags(
+                latest="0.156.1", alpha="0.157.0-alpha.1"
+            ),
+        }
+    )
 
     assert newest_stable_codex() == "0.156.1"
 
@@ -58,10 +64,12 @@ def test_codex_newest_stable_requires_github_and_npm_agreement(
 def test_codex_newest_stable_refuses_disagreeing_surfaces_immediately(
     publisher_responses: PublisherResponses,
 ) -> None:
-    publisher_responses.install({
-        CODEX_GITHUB_RELEASES: github_release("rust-v0.156.2"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
-    })
+    publisher_responses.install(
+        {
+            CODEX_GITHUB_RELEASES: github_release("rust-v0.156.2"),
+            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
+        }
+    )
 
     with pytest.raises(RunAdmissionError) as refused:
         newest_stable_codex()
@@ -79,10 +87,12 @@ def test_codex_newest_stable_rejects_unstable_github_releases(
         github_release("rust-v0.156.1", prerelease=True),
         b'{"tag_name":"rust-v0.156.1","draft":true,"prerelease":false,"assets":[]}',
     ):
-        publisher_responses.install({
-            CODEX_GITHUB_RELEASES: release,
-            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
-        })
+        publisher_responses.install(
+            {
+                CODEX_GITHUB_RELEASES: release,
+                CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
+            }
+        )
         with pytest.raises(RunAdmissionError, match="GitHub Releases"):
             newest_stable_codex()
 
@@ -105,10 +115,12 @@ def test_codex_newest_stable_rejects_unrecognized_publisher_metadata(
         b'{"tag_name": "rust-v0.156.1", "draft": false, "prerelease": false}',
     ]
     for body in malformed:
-        failure = refusal_for({
-            CODEX_GITHUB_RELEASES: body,
-            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
-        })
+        failure = refusal_for(
+            {
+                CODEX_GITHUB_RELEASES: body,
+                CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
+            }
+        )
         assert "GitHub Releases metadata" in str(failure)
 
     npm_failures = [
@@ -117,20 +129,24 @@ def test_codex_newest_stable_rejects_unrecognized_publisher_metadata(
         b'{"latest": "0.156.1-linux-x64"}',
     ]
     for body in npm_failures:
-        failure = refusal_for({
-            CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
-            CODEX_NPM_DIST_TAGS: body,
-        })
+        failure = refusal_for(
+            {
+                CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
+                CODEX_NPM_DIST_TAGS: body,
+            }
+        )
         assert "npm dist-tags metadata" in str(failure)
 
 
 def test_codex_newest_stable_refuses_a_publisher_without_a_stable_release(
     publisher_responses: PublisherResponses,
 ) -> None:
-    publisher_responses.install({
-        CODEX_GITHUB_RELEASES: (404, b"not found"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
-    })
+    publisher_responses.install(
+        {
+            CODEX_GITHUB_RELEASES: (404, b"not found"),
+            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
+        }
+    )
 
     with pytest.raises(RunAdmissionError, match="published no stable release"):
         newest_stable_codex()
@@ -139,10 +155,12 @@ def test_codex_newest_stable_refuses_a_publisher_without_a_stable_release(
 def test_publisher_http_error_statuses_are_lookup_failures(
     publisher_responses: PublisherResponses,
 ) -> None:
-    publisher_responses.install({
-        CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
-        CODEX_NPM_DIST_TAGS: (404, b"not found"),
-    })
+    publisher_responses.install(
+        {
+            CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
+            CODEX_NPM_DIST_TAGS: (404, b"not found"),
+        }
+    )
     with pytest.raises(RunAdmissionError) as refused:
         newest_stable_codex()
     message = str(refused.value)
@@ -150,10 +168,12 @@ def test_publisher_http_error_statuses_are_lookup_failures(
     assert "HTTP 404" in message
 
     publisher_responses.calls.clear()
-    publisher_responses.install({
-        CODEX_GITHUB_RELEASES: (410, b"gone"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
-    })
+    publisher_responses.install(
+        {
+            CODEX_GITHUB_RELEASES: (410, b"gone"),
+            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
+        }
+    )
     with pytest.raises(RunAdmissionError) as refused:
         newest_stable_codex()
     message = str(refused.value)
@@ -164,11 +184,13 @@ def test_publisher_http_error_statuses_are_lookup_failures(
 def test_a_claude_pointer_error_status_is_a_lookup_failure(
     publisher_responses: PublisherResponses,
 ) -> None:
-    publisher_responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
-        CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
-        CLAUDE_LATEST_POINTER: (404, b"not found"),
-    })
+    publisher_responses.install(
+        {
+            CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
+            CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
+            CLAUDE_LATEST_POINTER: (404, b"not found"),
+        }
+    )
 
     with pytest.raises(RunAdmissionError) as refused:
         newest_stable_claude_code()
@@ -181,11 +203,13 @@ def test_a_claude_pointer_error_status_is_a_lookup_failure(
 def test_claude_newest_stable_requires_npm_github_and_pointer_agreement(
     publisher_responses: PublisherResponses,
 ) -> None:
-    publisher_responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281", stable="2.1.273"),
-        CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
-        CLAUDE_LATEST_POINTER: b"2.1.281\n",
-    })
+    publisher_responses.install(
+        {
+            CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281", stable="2.1.273"),
+            CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
+            CLAUDE_LATEST_POINTER: b"2.1.281\n",
+        }
+    )
 
     assert newest_stable_claude_code() == "2.1.281"
 
@@ -193,11 +217,13 @@ def test_claude_newest_stable_requires_npm_github_and_pointer_agreement(
 def test_claude_newest_stable_refuses_disagreeing_surfaces_immediately(
     publisher_responses: PublisherResponses,
 ) -> None:
-    publisher_responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
-        CLAUDE_GITHUB_RELEASES: github_release("v2.1.280"),
-        CLAUDE_LATEST_POINTER: b"2.1.281",
-    })
+    publisher_responses.install(
+        {
+            CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
+            CLAUDE_GITHUB_RELEASES: github_release("v2.1.280"),
+            CLAUDE_LATEST_POINTER: b"2.1.281",
+        }
+    )
     with pytest.raises(RunAdmissionError) as refused:
         newest_stable_claude_code()
     message = str(refused.value)
@@ -205,11 +231,13 @@ def test_claude_newest_stable_refuses_disagreeing_surfaces_immediately(
     assert "npm" in message and "GitHub" in message
     assert publisher_responses.calls == [CLAUDE_NPM_DIST_TAGS, CLAUDE_GITHUB_RELEASES]
 
-    publisher_responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
-        CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
-        CLAUDE_LATEST_POINTER: b"2.1.279",
-    })
+    publisher_responses.install(
+        {
+            CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
+            CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
+            CLAUDE_LATEST_POINTER: b"2.1.279",
+        }
+    )
     publisher_responses.calls.clear()
     with pytest.raises(RunAdmissionError) as refused:
         newest_stable_claude_code()
@@ -217,7 +245,9 @@ def test_claude_newest_stable_refuses_disagreeing_surfaces_immediately(
     assert "2.1.281" in message and "2.1.279" in message
     assert "downloads.claude.ai" in message
     assert publisher_responses.calls == [
-        CLAUDE_NPM_DIST_TAGS, CLAUDE_GITHUB_RELEASES, CLAUDE_LATEST_POINTER,
+        CLAUDE_NPM_DIST_TAGS,
+        CLAUDE_GITHUB_RELEASES,
+        CLAUDE_LATEST_POINTER,
     ]
 
 
@@ -227,13 +257,17 @@ def test_transport_faults_retry_once_then_refuse(
     attempts: list[str] = []
 
     def flaky_once_then_success(
-        url: str, *, timeout_seconds: float, deadline: float,
+        url: str,
+        *,
+        timeout_seconds: float,
+        deadline: float,
     ) -> tuple[int, bytes]:
         attempts.append(url)
         if url == CODEX_GITHUB_RELEASES and attempts.count(url) == 1:
             raise _publisher._TransportError("connection refused")
-        return 200, github_release("rust-v0.156.1") if url == CODEX_GITHUB_RELEASES \
-            else npm_dist_tags(latest="0.156.1")
+        return 200, github_release(
+            "rust-v0.156.1"
+        ) if url == CODEX_GITHUB_RELEASES else npm_dist_tags(latest="0.156.1")
 
     monkeypatch.setattr("_publisher._http_get", flaky_once_then_success)
     assert newest_stable_codex() == "0.156.1"
@@ -241,7 +275,9 @@ def test_transport_faults_retry_once_then_refuse(
 
     attempts.clear()
 
-    def always_unreachable(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
+    def always_unreachable(
+        url: str, *, timeout_seconds: float, deadline: float
+    ) -> tuple[int, bytes]:
         attempts.append(url)
         raise _publisher._TransportError("name resolution failed")
 
@@ -256,7 +292,9 @@ def test_server_faults_retry_once_then_refuse(
 ) -> None:
     attempts: list[str] = []
 
-    def always_overloaded(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
+    def always_overloaded(
+        url: str, *, timeout_seconds: float, deadline: float
+    ) -> tuple[int, bytes]:
         attempts.append(url)
         return 503, b"overloaded"
 
@@ -271,7 +309,9 @@ def test_rate_limited_lookups_refuse_without_retry(
 ) -> None:
     attempts: list[str] = []
 
-    def rate_limited(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
+    def rate_limited(
+        url: str, *, timeout_seconds: float, deadline: float
+    ) -> tuple[int, bytes]:
         attempts.append(url)
         return 429, b"rate limited"
 
@@ -287,7 +327,9 @@ def test_an_expired_lookup_deadline_stops_all_attempts(
     attempts: list[str] = []
     deadlines = iter([0.0, 10.5, 10.5])
 
-    def record(url: str, *, timeout_seconds: float, deadline: float) -> tuple[int, bytes]:
+    def record(
+        url: str, *, timeout_seconds: float, deadline: float
+    ) -> tuple[int, bytes]:
         attempts.append(url)
         return 200, github_release("rust-v0.156.1")
 
@@ -305,7 +347,10 @@ def test_every_get_is_bounded_by_three_seconds_of_the_remaining_deadline(
     timeouts: list[float] = []
 
     def record(
-        url: str, *, timeout_seconds: float, deadline: float,
+        url: str,
+        *,
+        timeout_seconds: float,
+        deadline: float,
     ) -> tuple[int, bytes]:
         timeouts.append(timeout_seconds)
         if url == CODEX_GITHUB_RELEASES:
@@ -344,7 +389,8 @@ def test_a_slow_drip_response_cannot_outlive_the_shared_deadline(
     # over the offline guard before pinning its urlopen dependency.
     monkeypatch.setattr("_publisher._http_get", real_http_get)
     monkeypatch.setattr(
-        "_publisher.urllib.request.urlopen", lambda request, timeout: drip,
+        "_publisher.urllib.request.urlopen",
+        lambda request, timeout: drip,
     )
     # Every clock check burns four seconds; the ten-second deadline must cut
     # the endless body off after a bounded number of chunked reads.
@@ -352,7 +398,8 @@ def test_a_slow_drip_response_cannot_outlive_the_shared_deadline(
     monkeypatch.setattr("_publisher.time.monotonic", lambda: next(ticks))
 
     with pytest.raises(
-        RunAdmissionError, match="could not reach the Codex publisher",
+        RunAdmissionError,
+        match="could not reach the Codex publisher",
     ):
         newest_stable_codex()
 
@@ -371,7 +418,9 @@ def test_publisher_requests_carry_no_credentials(
     assert "Authorization" not in request.headers
 
 
-def test_a_redirect_off_https_is_a_transport_fault(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_redirect_off_https_is_a_transport_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Redirected:
         def geturl(self) -> str:
             return "http://mirror.example.invalid/releases/latest"
@@ -389,7 +438,8 @@ def test_a_redirect_off_https_is_a_transport_fault(monkeypatch: pytest.MonkeyPat
     # over the offline guard before pinning its urlopen dependency.
     monkeypatch.setattr("_publisher._http_get", real_http_get)
     monkeypatch.setattr(
-        "_publisher.urllib.request.urlopen", lambda request, timeout: Redirected(),
+        "_publisher.urllib.request.urlopen",
+        lambda request, timeout: Redirected(),
     )
 
     with pytest.raises(_publisher._TransportError, match="HTTPS"):
@@ -399,7 +449,10 @@ def test_a_redirect_off_https_is_a_transport_fault(monkeypatch: pytest.MonkeyPat
 def test_installed_below_newest_stable_refuses_and_names_the_update_command() -> None:
     with pytest.raises(RunAdmissionError) as refused:
         require_newest_stable(
-            "Codex", "0.156.0", "0.156.1", "npm install -g @openai/codex",
+            "Codex",
+            "0.156.0",
+            "0.156.1",
+            "npm install -g @openai/codex",
         )
 
     message = str(refused.value)
@@ -418,7 +471,9 @@ def test_installed_at_or_above_newest_stable_passes_verification() -> None:
 def test_a_prerelease_installed_release_refuses_as_an_unstable_channel() -> None:
     with pytest.raises(RunAdmissionError) as refused:
         require_newest_stable(
-            "Codex", "0.158.0-alpha.2", "0.156.1",
+            "Codex",
+            "0.158.0-alpha.2",
+            "0.156.1",
             "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
         )
 

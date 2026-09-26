@@ -45,7 +45,9 @@ ROOT_SYNOPSIS = """Usage:
   factory --version
 """
 
-ROOT_HELP = ROOT_SYNOPSIS + """
+ROOT_HELP = (
+    ROOT_SYNOPSIS
+    + """
 Run one Instruction in a selected Git-backed Project.
 
 Options:
@@ -90,6 +92,7 @@ Examples:
   factory project show api
   factory project remove api
 """
+)
 
 PROJECT_SYNOPSIS = """Usage:
   factory project add [--] NAME PATH
@@ -99,7 +102,9 @@ PROJECT_SYNOPSIS = """Usage:
   factory project (-h | --help)
 """
 
-PROJECT_HELP = PROJECT_SYNOPSIS + """
+PROJECT_HELP = (
+    PROJECT_SYNOPSIS
+    + """
 Manage names in the local Project Registry. Project Names are case-sensitive.
 An added path must identify a directory inside a non-bare Git worktree.
 
@@ -112,6 +117,7 @@ Commands:
 Use -- before NAME when the name resembles an option. Only exact lowercase
 project as the first argument enters this namespace.
 """
+)
 
 
 class UsageError(Exception):
@@ -176,8 +182,11 @@ def _copy_utf8(source: BinaryIO, target: BinaryIO, label: str) -> tuple[int, int
 
 def _terminal_lfs(chunk: bytes, previous: int = 0) -> int:
     last_non_newline = len(chunk.rstrip(b"\r\n"))
-    return min(2, chunk[last_non_newline:].count(b"\n") +
-               (previous if last_non_newline == 0 else 0))
+    return min(
+        2,
+        chunk[last_non_newline:].count(b"\n")
+        + (previous if last_non_newline == 0 else 0),
+    )
 
 
 def _separator(spool: BinaryIO, trailing_lfs: int) -> None:
@@ -211,8 +220,9 @@ def _context_path(supplied: str, invocation_dir: Path) -> Path:
         raise RunInputError(str(error)) from error
 
 
-def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
-                 spool: BinaryIO) -> int:
+def _compose_run(
+    run: RunArguments, boundary: Path, invocation_dir: Path, spool: BinaryIO
+) -> int:
     try:
         project_spec = open_project_spec(boundary)
     except ProjectGuidanceError as error:
@@ -237,7 +247,8 @@ def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
         heading = b"### File: " + _quoted(supplied).encode("utf-8") + b"\n\n"
         with _open_regular(_context_path(supplied, invocation_dir), label) as source:
             size, trailing_lfs, context_started = _append_context(
-                source, spool, heading, label, trailing_lfs, context_started)
+                source, spool, heading, label, trailing_lfs, context_started
+            )
             context_bytes += size
     try:
         terminal_input = sys.stdin.isatty()
@@ -245,14 +256,25 @@ def _compose_run(run: RunArguments, boundary: Path, invocation_dir: Path,
         raise RunInputError(f"standard input could not be read: {error}") from error
     if not terminal_input:
         size, trailing_lfs, context_started = _append_context(
-            sys.stdin.buffer, spool, b"### Standard Input\n\n", "standard input",
-            trailing_lfs, context_started)
+            sys.stdin.buffer,
+            spool,
+            b"### Standard Input\n\n",
+            "standard input",
+            trailing_lfs,
+            context_started,
+        )
         context_bytes += size
     return context_bytes
 
 
-def _append_context(source: BinaryIO, spool: BinaryIO, heading: bytes, label: str,
-                    trailing_lfs: int, started: bool) -> tuple[int, int, bool]:
+def _append_context(
+    source: BinaryIO,
+    spool: BinaryIO,
+    heading: bytes,
+    label: str,
+    trailing_lfs: int,
+    started: bool,
+) -> tuple[int, int, bool]:
     checkpoint = spool.tell()
     _separator(spool, trailing_lfs)
     if not started:
@@ -270,8 +292,14 @@ def _context_threshold() -> int:
     supplied = os.environ.get("FACTORY_CONTEXT_WARN_BYTES")
     if supplied is None:
         return 1_048_576
-    if not supplied or not supplied.isascii() or not all("0" <= char <= "9" for char in supplied):
-        raise RunInputError("FACTORY_CONTEXT_WARN_BYTES must be an unsigned ASCII decimal integer")
+    if (
+        not supplied
+        or not supplied.isascii()
+        or not all("0" <= char <= "9" for char in supplied)
+    ):
+        raise RunInputError(
+            "FACTORY_CONTEXT_WARN_BYTES must be an unsigned ASCII decimal integer"
+        )
     threshold = 0
     for char in supplied:
         threshold = threshold * 10 + ord(char) - ord("0")
@@ -301,7 +329,9 @@ def _parse_run(args: list[str]) -> RunArguments:
                 position += 1
                 value = args[position] if position < len(args) else ""
                 if value.startswith("-"):
-                    raise UsageError(f"{option} requires a value; use {option}=VALUE for values beginning with -")
+                    raise UsageError(
+                        f"{option} requires a value; use {option}=VALUE for values beginning with -"
+                    )
             if not value:
                 raise UsageError(f"{option} requires a non-empty value")
             if option in ("--project", "--path"):
@@ -347,7 +377,9 @@ def _parse_project(args: list[str]) -> tuple[str, list[str]]:
     elif any(value.startswith("-") for value in values):
         raise UsageError("Project options are not accepted here", project=True)
     if len(values) != arities[command]:
-        raise UsageError(f"project {command} expects {arities[command]} argument(s)", project=True)
+        raise UsageError(
+            f"project {command} expects {arities[command]} argument(s)", project=True
+        )
     return command, values
 
 
@@ -418,7 +450,9 @@ def _show_project(name: str) -> None:
 def _usage(error: UsageError) -> int:
     synopsis = PROJECT_SYNOPSIS if error.project else ROOT_SYNOPSIS
     help_command = "factory project --help" if error.project else "factory --help"
-    sys.stderr.write(f"factory: error: {error}\n{synopsis}Try '{help_command}' for more information.\n")
+    sys.stderr.write(
+        f"factory: error: {error}\n{synopsis}Try '{help_command}' for more information.\n"
+    )
     return 2
 
 
@@ -447,7 +481,9 @@ def _dispatch() -> int:
             if command == "remove":
                 remove_project(values[0])
                 return 0
-            sys.stderr.write("factory: error: Project administration is not yet available.\n")
+            sys.stderr.write(
+                "factory: error: Project administration is not yet available.\n"
+            )
         else:
             run = _parse_run(sys.argv[1:])
             invocation_dir = Path.cwd()
@@ -464,7 +500,10 @@ def _dispatch() -> int:
             with spool:
                 try:
                     context_bytes = _compose_run(
-                        run, project.boundary, invocation_dir, spool,
+                        run,
+                        project.boundary,
+                        invocation_dir,
+                        spool,
                     )
                 except OSError as error:
                     raise RunInputError(f"Run Request spool failed: {error}") from error
@@ -472,9 +511,13 @@ def _dispatch() -> int:
                 if context_bytes > threshold:
                     message = f"Context is {context_bytes} bytes; the warning threshold is {threshold} bytes."
                     if not run.force:
-                        sys.stderr.write(f"factory: error: {message} Re-run with --force to continue.\n")
+                        sys.stderr.write(
+                            f"factory: error: {message} Re-run with --force to continue.\n"
+                        )
                         return 1
-                    sys.stderr.write(f"factory: warning: {message} Continuing because --force was supplied.\n")
+                    sys.stderr.write(
+                        f"factory: warning: {message} Continuing because --force was supplied.\n"
+                    )
                 try:
                     spool.seek(0)
                 except OSError as error:
@@ -495,7 +538,9 @@ def _dispatch() -> int:
         sys.stderr.write(f"factory: error: {error}.\n")
         return 1
     except PackageNotFoundError:
-        sys.stderr.write("factory: error: software-factory distribution metadata is unavailable.\n")
+        sys.stderr.write(
+            "factory: error: software-factory distribution metadata is unavailable.\n"
+        )
         return 1
 
 

@@ -72,7 +72,7 @@ class _Codex01551Policy:
     _host_probe_success: ClassVar[bytes] = b"factory-host-admission-probe-v1\n"
     _malformed_profile_rejection: ClassVar[bytes] = (
         b'Error: invalid type: string "{", expected struct PermissionProfileToml\n'
-        b'in `permissions`\n\n'
+        b"in `permissions`\n\n"
     )
     _host_probe_project_guidance: ClassVar[str] = (
         "factory-host-admission-project-guidance-v1"
@@ -141,36 +141,60 @@ printf '%s\n' 'factory-host-admission-probe-v1'
 
     def _configuration(self, enclosing_git_root: Path) -> list[str]:
         return [
-            "-c", "approval_policy=\"never\"",
-            "-c", "project_doc_max_bytes=0",
-            "-c", "skills.include_instructions=false",
-            "-c", "project_root_markers=[]",
-            "-c", "allow_login_shell=false",
-            "-c", "shell_environment_policy.inherit=\"core\"",
-            "-c", "shell_environment_policy.ignore_default_excludes=false",
-            "-c", "features.apps=false",
-            "-c", "features.hooks=false",
-            "-c", "features.plugins=false",
-            "-c", "features.remote_plugin=false",
-            "-c", "features.browser_use=false",
-            "-c", "features.browser_use_external=false",
-            "-c", "features.browser_use_full_cdp_access=false",
-            "-c", "features.in_app_browser=false",
-            "-c", "features.computer_use=false",
-            "-c", "features.multi_agent=false",
-            "-c", "features.memories=false",
-            "-c", "features.skip_host_skill_discovery=true",
-            "-c", "default_permissions=\"factory-isolated\"",
-            "-c", "permissions.factory-isolated=" + self._permission_profile(),
-            "-c", (
+            "-c",
+            'approval_policy="never"',
+            "-c",
+            "project_doc_max_bytes=0",
+            "-c",
+            "skills.include_instructions=false",
+            "-c",
+            "project_root_markers=[]",
+            "-c",
+            "allow_login_shell=false",
+            "-c",
+            'shell_environment_policy.inherit="core"',
+            "-c",
+            "shell_environment_policy.ignore_default_excludes=false",
+            "-c",
+            "features.apps=false",
+            "-c",
+            "features.hooks=false",
+            "-c",
+            "features.plugins=false",
+            "-c",
+            "features.remote_plugin=false",
+            "-c",
+            "features.browser_use=false",
+            "-c",
+            "features.browser_use_external=false",
+            "-c",
+            "features.browser_use_full_cdp_access=false",
+            "-c",
+            "features.in_app_browser=false",
+            "-c",
+            "features.computer_use=false",
+            "-c",
+            "features.multi_agent=false",
+            "-c",
+            "features.memories=false",
+            "-c",
+            "features.skip_host_skill_discovery=true",
+            "-c",
+            'default_permissions="factory-isolated"',
+            "-c",
+            "permissions.factory-isolated=" + self._permission_profile(),
+            "-c",
+            (
                 "projects."
                 + json.dumps(os.fspath(enclosing_git_root), ensure_ascii=False)
-                + ".trust_level=\"untrusted\""
+                + '.trust_level="untrusted"'
             ),
         ]
 
     def _invocation(
-        self, project_boundary: Path, enclosing_git_root: Path,
+        self,
+        project_boundary: Path,
+        enclosing_git_root: Path,
     ) -> list[str]:
         return [
             os.fspath(self.canonical_path),
@@ -186,7 +210,8 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         ]
 
     def _strict_configuration_failure(
-        self, reason: str,
+        self,
+        reason: str,
     ) -> RunAdmissionError:
         return RunAdmissionError(
             f"Codex executable {_quoted_absolute_path(self.canonical_path)} "
@@ -220,7 +245,9 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         return result.stdout
 
     def _inspect_strict_configuration(
-        self, project_boundary: Path, enclosing_git_root: Path,
+        self,
+        project_boundary: Path,
+        enclosing_git_root: Path,
     ) -> None:
         configuration = self._configuration(enclosing_git_root)
         features = self._run_inspector(
@@ -294,14 +321,20 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         return tuple(strings)
 
     def _inspect_project_guidance(
-        self, boundary: Path, configuration: list[str],
+        self,
+        boundary: Path,
+        configuration: list[str],
     ) -> None:
-        output = self._run_inspector([
-            os.fspath(self.canonical_path),
-            "debug", "prompt-input",
-            *configuration,
-            self._host_probe_prompt,
-        ], cwd=boundary)
+        output = self._run_inspector(
+            [
+                os.fspath(self.canonical_path),
+                "debug",
+                "prompt-input",
+                *configuration,
+                self._host_probe_prompt,
+            ],
+            cwd=boundary,
+        )
         try:
             prompt_input = json.loads(output)
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
@@ -311,15 +344,9 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         strings = self._prompt_input_strings(prompt_input)
         if strings is None:
             raise self._host_probe_failure("unrecognized prompt-input output")
-        if not any(
-            self._host_probe_project_guidance in value
-            for value in strings
-        ):
+        if not any(self._host_probe_project_guidance in value for value in strings):
             raise self._host_probe_failure("Project Guidance was not retained")
-        if any(
-            self._host_probe_forbidden_guidance in value
-            for value in strings
-        ):
+        if any(self._host_probe_forbidden_guidance in value for value in strings):
             raise self._host_probe_failure(
                 "project instruction or extension was discovered",
             )
@@ -328,11 +355,16 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         command = [
             os.fspath(self.canonical_path),
             "sandbox",
-            "-C", os.fspath(boundary),
-            "-c", "permissions.factory-malformed={",
-            "-P", "factory-malformed",
+            "-C",
+            os.fspath(boundary),
+            "-c",
+            "permissions.factory-malformed={",
+            "-P",
+            "factory-malformed",
             "--",
-            "/bin/sh", "-c", "exit 0",
+            "/bin/sh",
+            "-c",
+            "exit 0",
         ]
         try:
             result = subprocess.run(
@@ -384,7 +416,9 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             "host_identity": _host_identity(),
         }
         return (
-            json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            json.dumps(
+                document, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            )
             + "\n"
         ).encode("ascii")
 
@@ -404,8 +438,10 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         try:
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
-                mode="wb", dir=path.parent,
-                prefix=".host-admission-probe-", delete=False,
+                mode="wb",
+                dir=path.parent,
+                prefix=".host-admission-probe-",
+                delete=False,
             ) as target:
                 temporary = Path(target.name)
                 os.fchmod(target.fileno(), 0o600)
@@ -467,18 +503,23 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                 )
                 (project_config / "config.toml").write_text(
                     "[features]\napps = true\n\n"
-                    "[mcp_servers.factory_probe]\ncommand = \"/bin/false\"\n",
+                    '[mcp_servers.factory_probe]\ncommand = "/bin/false"\n',
                 )
 
                 configuration = self._configuration(boundary)
                 self._inspect_strict_configuration(boundary, boundary)
                 self._inspect_project_guidance(boundary, configuration)
                 unsafe_bash_environment = {
-                    "BASH_ENV", "BASHOPTS", "CDPATH", "ENV", "GLOBIGNORE",
+                    "BASH_ENV",
+                    "BASHOPTS",
+                    "CDPATH",
+                    "ENV",
+                    "GLOBIGNORE",
                     "SHELLOPTS",
                 }
                 probe_environment = {
-                    name: value for name, value in os.environ.items()
+                    name: value
+                    for name, value in os.environ.items()
                     if (
                         name not in unsafe_bash_environment
                         and not name.startswith("BASH_FUNC_")
@@ -492,9 +533,12 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                     try:
                         control = subprocess.run(
                             [
-                                "/bin/bash", "-p", "-c",
+                                "/bin/bash",
+                                "-p",
+                                "-c",
                                 ': > "/dev/tcp/127.0.0.1/$1"',
-                                "--", str(network_port),
+                                "--",
+                                str(network_port),
                             ],
                             stdin=subprocess.DEVNULL,
                             capture_output=True,
@@ -514,12 +558,17 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                     invocation = [
                         os.fspath(self.canonical_path),
                         "sandbox",
-                        "-C", os.fspath(boundary),
-                        "-c", "permissions.factory-isolated="
-                        + self._permission_profile(),
-                        "-P", "factory-isolated",
+                        "-C",
+                        os.fspath(boundary),
+                        "-c",
+                        "permissions.factory-isolated=" + self._permission_profile(),
+                        "-P",
+                        "factory-isolated",
                         "--",
-                        "/bin/bash", "-p", "-c", self._host_probe_script,
+                        "/bin/bash",
+                        "-p",
+                        "-c",
+                        self._host_probe_script,
                         "factory-host-admission-probe",
                         os.fspath(boundary),
                         os.fspath(temporary_write),
@@ -564,7 +613,9 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             ) from error
 
     def prepare_run(
-        self, project_boundary: Path, enclosing_git_root: Path,
+        self,
+        project_boundary: Path,
+        enclosing_git_root: Path,
     ) -> list[str]:
         """Apply all certified checks and build this policy's launch invocation."""
 
@@ -588,7 +639,9 @@ _COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = (
         filesystem_identity=(2096, 13422),
     ),
 )
-_VERSION_OUTPUT = re.compile(rb"codex-cli ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z")
+_VERSION_OUTPUT = re.compile(
+    rb"codex-cli ([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?)\n\Z"
+)
 
 
 def _resolve_executable() -> Path:
@@ -624,7 +677,8 @@ def _match_compatibility(executable: Path, version: str) -> _Codex01551Policy:
     architecture = platform.machine()
 
     matches = tuple(
-        policy for policy in _COMPATIBILITY_SET
+        policy
+        for policy in _COMPATIBILITY_SET
         if (
             policy.version == version
             and policy.sha256 == digest
@@ -644,11 +698,14 @@ def _match_compatibility(executable: Path, version: str) -> _Codex01551Policy:
             executable=executable,
         )
 
-    candidates = tuple(policy for policy in _COMPATIBILITY_SET if policy.version == version)
+    candidates = tuple(
+        policy for policy in _COMPATIBILITY_SET if policy.version == version
+    )
     if not candidates:
         reason = "version is not in the Codex Compatibility Set"
     elif not any(
-        policy.operating_system == operating_system and policy.architecture == architecture
+        policy.operating_system == operating_system
+        and policy.architecture == architecture
         for policy in candidates
     ):
         reason = "platform does not match the Codex Compatibility Set"
@@ -694,7 +751,8 @@ def _recheck_artifact(policy: _Codex01551Policy) -> None:
         or (
             path_metadata_after_hash.st_dev,
             path_metadata_after_hash.st_ino,
-        ) != filesystem_identity
+        )
+        != filesystem_identity
     ):
         raise _changed_artifact_failure(policy)
 
@@ -717,7 +775,8 @@ def _admit_run(project: Project) -> tuple[_Codex01551Policy, list[str]]:
     verify_codex_newest_stable(executable, version)
     policy = _match_compatibility(executable, version)
     invocation = policy.prepare_run(
-        project.boundary, project.enclosing_git_root,
+        project.boundary,
+        project.enclosing_git_root,
     )
     _recheck_artifact(policy)
     return policy, invocation

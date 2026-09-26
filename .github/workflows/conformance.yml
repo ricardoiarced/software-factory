@@ -15,9 +15,10 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - uses: astral-sh/setup-uv@v10
-      # Reserved step slot: the ruff format check that "Adopt ruff format and
-      # write it into the Conventions" folds in lands directly below — a
-      # head-ref check, ahead of the ratchet counts.
+      # Strict, not ratcheted: formatting is binary and the tree lands
+      # already-formatted, so any regression fails outright (head ref only).
+      - name: Enforce the head-ref format check
+        run: uv run ruff format --check .
       - name: Count the head-ref findings
         id: head
         run: |

@@ -64,25 +64,43 @@ def _containing_worktree_root(path: Path, label: str) -> Path:
 
     try:
         result = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree",
-             "--is-bare-repository", "--show-toplevel"],
-            capture_output=True, check=False, env={**os.environ, "LC_ALL": "C"},
+            [
+                "git",
+                "-C",
+                str(path),
+                "rev-parse",
+                "--is-inside-work-tree",
+                "--is-bare-repository",
+                "--show-toplevel",
+            ],
+            capture_output=True,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
         )
     except OSError as error:
-        raise GitInspectionError(f"Git inspection failed for {label}: {error}") from error
+        raise GitInspectionError(
+            f"Git inspection failed for {label}: {error}"
+        ) from error
     if result.returncode:
-        if (result.stdout == b"false\ntrue\n" and
-                b"this operation must be run in a work tree" in result.stderr):
-            raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
-        if (b"not a git repository" in result.stderr and
-                not os.environ.get("GIT_DIR")):
-            raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
+        if (
+            result.stdout == b"false\ntrue\n"
+            and b"this operation must be run in a work tree" in result.stderr
+        ):
+            raise ProjectSelectionError(
+                f"{label} is not inside a non-bare Git worktree"
+            )
+        if b"not a git repository" in result.stderr and not os.environ.get("GIT_DIR"):
+            raise ProjectSelectionError(
+                f"{label} is not inside a non-bare Git worktree"
+            )
         raise GitInspectionError(
             f"Git inspection failed for {label}: Git returned {result.returncode}",
         )
     lines = result.stdout.split(b"\n", 2)
     if len(lines) != 3:
-        raise GitInspectionError(f"Git inspection failed for {label}: invalid Git output")
+        raise GitInspectionError(
+            f"Git inspection failed for {label}: invalid Git output"
+        )
     if lines[0] != b"true" or lines[1] != b"false":
         raise ProjectSelectionError(f"{label} is not inside a non-bare Git worktree")
     try:
@@ -108,7 +126,11 @@ def select_explicit_project(supplied: str, invocation_dir: Path) -> Project:
             boundary = invocation_dir / boundary
         boundary = boundary.resolve(strict=True)
     except (OSError, RuntimeError) as error:
-        cause = error.strerror if isinstance(error, OSError) and error.strerror else "symlink loop"
+        cause = (
+            error.strerror
+            if isinstance(error, OSError) and error.strerror
+            else "symlink loop"
+        )
         raise ProjectSelectionError(
             f"path {_quoted(supplied)} cannot be resolved: {cause}",
         ) from error
@@ -116,7 +138,8 @@ def select_explicit_project(supplied: str, invocation_dir: Path) -> Project:
         raise ProjectSelectionError(f"path {_quoted(supplied)} is not a directory")
 
     enclosing_git_root = _containing_worktree_root(
-        boundary, f"path {_quoted(supplied)}",
+        boundary,
+        f"path {_quoted(supplied)}",
     )
     return Project(boundary=boundary, enclosing_git_root=enclosing_git_root)
 
@@ -154,7 +177,8 @@ def inspect_registered_project(path: str) -> Project:
         raise StaleProjectError("stale: path is not canonical")
     try:
         enclosing_git_root = _containing_worktree_root(
-            canonical, f"path {_quoted(path)}",
+            canonical,
+            f"path {_quoted(path)}",
         )
     except GitInspectionError:
         raise

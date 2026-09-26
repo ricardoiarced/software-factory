@@ -1,30 +1,32 @@
 """Codex Run Admission and the certified Codex Runner."""
 
-from dataclasses import dataclass
-import errno
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import re
 import signal
 import socket
-import stat
 import subprocess
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 from typing import BinaryIO, ClassVar
 
 from _harness import (
     PreparedRun,
     RunAdmissionError,
     _quoted_absolute_path,
-    factory_version as _factory_version,
-    host_identity as _host_identity,
     inspection_failure,
     launch,
     reported_version,
     resolve_executable,
+)
+from _harness import (
+    factory_version as _factory_version,
+)
+from _harness import (
+    host_identity as _host_identity,
 )
 from _project import Project
 from _publisher import verify_codex_newest_stable
@@ -198,8 +200,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             result = subprocess.run(
                 command,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 check=False,
                 cwd=cwd,
                 timeout=self.host_probe_timeout_seconds,
@@ -249,8 +250,6 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             raise self._strict_configuration_failure(
                 "incomplete feature output",
             )
-        # Pin the complete official feature inventory, including rows outside
-        # the explicitly forbidden set. New or changed capabilities fail closed.
         if hashlib.sha256(features).hexdigest() != (
             "05bd1b9621f494b5941f2180af1cef83898e9ed33c1e6d0229c51291eca71997"
         ):
@@ -339,8 +338,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             result = subprocess.run(
                 command,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 check=False,
                 cwd=boundary,
                 timeout=self.host_probe_timeout_seconds,
@@ -499,8 +497,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                                 "--", str(network_port),
                             ],
                             stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
+                            capture_output=True,
                             check=False,
                             timeout=self.host_probe_timeout_seconds,
                             env=probe_environment,
@@ -579,7 +576,6 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         return self._invocation(project_boundary, enclosing_git_root)
 
 
-# Certified by the 2026-09-22 Linux x86_64 real-host decision for issue #92.
 _COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = (
     _Codex01551Policy(
         sha256="0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761",

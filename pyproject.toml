@@ -21,10 +21,17 @@ markers = [
 ]
 
 [dependency-groups]
-dev = ["pytest", "platformdirs", "build", "ruff", "pyright"]
+dev = ["pytest", "platformdirs", "build", "ruff", "pyright==1.1.414"]
 
 [tool.ruff]
 target-version = "py311"
+required-version = "==0.16.9"
+
+[tool.ruff.lint]
+extend-select = ["ANN", "TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"abc.ABC".msg = "Use typing.Protocol for architectural contracts instead of abc.ABC (AGENTS.md ## Conventions)."
 
 [tool.pyright]
 include = [
@@ -38,4 +45,4 @@ include = [
     "_project_registry.py",
 ]
 pythonVersion = "3.11"
-typeCheckingMode = "basic"
+typeCheckingMode = "standard"

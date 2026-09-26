@@ -867,8 +867,9 @@ class _ClaudePolicy:
                     observed = path.read_text(encoding="utf-8")
                 except FileNotFoundError:
                     realize(step)
-                if observed != content:
-                    realize(step)
+                else:
+                    if observed != content:
+                        realize(step)
             for planted in (
                 fixture.outside_read,
                 fixture.sibling_read,

@@ -1,8 +1,8 @@
 """Find and safely open the optional Project Spec for a Project."""
 
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
 from typing import BinaryIO
 
 

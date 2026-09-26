@@ -1,14 +1,14 @@
 """Entry point for the Factory command."""
 
-from importlib.metadata import PackageNotFoundError, version
-from dataclasses import dataclass
 import codecs
 import json
 import os
-from pathlib import Path
 import stat
 import sys
 import tempfile
+from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import BinaryIO
 
 from _harness import (
@@ -37,7 +37,6 @@ from _project_registry import (
     remove_project,
     validate_project_name,
 )
-
 
 ROOT_SYNOPSIS = """Usage:
   factory [--harness codex|claude] [--project NAME | --path PATH] [--file PATH]... [--force] [--] INSTRUCTION...
@@ -459,7 +458,7 @@ def _dispatch() -> int:
             else:
                 project = _select_registered_project(run.selector[1])
             try:
-                spool = tempfile.TemporaryFile(mode="w+b")
+                spool = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
             except OSError as error:
                 raise RunInputError(f"Run Request spool failed: {error}") from error
             with spool:

@@ -8,17 +8,20 @@ Package management: `uv`.
 
 ## Commands
 The `uv run --no-project --with …` form builds a throwaway environment per
-invocation — no persistent install needed. All commands run from the repo root.
+invocation — no persistent install needed. The conformance tools (lint,
+typecheck) run in project mode instead: their versions are governed solely by
+the pins in `pyproject.toml`. All commands run from the repo root.
 
 - Run tests (full, 515 tests): `uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`
   - Without `--with build`, 513 pass and the two wheel-smoke tests fail (they package the project).
 - Run a single test: `uv run --no-project --with pytest --with platformdirs --with . -m pytest tests/test_cli.py -q` (append `::test_name` for one test)
 - Certification selection check (must report all skipped): `uv run --no-project --with pytest --with platformdirs --with . -m pytest certification -q -rs`
 - Run the CLI from source: `uv run --no-project --with platformdirs --with . factory --help`
-- Persistent env instead of ephemeral: `uv venv && uv pip install -e . pytest platformdirs build ruff pyright`, then plain `python -m pytest -q` / `ruff check .` / `pyright` (this is what CI does: `pip install platformdirs pytest build`)
+- Persistent env instead of ephemeral: `uv venv && uv pip install -e . pytest platformdirs build ruff pyright`, then plain `python -m pytest -q` / `ruff check .` / `pyright` (the deterministic-suite CI job does the equivalent `pip install platformdirs pytest build`; the Conformance job uses the project-mode `uv run` forms below)
 - Build / package: `python -m build` — CI (`.github/workflows/release-verification.yml`) requires exactly one `py3-none-any.whl` and one `.tar.gz`
-- Lint: `uv run --no-project --with ruff ruff check .`
-- Typecheck: `uv run --no-project --with pyright --with platformdirs --with . pyright` (production modules only; both configured in `pyproject.toml` `[tool.ruff]` / `[tool.pyright]`)
+- Lint: `uv run ruff check .`
+- Typecheck: `uv run pyright` (production modules only; both configured in `pyproject.toml` `[tool.ruff]` / `[tool.pyright]`)
+- Conformance: CI (`.github/workflows/conformance.yml`) counts ruff findings, production pyright errors, and banned `#` comments on every push and PR, and enforces the no-regression ratchet — each count must not exceed the baseline ref's count at run time (`docs/conventions-enforcement.md`)
 
 ## Structure
 - `factory.py` — CLI entry point (`factory:main`), orchestration, Run Requests
@@ -42,7 +45,7 @@ the statement rows in `docs/traceability.md` and the tests they name.
 - Strict typing: full annotations on parameters and returns (modern `X | None` style).
 - Code should be self-explanatory — `#` comments are banned except pragmas (`# noqa`, `# type: ignore`); docstrings are fine.
 - Keep functions and modules small and focused; private helpers are `_`-prefixed.
-- A change is accepted only when the full deterministic suite passes (`uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`); real-host certification is maintainer-only and never implied by green tests.
+- A change is accepted only when the full deterministic suite passes (`uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`) and the Conformance check is green (`.github/workflows/conformance.yml`); real-host certification is maintainer-only and never implied by green tests.
 - Each convention's enforcement — linter rules, type-checker, CI checks, or review-only — is mapped in `docs/conventions-enforcement.md`.
 
 ## Do not modify

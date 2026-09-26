@@ -1,0 +1,132 @@
+name: Conformance
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  conformance:
+    name: Conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - uses: astral-sh/setup-uv@v10
+      # Reserved step slot: the ruff format check that "Adopt ruff format and
+      # write it into the Conventions" folds in lands directly below — a
+      # head-ref check, ahead of the ratchet counts.
+      - name: Count the head-ref findings
+        id: head
+        run: |
+          set -euo pipefail
+          set +e
+          uv run ruff check . --output-format=json > "$RUNNER_TEMP/ruff.json"
+          ruff_status=$?
+          uv run pyright --outputjson > "$RUNNER_TEMP/pyright.json"
+          pyright_status=$?
+          set -e
+          # ruff exits 1 when findings are reported and 2 on tool errors;
+          # pyright exits 1 on errors and 2 on fatal errors. Only findings
+          # may pass through; a tool failure aborts the step.
+          test "$ruff_status" -le 1
+          test "$pyright_status" -le 1
+          python3 - > "$RUNNER_TEMP/comments.txt" <<'PY'
+          import re
+          import subprocess
+          import tokenize
+
+          pragma = re.compile(r"#\s*(?:noqa|type:\s*ignore)\b")
+          files = subprocess.run(
+              ["git", "ls-files", "*.py"], check=True, capture_output=True, text=True
+          ).stdout.split()
+          hits = 0
+          for path in files:
+              with open(path, "rb") as handle:
+                  for token in tokenize.tokenize(handle.readline):
+                      if token.type == tokenize.COMMENT and not pragma.match(token.string):
+                          hits += 1
+          print(hits)
+          PY
+          {
+            echo "ruff=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$RUNNER_TEMP/ruff.json")"
+            echo "pyright=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["summary"]["errorCount"])' "$RUNNER_TEMP/pyright.json")"
+            echo "comments=$(cat "$RUNNER_TEMP/comments.txt")"
+          } >> "$GITHUB_OUTPUT"
+      # The baseline checkout must stay after the head count: ruff walks the
+      # working tree, so a nested repo copy present during the head count
+      # would double every head number.
+      - name: Check out the baseline ref for the ratchet
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || 'main' }}
+          path: conformance-baseline
+      - name: Count the baseline-ref findings
+        id: baseline
+        working-directory: conformance-baseline
+        run: |
+          set -euo pipefail
+          set +e
+          uv run ruff check . --output-format=json > "$RUNNER_TEMP/ruff.json"
+          ruff_status=$?
+          uv run pyright --outputjson > "$RUNNER_TEMP/pyright.json"
+          pyright_status=$?
+          set -e
+          # ruff exits 1 when findings are reported and 2 on tool errors;
+          # pyright exits 1 on errors and 2 on fatal errors. Only findings
+          # may pass through; a tool failure aborts the step.
+          test "$ruff_status" -le 1
+          test "$pyright_status" -le 1
+          python3 - > "$RUNNER_TEMP/comments.txt" <<'PY'
+          import re
+          import subprocess
+          import tokenize
+
+          pragma = re.compile(r"#\s*(?:noqa|type:\s*ignore)\b")
+          files = subprocess.run(
+              ["git", "ls-files", "*.py"], check=True, capture_output=True, text=True
+          ).stdout.split()
+          hits = 0
+          for path in files:
+              with open(path, "rb") as handle:
+                  for token in tokenize.tokenize(handle.readline):
+                      if token.type == tokenize.COMMENT and not pragma.match(token.string):
+                          hits += 1
+          print(hits)
+          PY
+          {
+            echo "ruff=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$RUNNER_TEMP/ruff.json")"
+            echo "pyright=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["summary"]["errorCount"])' "$RUNNER_TEMP/pyright.json")"
+            echo "comments=$(cat "$RUNNER_TEMP/comments.txt")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Enforce the no-regression ratchet
+        run: |
+          set -euo pipefail
+          {
+            echo "### Conformance ratchet"
+            echo ""
+            echo "Baseline: \`${{ github.base_ref || 'main' }}\` at run time. A run passes only when every count is at most the baseline count (conventions-enforcement.md, \"The gate\")."
+            echo ""
+            echo "| Count | Head | Baseline |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          regression=""
+          while read -r metric head_count baseline_count; do
+            echo "| $metric | $head_count | $baseline_count |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$head_count" -gt "$baseline_count" ]; then
+              regression="$regression $metric"
+            fi
+          done <<EOF
+          ruff ${{ steps.head.outputs.ruff }} ${{ steps.baseline.outputs.ruff }}
+          pyright ${{ steps.head.outputs.pyright }} ${{ steps.baseline.outputs.pyright }}
+          comments ${{ steps.head.outputs.comments }} ${{ steps.baseline.outputs.comments }}
+          EOF
+          if [ -n "$regression" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Ratchet regression:$regression" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Every conformance count is within the baseline ratchet." >> "$GITHUB_STEP_SUMMARY"

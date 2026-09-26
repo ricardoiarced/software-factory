@@ -2,14 +2,30 @@
 
 How each convention in the AGENTS.md `## Conventions` section is enforced. This
 document is normative for tooling: the enforced rule set is exactly what is
-written here. Decided on the conformance map (issue #123); the CI checks it
-names are designed by the gate ticket and do not exist yet.
+written here. Decided on the conformance map (issues #123 and #124).
+
+## The gate
+
+The CI checks below run as the dedicated Conformance workflow
+(`.github/workflows/conformance.yml`): single job, every push and pull
+request. It counts three things — ruff findings, production pyright errors,
+banned `#` comment lines (scanned over all tracked Python code) — and
+enforces a **no-regression ratchet**: a run passes only when every count is
+at most the baseline ref's count at run time. The head side is the checked
+out commit (for a pull request, its merge commit — what would land); the
+baseline is the pull request's target ref, `main` for normal PRs, so on
+pushes to `main` the comparison is against itself. Counts are per-check
+totals, not per-rule.
+During remediation the ratchet lets lanes land while strictly improving; once
+the counts reach their floor it is the strict gate — nothing to flip. The
+workflow reserves a step slot for the ruff format check.
 
 ## Registers
 
 - **ruff rule / pyright** — carried by the pinned tool configs in `pyproject.toml`.
-- **CI check** — a repo script surfaced through the conformance gate; designed
-  by the gate ticket, review-only until it exists.
+- **CI check** — surfaced through the Conformance workflow under the
+  no-regression ratchet (see "The gate"); blocking by convention through the
+  AGENTS.md acceptance rule, and release-blocking through the Publication Gate.
 - **review-only** — human enforcement through PR review; its strongest
   instance is the "Do not modify" gate.
 
@@ -55,18 +71,20 @@ names are designed by the gate ticket and do not exist yet.
 
 | Convention (AGENTS.md) | Enforced by | Why |
 |---|---|---|
-| Spec-driven: traceability rows name their tests | CI check (row→test validator), review-only until the gate exists | The mapping is structural; a script can verify every named test exists. Design lands with the gate. |
+| Spec-driven: traceability rows name their tests | CI check (`tests/test_traceability.py`, run by the deterministic suite job) | The mapping is structural; the validator inventories `tests/` and `certification/` via AST and enforces the mapping bidirectionally — every row's named tests exist, every test is named — on every push and PR. |
 | Fail closed: refuse rather than guess | Review-only, reinforced by the "Do not modify" gate | A design property of admission/compat/sandbox code, not a syntactic pattern a linter can see. |
 | Protocol-based interfaces, not ABC | Ruff TID251 bans `abc.ABC`; the `NotImplementedError` half stays review-only | TID251's banned-API fires on dotted usage (verified at 0.16.9); bare builtins are not dotted accesses, so they cannot be banned mechanically. Zero current violations. |
 | Strictly typed classes | Review-only; pyright flags the inferable parts (e.g. a non-None `__init__` return) | No stock rule covers attribute annotations, `__init__ -> None`, or `Self` returns; production hand-checks are clean today. |
 | Strict typing: full annotations, modern style | Ruff ANN (annotations) + pyright `standard` (type correctness); modern `X \| None` style via the UP rules in defaults | Division of labor: pyright at basic/standard does not flag missing annotations; ANN does, at +5 findings — production is already fully annotated. |
-| Self-explanatory; `#` comments banned except pragmas | CI check (comment scan with a `# noqa` / `# type: ignore` allowlist), review-only until the gate exists | No ruff rule bans prose comments; a scan is exact and false-positive-free under the pragma allowlist. |
+| Self-explanatory; `#` comments banned except pragmas | CI check (comment scan in the Conformance workflow, allowlist `# noqa` / `# type: ignore`) | No ruff rule bans prose comments; a scan is exact and false-positive-free under the pragma allowlist. |
 | Small and focused; `_`-prefixed helpers | Review-only; the module-size half is parked on the map's fog | No stock rule enforces helper naming; size thresholds are an undecided policy. |
-| Full suite green before acceptance | CI check (the gate itself); certification stays maintainer-only | Already the acceptance rule; the gate makes it mechanical. |
+| Full suite green before acceptance | CI check (the deterministic-suite job plus the Conformance workflow); certification stays maintainer-only | The acceptance rule requires both green; the Publication Gate makes it release-blocking. |
 
 ## Baseline at adoption
 
 The pinned policy inherits the violations it will govern; remediation is a
 separate policy decision. At adoption (ruff 0.16.9 defaults + ANN, pyright
 1.1.414 `standard`): 98 ruff findings (production 30 / tests 64 /
-certification 4), 5 production pyright errors, 38 production comment lines.
+certification 4), 5 production pyright errors, 38 production comment lines
+(the gate's all-tracked comment scan counts 106 over tracked Python at the
+same commit).

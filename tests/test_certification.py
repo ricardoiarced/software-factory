@@ -1,14 +1,13 @@
 """Deterministic selection rules for real-host certification."""
 
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
 import _codex
-from certification._selection import load_committed_selection, SelectionError
-
+from certification._selection import SelectionError, load_committed_selection
 
 PROJECT = Path(__file__).resolve().parents[1]
 

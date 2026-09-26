@@ -6,10 +6,10 @@ These tests keep the advertised claims and the embedded sets from drifting
 apart in either direction.
 """
 
-from collections.abc import Mapping
 import json
-from pathlib import Path
 import re
+from collections.abc import Mapping
+from pathlib import Path
 
 import _codex
 from certification.test_exact_tuple import (
@@ -18,7 +18,6 @@ from certification.test_exact_tuple import (
     CODEX_PRODUCTION_CHECKS,
     EVIDENCE_PROPERTIES,
 )
-
 
 PROJECT = Path(__file__).resolve().parents[1]
 SUPPORT_DOCUMENT = PROJECT / "SUPPORT.md"

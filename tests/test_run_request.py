@@ -1,11 +1,11 @@
 """Run Request behavior at the Factory command boundary."""
 
-from collections.abc import Callable
 import io
 import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -137,8 +137,13 @@ def test_registered_run_uses_exact_boundary_and_only_its_spec(
         assert factory.main() == 0
 
     assert received == [
-        (Project(service, project), b"# Project Guidance\n\nservice guidance\n\n"
-         b"# Run Request\n\n## Instruction\n\nFix"),
+        (
+            Project(service, project),
+            (
+                b"# Project Guidance\n\nservice guidance\n\n"
+                b"# Run Request\n\n## Instruction\n\nFix"
+            ),
+        ),
         (Project(other, project), b"# Run Request\n\n## Instruction\n\nFix"),
     ]
     assert registry.read_bytes() == before
@@ -365,8 +370,10 @@ def test_discovery_accepts_contained_symlinked_marker_and_its_spec(
     assert factory.main() == 0
     assert received == [(
         Project(service, tmp_path),
-        b"# Project Guidance\n\nservice guidance\n\n"
-        b"# Run Request\n\n## Instruction\n\nFix",
+        (
+            b"# Project Guidance\n\nservice guidance\n\n"
+            b"# Run Request\n\n## Instruction\n\nFix"
+        ),
     )]
 
 
@@ -489,10 +496,12 @@ def test_explicit_run_hands_off_exact_request_bytes(
 
     assert factory.main() == 7
     assert requests == [
-        b"# Project Guidance\n\nGuide\r\n\n# Run Request\n\n"
-        b"## Instruction\n\nFix it\n\n## Context\n\n"
-        b"### File: \"notes.txt\"\n\nFirst\n\n"
-        b"### Standard Input\n\nstdin"
+        (
+            b"# Project Guidance\n\nGuide\r\n\n# Run Request\n\n"
+            b"## Instruction\n\nFix it\n\n## Context\n\n"
+            b"### File: \"notes.txt\"\n\nFirst\n\n"
+            b"### Standard Input\n\nstdin"
+        )
     ]
     assert capsys.readouterr().err == ""
 
@@ -594,11 +603,12 @@ raise SystemExit(factory.main())
 """
     command = [sys.executable, "-c", script, str(Path(factory.__file__).parent),
                "--path", str(tmp_path), "Fix"]
-    piped = subprocess.run(command, cwd=tmp_path, input=payload, capture_output=True)
+    piped = subprocess.run(
+        command, cwd=tmp_path, check=True, input=payload, capture_output=True,
+    )
     with redirected.open("rb") as source:
         from_file = subprocess.run(
-            command, cwd=tmp_path, stdin=source, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            command, cwd=tmp_path, check=True, stdin=source, capture_output=True,
         )
 
     expected = b"# Run Request\n\n## Instruction\n\nFix" + context
@@ -629,9 +639,11 @@ def test_standard_input_follows_file_context_and_preserves_payload_bytes(
 
     assert factory.main() == 0
     assert received == [
-        b"# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n"
-        b"### File: \"notes\"\n\nfile\r\n\n"
-        b"### Standard Input\n\n\xc3\xa9\r\nlast\r"
+        (
+            b"# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n"
+            b"### File: \"notes\"\n\nfile\r\n\n"
+            b"### Standard Input\n\n\xc3\xa9\r\nlast\r"
+        )
     ]
 
 
@@ -885,8 +897,10 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
 
 @pytest.mark.parametrize("threshold,payload,expected", [
     ("0", b"", "factory: error: Codex Compatibility Set is empty; no Run is supported.\n"),
-    ("0", b"x", "factory: error: Context is 1 bytes; the warning threshold is 0 bytes. "
-                   "Re-run with --force to continue.\n"),
+    ("0", b"x", (
+        "factory: error: Context is 1 bytes; the warning threshold is 0 bytes. "
+        "Re-run with --force to continue.\n"
+    )),
     ("0002", b"xy", "factory: error: Codex Compatibility Set is empty; no Run is supported.\n"),
 ])
 def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
@@ -1275,9 +1289,11 @@ def test_external_context_file_expands_from_invocation_and_keeps_original_labels
 
     assert factory.main() == 0
     assert received == [
-        b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
-        b'### File: "$CONTEXT_FILE"\n\n\xef\xbb\xbfA\r\nB\r\n\n'
-        b'### File: "linked.txt"\n\n\xef\xbb\xbfA\r\nB\r'
+        (
+            b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
+            b'### File: "$CONTEXT_FILE"\n\n\xef\xbb\xbfA\r\nB\r\n\n'
+            b'### File: "linked.txt"\n\n\xef\xbb\xbfA\r\nB\r'
+        )
     ]
 
 
@@ -1394,9 +1410,11 @@ def test_repeated_file_context_uses_original_json_labels_and_preserves_payload(
 
     assert factory.main() == 0
     assert received == [
-        b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
-        b'### File: "line\\n\\"quote\\".txt"\n\nx\r\ny\r\n\n'
-        b'### File: "line\\n\\"quote\\".txt"\n\nx\r\ny\r'
+        (
+            b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
+            b'### File: "line\\n\\"quote\\".txt"\n\nx\r\ny\r\n\n'
+            b'### File: "line\\n\\"quote\\".txt"\n\nx\r\ny\r'
+        )
     ]
 
 
@@ -1426,11 +1444,13 @@ def test_repeated_file_context_skips_empty_sources_and_preserves_each_payload(
 
     assert factory.main() == 0
     assert received == [
-        b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
-        b'### File: "mixed"\n\nA\r\nB\nC\r\n\n'
-        b'### File: "unicode"\n\ncaf\xc3\xa9\r\n\n'
-        b'### File: "mixed"\n\nA\r\nB\nC\r\n\n'
-        b'### File: "trailing"\n\nend\n\n'
+        (
+            b'# Run Request\n\n## Instruction\n\nFix\n\n## Context\n\n'
+            b'### File: "mixed"\n\nA\r\nB\nC\r\n\n'
+            b'### File: "unicode"\n\ncaf\xc3\xa9\r\n\n'
+            b'### File: "mixed"\n\nA\r\nB\nC\r\n\n'
+            b'### File: "trailing"\n\nend\n\n'
+        )
     ]
 
 
@@ -1525,10 +1545,12 @@ def test_crlf_blank_lines_need_no_added_separator(
 
     assert factory.main() == 0
     assert received == [
-        b"# Project Guidance\n\nguide\r\n\r\n# Run Request\n\n"
-        b"## Instruction\n\nFix\n\n## Context\n\n"
-        b"### File: \"context\"\n\ncontext\r\n\r\n"
-        b"### Standard Input\n\nnext"
+        (
+            b"# Project Guidance\n\nguide\r\n\r\n# Run Request\n\n"
+            b"## Instruction\n\nFix\n\n## Context\n\n"
+            b"### File: \"context\"\n\ncontext\r\n\r\n"
+            b"### Standard Input\n\nnext"
+        )
     ]
 
 
@@ -1602,6 +1624,8 @@ def test_instruction_crlf_blank_line_needs_no_added_separator(
 
     assert factory.main() == 0
     assert received == [
-        b"# Run Request\n\n## Instruction\n\nFix\r\n\r\n"
-        b"## Context\n\n### File: \"context\"\n\ndetail"
+        (
+            b"# Run Request\n\n## Instruction\n\nFix\r\n\r\n"
+            b"## Context\n\n### File: \"context\"\n\ndetail"
+        )
     ]

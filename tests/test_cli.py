@@ -1,25 +1,24 @@
 """Smoke test the published artifact through its installed console script."""
 
-from collections.abc import Callable
-from email.parser import Parser
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import venv
+from collections.abc import Callable
+from email.parser import Parser
+from pathlib import Path
 from zipfile import ZipFile
 
 import platformdirs
 import pytest
 
-
 PROJECT = Path(__file__).resolve().parents[1]
 
 
 def test_built_wheel_installs_and_reports_distribution_version(
-    tmp_path, monkeypatch,
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Build isolation installs its backend through pip; the offline guard's
     # dead proxy is for publisher lookups, not this local packaging step.
     for variable in ("HTTPS_PROXY", "https_proxy"):
@@ -59,6 +58,7 @@ def test_built_wheel_installs_and_reports_distribution_version(
     result = subprocess.run(
         [str(scripts / "factory"), "--version"],
         cwd=tmp_path,
+        check=True,
         capture_output=True,
     )
     assert result.returncode == 0
@@ -68,6 +68,7 @@ def test_built_wheel_installs_and_reports_distribution_version(
     help_result = subprocess.run(
         [str(scripts / "factory"), "--help"],
         cwd=tmp_path,
+        check=True,
         capture_output=True,
     )
     assert help_result.returncode == 0
@@ -79,6 +80,7 @@ def test_built_wheel_installs_and_reports_distribution_version(
     malformed = subprocess.run(
         [str(scripts / "factory"), "--version", "--help"],
         cwd=tmp_path,
+        check=False,
         capture_output=True,
     )
     assert malformed.returncode == 2
@@ -129,6 +131,7 @@ def installed_factory(
         # installed distribution under test.
         return subprocess.run(
             [factory_script, *arguments],
+            check=False,
             capture_output=True,
             cwd=cwd or working_directory,
             env={**env, "PYTHONPATH": os.pathsep.join(path_entries)},

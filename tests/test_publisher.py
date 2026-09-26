@@ -1,13 +1,26 @@
 """Live newest-stable publisher lookup and refusal classification."""
 
 from pathlib import Path
+from typing import Self
 
 import pytest
+from conftest import (
+    CLAUDE_GITHUB_RELEASES,
+    CLAUDE_LATEST_POINTER,
+    CLAUDE_NPM_DIST_TAGS,
+    CODEX_GITHUB_RELEASES,
+    CODEX_NPM_DIST_TAGS,
+    PublisherResponses,
+    github_release,
+    npm_dist_tags,
+)
 
-from _harness import RunAdmissionError
 import _publisher
+from _harness import RunAdmissionError
 from _publisher import (
     _http_get as real_http_get,
+)
+from _publisher import (
     claude_code_update_command,
     codex_update_command,
     newest_stable_claude_code,
@@ -15,16 +28,6 @@ from _publisher import (
     parse_stable_version,
     require_newest_stable,
 )
-from conftest import (
-    CLAUDE_GITHUB_RELEASES,
-    CLAUDE_LATEST_POINTER,
-    CLAUDE_NPM_DIST_TAGS,
-    CODEX_GITHUB_RELEASES,
-    CODEX_NPM_DIST_TAGS,
-    github_release,
-    npm_dist_tags,
-)
-from conftest import PublisherResponses
 
 
 def test_stable_release_semver_parsing_rejects_prerelease_build_and_malformed_versions() -> None:
@@ -46,7 +49,7 @@ def test_codex_newest_stable_requires_github_and_npm_agreement(
 ) -> None:
     publisher_responses.install({
         CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1", "alpha": "0.157.0-alpha.1"}),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1", alpha="0.157.0-alpha.1"),
     })
 
     assert newest_stable_codex() == "0.156.1"
@@ -57,7 +60,7 @@ def test_codex_newest_stable_refuses_disagreeing_surfaces_immediately(
 ) -> None:
     publisher_responses.install({
         CODEX_GITHUB_RELEASES: github_release("rust-v0.156.2"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
     })
 
     with pytest.raises(RunAdmissionError) as refused:
@@ -78,7 +81,7 @@ def test_codex_newest_stable_rejects_unstable_github_releases(
     ):
         publisher_responses.install({
             CODEX_GITHUB_RELEASES: release,
-            CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
         })
         with pytest.raises(RunAdmissionError, match="GitHub Releases"):
             newest_stable_codex()
@@ -104,7 +107,7 @@ def test_codex_newest_stable_rejects_unrecognized_publisher_metadata(
     for body in malformed:
         failure = refusal_for({
             CODEX_GITHUB_RELEASES: body,
-            CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
         })
         assert "GitHub Releases metadata" in str(failure)
 
@@ -126,7 +129,7 @@ def test_codex_newest_stable_refuses_a_publisher_without_a_stable_release(
 ) -> None:
     publisher_responses.install({
         CODEX_GITHUB_RELEASES: (404, b"not found"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
     })
 
     with pytest.raises(RunAdmissionError, match="published no stable release"):
@@ -149,7 +152,7 @@ def test_publisher_http_error_statuses_are_lookup_failures(
     publisher_responses.calls.clear()
     publisher_responses.install({
         CODEX_GITHUB_RELEASES: (410, b"gone"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
     })
     with pytest.raises(RunAdmissionError) as refused:
         newest_stable_codex()
@@ -162,7 +165,7 @@ def test_a_claude_pointer_error_status_is_a_lookup_failure(
     publisher_responses: PublisherResponses,
 ) -> None:
     publisher_responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "2.1.281"}),
+        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
         CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
         CLAUDE_LATEST_POINTER: (404, b"not found"),
     })
@@ -179,7 +182,7 @@ def test_claude_newest_stable_requires_npm_github_and_pointer_agreement(
     publisher_responses: PublisherResponses,
 ) -> None:
     publisher_responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "2.1.281", "stable": "2.1.273"}),
+        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281", stable="2.1.273"),
         CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
         CLAUDE_LATEST_POINTER: b"2.1.281\n",
     })
@@ -191,7 +194,7 @@ def test_claude_newest_stable_refuses_disagreeing_surfaces_immediately(
     publisher_responses: PublisherResponses,
 ) -> None:
     publisher_responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "2.1.281"}),
+        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
         CLAUDE_GITHUB_RELEASES: github_release("v2.1.280"),
         CLAUDE_LATEST_POINTER: b"2.1.281",
     })
@@ -203,7 +206,7 @@ def test_claude_newest_stable_refuses_disagreeing_surfaces_immediately(
     assert publisher_responses.calls == [CLAUDE_NPM_DIST_TAGS, CLAUDE_GITHUB_RELEASES]
 
     publisher_responses.install({
-        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "2.1.281"}),
+        CLAUDE_NPM_DIST_TAGS: npm_dist_tags(latest="2.1.281"),
         CLAUDE_GITHUB_RELEASES: github_release("v2.1.281"),
         CLAUDE_LATEST_POINTER: b"2.1.279",
     })
@@ -230,7 +233,7 @@ def test_transport_faults_retry_once_then_refuse(
         if url == CODEX_GITHUB_RELEASES and attempts.count(url) == 1:
             raise _publisher._TransportError("connection refused")
         return 200, github_release("rust-v0.156.1") if url == CODEX_GITHUB_RELEASES \
-            else npm_dist_tags(**{"latest": "0.156.1"})
+            else npm_dist_tags(latest="0.156.1")
 
     monkeypatch.setattr("_publisher._http_get", flaky_once_then_success)
     assert newest_stable_codex() == "0.156.1"
@@ -307,7 +310,7 @@ def test_every_get_is_bounded_by_three_seconds_of_the_remaining_deadline(
         timeouts.append(timeout_seconds)
         if url == CODEX_GITHUB_RELEASES:
             return 200, github_release("rust-v0.156.1")
-        return 200, npm_dist_tags(**{"latest": "0.156.1"})
+        return 200, npm_dist_tags(latest="0.156.1")
 
     monkeypatch.setattr("_publisher._http_get", record)
     newest_stable_codex()
@@ -318,7 +321,7 @@ def test_a_slow_drip_response_cannot_outlive_the_shared_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class SlowDrip:
-        status = 200
+        status: int = 200
 
         def __init__(self) -> None:
             self.reads = 0
@@ -330,7 +333,7 @@ def test_a_slow_drip_response_cannot_outlive_the_shared_deadline(
             self.reads += 1
             return b"x"  # never EOF: the body never completes
 
-        def __enter__(self) -> "SlowDrip":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *args: object) -> None:
@@ -376,7 +379,7 @@ def test_a_redirect_off_https_is_a_transport_fault(monkeypatch: pytest.MonkeyPat
         def read(self, amount: int) -> bytes:
             return b"{}"
 
-        def __enter__(self) -> "Redirected":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *args: object) -> None:

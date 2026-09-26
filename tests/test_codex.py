@@ -1,12 +1,10 @@
 """Deterministic Codex Run Admission behavior."""
 
 import errno
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
 import os
-from pathlib import Path
 import platform
 import select
 import shutil
@@ -15,10 +13,19 @@ import subprocess
 import sys
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import BinaryIO, Self
 
 import pytest
+from conftest import (
+    CODEX_GITHUB_RELEASES,
+    CODEX_NPM_DIST_TAGS,
+    PublisherResponses,
+    github_release,
+    npm_dist_tags,
+)
 
-import _publisher
 import factory
 from _codex import (
     CodexRunner,
@@ -28,16 +35,9 @@ from _codex import (
 )
 from _harness import RunAdmissionError
 from _project import Project
-from conftest import (
-    CODEX_GITHUB_RELEASES,
-    CODEX_NPM_DIST_TAGS,
-    PublisherResponses,
-    github_release,
-    npm_dist_tags,
-)
 
 
-def run(project: Project, run_request_spool) -> int:
+def run(project: Project, run_request_spool: BinaryIO) -> int:
     """Exercise the certified Runner exactly as the Factory command does."""
 
     return CodexRunner().run(project, run_request_spool)
@@ -235,14 +235,14 @@ def successful_inspection(
 
 
 class SuccessfulProbeProcess:
-    returncode = 0
+    returncode: int = 0
 
     def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
         return b"factory-host-admission-probe-v1\n", b""
 
 
 class ListeningSocket:
-    def __enter__(self) -> "ListeningSocket":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -318,7 +318,7 @@ def install_faked_launch_fixture(
             self.args = command
             self._version_read = command[1] == "--version"
 
-        def __enter__(self) -> "Process":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *args: object) -> None:
@@ -536,6 +536,13 @@ def fork_runtime_run(
     *,
     default_signal: signal.Signals | None = None,
 ) -> int:
+    """Run the certified Runner in a forked double, returning its pid.
+
+    The child catches every ``BaseException`` and converts it to exit
+    status 125: an escapee (``SystemExit``, ``KeyboardInterrupt``, any
+    failure) must never unwind into the parent's pytest process, and the
+    launcher under test reports failures through distinct child exits.
+    """
     factory_pid = os.fork()
     if factory_pid == 0:
         os.setpgid(0, 0)
@@ -546,7 +553,7 @@ def fork_runtime_run(
             spool_path.write_bytes(b"# Run Request\n")
             with spool_path.open("rb") as spool:
                 status = run(project, spool)
-        except BaseException:
+        except BaseException:  # noqa: BLE001
             os._exit(125)
         os._exit(status)
     return factory_pid
@@ -1012,8 +1019,10 @@ def test_run_does_not_retry_failed_process_creation(
         message = None
 
     assert (message, attempts) == (
-        f'Codex executable "{executable}" could not start: '
-        "Resource temporarily unavailable",
+        (
+            f'Codex executable "{executable}" could not start: '
+            "Resource temporarily unavailable"
+        ),
         1,
     )
 
@@ -1275,7 +1284,7 @@ def test_failed_host_admission_probe_is_not_cached(
     probes = 0
 
     class FailedProbeProcess(SuccessfulProbeProcess):
-        returncode = 7
+        returncode: int = 7
 
     def probe(command: list[str], **kwargs: object) -> SuccessfulProbeProcess:
         nonlocal probes
@@ -1515,16 +1524,20 @@ def test_run_requires_pinned_malformed_profile_rejection_evidence(
         "unrecognized prompt-input output",
     ),
     (
-        b'[{"type":"message","role":"user","content":'
-        b'[{"type":"input_text","text":"other guidance"}]}]',
+        (
+            b'[{"type":"message","role":"user","content":'
+            b'[{"type":"input_text","text":"other guidance"}]}]'
+        ),
         "Project Guidance was not retained",
     ),
     (
-        b'[{"type":"message","role":"user","content":['
-        b'{"type":"input_text","text":'
-        b'"factory-host-admission-project-guidance-v1"},'
-        b'{"type":"input_text","text":'
-        b'"factory-host-admission-forbidden-project-guidance-v1"}]}]',
+        (
+            b'[{"type":"message","role":"user","content":['
+            b'{"type":"input_text","text":'
+            b'"factory-host-admission-project-guidance-v1"},'
+            b'{"type":"input_text","text":'
+            b'"factory-host-admission-forbidden-project-guidance-v1"}]}]'
+        ),
         "project instruction or extension was discovered",
     ),
 ])
@@ -2035,7 +2048,7 @@ def test_run_refuses_an_installed_codex_older_than_newest_stable(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     publisher_responses.install({
         CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
     })
 
     with pytest.raises(RunAdmissionError) as refused:
@@ -2072,7 +2085,7 @@ def test_run_refuses_an_uncertified_newest_release_and_names_the_factory_update(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     publisher_responses.install({
         CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(**{"latest": "0.156.1"}),
+        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
     })
 
     with pytest.raises(RunAdmissionError) as refused:

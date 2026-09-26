@@ -43,6 +43,7 @@ the statement rows in `docs/traceability.md` and the tests they name.
 - Code should be self-explanatory — `#` comments are banned except pragmas (`# noqa`, `# type: ignore`); docstrings are fine.
 - Keep functions and modules small and focused; private helpers are `_`-prefixed.
 - A change is accepted only when the full deterministic suite passes (`uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`); real-host certification is maintainer-only and never implied by green tests.
+- Each convention's enforcement — linter rules, type-checker, CI checks, or review-only — is mapped in `docs/conventions-enforcement.md`.
 
 ## Do not modify
 - `skills-lock.json` (the only lockfile tracked in this repo)

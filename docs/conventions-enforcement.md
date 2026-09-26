@@ -9,10 +9,13 @@ written here. Decided on the conformance map (issues #123 and #124).
 The CI checks below run as the dedicated Conformance workflow
 (`.github/workflows/conformance.yml`): single job, every push and pull
 request. It counts three things — ruff findings, production pyright errors,
-banned `#` comment lines — and enforces a **no-regression ratchet**: a run
-passes only when every count is at most the baseline ref's count at run time
-(both refs are checked out, counted, compared; counts are per-check totals,
-not per-rule). On pushes to the baseline the comparison is against itself.
+banned `#` comment lines (scanned over all tracked Python code) — and
+enforces a **no-regression ratchet**: a run passes only when every count is
+at most the baseline ref's count at run time. The head side is the checked
+out commit (for a pull request, its merge commit — what would land); the
+baseline is the pull request's target ref, `main` for normal PRs, so on
+pushes to `main` the comparison is against itself. Counts are per-check
+totals, not per-rule.
 During remediation the ratchet lets lanes land while strictly improving; once
 the counts reach their floor it is the strict gate — nothing to flip. The
 workflow reserves a step slot for the ruff format check.
@@ -82,4 +85,6 @@ workflow reserves a step slot for the ruff format check.
 The pinned policy inherits the violations it will govern; remediation is a
 separate policy decision. At adoption (ruff 0.16.9 defaults + ANN, pyright
 1.1.414 `standard`): 98 ruff findings (production 30 / tests 64 /
-certification 4), 5 production pyright errors, 38 production comment lines.
+certification 4), 5 production pyright errors, 38 production comment lines
+(the gate's all-tracked comment scan counts 106 over tracked Python at the
+same commit).

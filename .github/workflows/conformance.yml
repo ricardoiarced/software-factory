@@ -16,8 +16,8 @@ jobs:
           check-latest: true
       - uses: astral-sh/setup-uv@v10
       # Reserved step slot: the ruff format check that "Adopt ruff format and
-      # write it into the Conventions" folds in lands directly below — a head
-      # -ref check, ahead of the ratchet counts.
+      # write it into the Conventions" folds in lands directly below — a
+      # head-ref check, ahead of the ratchet counts.
       - name: Count the head-ref findings
         id: head
         run: |

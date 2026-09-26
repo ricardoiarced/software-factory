@@ -17,7 +17,8 @@ PROJECT = Path(__file__).resolve().parents[1]
 
 
 def test_built_wheel_installs_and_reports_distribution_version(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Build isolation installs its backend through pip; the offline guard's
     # dead proxy is for publisher lookups, not this local packaging step.
@@ -25,7 +26,15 @@ def test_built_wheel_installs_and_reports_distribution_version(
         monkeypatch.delenv(variable, raising=False)
     artifacts = tmp_path / "dist"
     subprocess.run(
-        [sys.executable, "-m", "build", "--sdist", "--wheel", "--outdir", str(artifacts)],
+        [
+            sys.executable,
+            "-m",
+            "build",
+            "--sdist",
+            "--wheel",
+            "--outdir",
+            str(artifacts),
+        ],
         cwd=PROJECT,
         check=True,
         capture_output=True,
@@ -39,7 +48,9 @@ def test_built_wheel_installs_and_reports_distribution_version(
     assert wheel.name == "software_factory-0.1.0-py3-none-any.whl"
 
     with ZipFile(wheel) as archive:
-        metadata_path = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+        metadata_path = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
         metadata = Parser().parsestr(archive.read(metadata_path).decode("utf-8"))
         assert metadata["Name"] == "software-factory"
         assert metadata["Version"] == "0.1.0"
@@ -102,7 +113,15 @@ def installed_factory(
 
     artifacts = tmp_path_factory.mktemp("dist")
     subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(artifacts), str(PROJECT)],
+        [
+            sys.executable,
+            "-m",
+            "build",
+            "--wheel",
+            "--outdir",
+            str(artifacts),
+            str(PROJECT),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -122,7 +141,9 @@ def installed_factory(
     working_directory = tmp_path_factory.mktemp("cwd")
 
     def invoke(
-        *arguments: str, env: dict[str, str], cwd: Path | None = None,
+        *arguments: str,
+        env: dict[str, str],
+        cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         path_entries = [str(platformdirs_package)]
         if env.get("PYTHONPATH"):
@@ -157,9 +178,12 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
         **os.environ,
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
-        "PATH": os.pathsep.join((
-            os.fspath(Path(git_binary).parent), os.defpath,
-        )),
+        "PATH": os.pathsep.join(
+            (
+                os.fspath(Path(git_binary).parent),
+                os.defpath,
+            )
+        ),
     }
 
     added = installed_factory("project", "add", "api", str(boundary), env=environment)
@@ -169,13 +193,17 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
 
     listed = installed_factory("project", "list", env=environment)
     assert listed.returncode == 0
-    assert listed.stdout == (
-        f'NAME\tSTATUS\tPATH\n"api"\tvalid\t"{boundary.resolve()}"\n'
-    ).encode()
+    assert (
+        listed.stdout
+        == (f'NAME\tSTATUS\tPATH\n"api"\tvalid\t"{boundary.resolve()}"\n').encode()
+    )
     assert listed.stderr == b""
 
     run = installed_factory(
-        "--project", "api", "Diagnose this failure", env=environment,
+        "--project",
+        "api",
+        "Diagnose this failure",
+        env=environment,
     )
     assert run.returncode == 1
     assert run.stdout == b""

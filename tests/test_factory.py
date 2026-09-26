@@ -22,7 +22,9 @@ FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
 
 def invoke(
-    *args: str, columns: str = "80", cwd: Path | None = None,
+    *args: str,
+    columns: str = "80",
+    cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
@@ -46,7 +48,9 @@ def show_registry(tmp_path: Path, document: str) -> tuple[Path, Path]:
     return config, registry
 
 
-def test_project_add_registers_canonical_boundary_with_exact_output(tmp_path: Path) -> None:
+def test_project_add_registers_canonical_boundary_with_exact_output(
+    tmp_path: Path,
+) -> None:
     git("init", "-q", cwd=tmp_path)
     boundary = tmp_path / "café"
     boundary.mkdir()
@@ -54,19 +58,28 @@ def test_project_add_registers_canonical_boundary_with_exact_output(tmp_path: Pa
     alias.symlink_to(boundary, target_is_directory=True)
     config = tmp_path / "config"
 
-    result = invoke("project", "add", "Api", "alias", cwd=tmp_path,
-                    env={"XDG_CONFIG_HOME": str(config)})
+    result = invoke(
+        "project",
+        "add",
+        "Api",
+        "alias",
+        cwd=tmp_path,
+        env={"XDG_CONFIG_HOME": str(config)},
+    )
 
     assert result.returncode == 0
     assert result.stdout == f'Added project "Api" at "{boundary}".\n'.encode()
     assert result.stderr == b""
     assert (config / "factory" / "projects.json").read_bytes() == (
         '{\n  "version": 1,\n  "projects": {\n    "Api": "'
-        + str(boundary) + '"\n  }\n}\n'
+        + str(boundary)
+        + '"\n  }\n}\n'
     ).encode()
 
 
-def test_project_add_identical_mapping_does_not_rewrite_registry(tmp_path: Path) -> None:
+def test_project_add_identical_mapping_does_not_rewrite_registry(
+    tmp_path: Path,
+) -> None:
     git("init", "-q", cwd=tmp_path)
     boundary = tmp_path / "project"
     boundary.mkdir()
@@ -79,7 +92,10 @@ def test_project_add_identical_mapping_does_not_rewrite_registry(tmp_path: Path)
     second = invoke("project", "add", "api", str(boundary), env=env)
 
     assert first.returncode == second.returncode == 0
-    assert second.stdout == f'Project "api" is already registered at "{boundary}".\n'.encode()
+    assert (
+        second.stdout
+        == f'Project "api" is already registered at "{boundary}".\n'.encode()
+    )
     assert second.stderr == b""
     assert registry.stat().st_ino == before.st_ino
     assert registry.stat().st_mtime_ns == before.st_mtime_ns
@@ -99,23 +115,31 @@ def test_project_add_replaces_mapping_and_sorts_names(tmp_path: Path) -> None:
     replaced = invoke("project", "add", "A", str(second), env=env)
 
     assert replaced.returncode == 0
-    assert replaced.stdout == f'Updated project "A" from "{first}" to "{second}".\n'.encode()
+    assert (
+        replaced.stdout
+        == f'Updated project "A" from "{first}" to "{second}".\n'.encode()
+    )
     assert replaced.stderr == b""
     assert (config / "factory" / "projects.json").read_bytes() == (
-        '{\n  "version": 1,\n  "projects": {\n    "A": "' + str(second)
-        + '",\n    "z": "' + str(first) + '"\n  }\n}\n'
+        '{\n  "version": 1,\n  "projects": {\n    "A": "'
+        + str(second)
+        + '",\n    "z": "'
+        + str(first)
+        + '"\n  }\n}\n'
     ).encode()
 
 
 @pytest.mark.parametrize("name", ["", ".a", "a-", "a b", "é", "a/b", "a" * 65])
 def test_project_add_rejects_invalid_project_name_without_writing(
-    tmp_path: Path, name: str,
+    tmp_path: Path,
+    name: str,
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
 
-    result = invoke("project", "add", name, str(tmp_path),
-                    env={"XDG_CONFIG_HOME": str(config)})
+    result = invoke(
+        "project", "add", name, str(tmp_path), env={"XDG_CONFIG_HOME": str(config)}
+    )
 
     assert result.returncode == 1
     assert result.stdout == b""
@@ -123,13 +147,18 @@ def test_project_add_rejects_invalid_project_name_without_writing(
     assert not config.exists()
 
 
-def test_project_add_rejects_malformed_registry_without_replacing_it(tmp_path: Path) -> None:
+def test_project_add_rejects_malformed_registry_without_replacing_it(
+    tmp_path: Path,
+) -> None:
     git("init", "-q", cwd=tmp_path)
-    config, registry = show_registry(tmp_path, '{"version":1,"projects":{"bad name":"/tmp"}}')
+    config, registry = show_registry(
+        tmp_path, '{"version":1,"projects":{"bad name":"/tmp"}}'
+    )
     before = registry.read_bytes()
 
-    result = invoke("project", "add", "api", str(tmp_path),
-                    env={"XDG_CONFIG_HOME": str(config)})
+    result = invoke(
+        "project", "add", "api", str(tmp_path), env={"XDG_CONFIG_HOME": str(config)}
+    )
 
     assert result.returncode == 1
     assert result.stdout == b""
@@ -137,7 +166,9 @@ def test_project_add_rejects_malformed_registry_without_replacing_it(tmp_path: P
     assert registry.read_bytes() == before
 
 
-def test_project_add_creates_private_files_and_preserves_registry_mode(tmp_path: Path) -> None:
+def test_project_add_creates_private_files_and_preserves_registry_mode(
+    tmp_path: Path,
+) -> None:
     git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
     env = {"XDG_CONFIG_HOME": str(config)}
@@ -147,8 +178,13 @@ def test_project_add_creates_private_files_and_preserves_registry_mode(tmp_path:
     lock = directory / "projects.lock"
 
     assert first.returncode == 0
-    assert [path.stat().st_mode & 0o777 for path in (config, directory, registry, lock)] == [
-        0o700, 0o700, 0o600, 0o600,
+    assert [
+        path.stat().st_mode & 0o777 for path in (config, directory, registry, lock)
+    ] == [
+        0o700,
+        0o700,
+        0o600,
+        0o600,
     ]
     registry.chmod(0o640)
     second = invoke("project", "add", "Api", str(tmp_path), env=env)
@@ -173,7 +209,8 @@ def test_project_lock_persists_across_mutations(tmp_path: Path) -> None:
 
 
 def test_project_add_syncs_new_configuration_directory_entries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
@@ -188,7 +225,9 @@ def test_project_add_syncs_new_configuration_directory_entries(
 
     monkeypatch.setattr(project_registry.os, "fsync", record_sync)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+    )
 
     assert factory.main() == 0
     for directory in (tmp_path, config, config / "factory"):
@@ -197,12 +236,16 @@ def test_project_add_syncs_new_configuration_directory_entries(
 
 
 def test_project_add_parent_sync_failure_stops_before_registry_replacement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+    )
     parent = tmp_path.stat()
     actual_fsync = os.fsync
 
@@ -226,9 +269,19 @@ def test_project_add_concurrent_writers_keep_every_mapping(tmp_path: Path) -> No
     config = tmp_path / "config"
     env = {**os.environ, "XDG_CONFIG_HOME": str(config)}
     writers = [
-        subprocess.Popen([sys.executable, str(FACTORY), "project", "add", f"p{index}",
-                          str(tmp_path)], env=env, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE)
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(FACTORY),
+                "project",
+                "add",
+                f"p{index}",
+                str(tmp_path),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         for index in range(8)
     ]
 
@@ -243,16 +296,21 @@ def test_project_add_concurrent_writers_keep_every_mapping(tmp_path: Path) -> No
 
 
 def test_project_add_recovers_from_transient_lock_creation_race(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+    )
     actual_open = os.open
     lock_open_attempts = 0
 
-    def transient_lock_failure(path: str, flags: int, *args: object, **kwargs: object) -> int:
+    def transient_lock_failure(
+        path: str, flags: int, *args: object, **kwargs: object
+    ) -> int:
         nonlocal lock_open_attempts
         if path == "projects.lock":
             lock_open_attempts += 1
@@ -268,21 +326,31 @@ def test_project_add_recovers_from_transient_lock_creation_race(
     assert json.loads(registry.read_text())["projects"] == {"api": str(tmp_path)}
 
 
-def test_concurrent_add_and_remove_keep_complete_registry_generations(tmp_path: Path) -> None:
+def test_concurrent_add_and_remove_keep_complete_registry_generations(
+    tmp_path: Path,
+) -> None:
     git("init", "-q", cwd=tmp_path)
     original = {f"old{index}": str(tmp_path) for index in range(8)}
-    config, registry = show_registry(tmp_path, json.dumps({
-        "version": 1, "projects": original,
-    }))
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": original,
+            }
+        ),
+    )
     env = {**os.environ, "XDG_CONFIG_HOME": str(config)}
-    commands = [
-        ("remove", f"old{index}") for index in range(8)
-    ] + [
+    commands = [("remove", f"old{index}") for index in range(8)] + [
         ("add", f"new{index}", str(tmp_path)) for index in range(8)
     ]
     writers = [
-        subprocess.Popen([sys.executable, str(FACTORY), "project", *command],
-                         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.Popen(
+            [sys.executable, str(FACTORY), "project", *command],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         for command in commands
     ]
 
@@ -307,13 +375,21 @@ def test_concurrent_add_and_remove_keep_complete_registry_generations(tmp_path: 
 
 @pytest.mark.parametrize("command", ["add", "remove"])
 def test_project_mutation_rereads_strict_registry_after_acquiring_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
 ) -> None:
     git("init", "-q", cwd=tmp_path)
-    config, registry = show_registry(tmp_path, json.dumps({
-        "version": 1, "projects": {"old": str(tmp_path)},
-    }))
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {"old": str(tmp_path)},
+            }
+        ),
+    )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     args = ["factory", "project", command, "old"]
     if command == "add":
@@ -337,12 +413,20 @@ def test_project_mutation_rereads_strict_registry_after_acquiring_lock(
 @pytest.mark.parametrize("command", ["add", "remove"])
 @pytest.mark.parametrize("kind", ["symlink", "directory"])
 def test_project_mutation_refuses_nonregular_registry_state(
-    tmp_path: Path, command: str, kind: str,
+    tmp_path: Path,
+    command: str,
+    kind: str,
 ) -> None:
     git("init", "-q", cwd=tmp_path)
-    config, registry = show_registry(tmp_path, json.dumps({
-        "version": 1, "projects": {"old": str(tmp_path)},
-    }))
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {"old": str(tmp_path)},
+            }
+        ),
+    )
     registry.unlink()
     if kind == "symlink":
         target = tmp_path / "target.json"
@@ -350,8 +434,14 @@ def test_project_mutation_refuses_nonregular_registry_state(
         registry.symlink_to(target)
     else:
         registry.mkdir()
-    args = ("project", command, "old", str(tmp_path)) if command == "add" else (
-        "project", command, "old",
+    args = (
+        ("project", command, "old", str(tmp_path))
+        if command == "add"
+        else (
+            "project",
+            command,
+            "old",
+        )
     )
 
     result = invoke(*args, env={"XDG_CONFIG_HOME": str(config)})
@@ -366,13 +456,17 @@ def test_project_mutation_refuses_nonregular_registry_state(
 
 
 def test_project_add_replace_failure_keeps_previous_generation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     config, registry = show_registry(tmp_path, '{"version":1,"projects":{}}')
     before = registry.read_bytes()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+    )
 
     def fail_replace(*_: object, **__: object) -> None:
         raise OSError("replace failed")
@@ -389,14 +483,18 @@ def test_project_add_replace_failure_keeps_previous_generation(
 
 @pytest.mark.parametrize("failure", ["temporary creation", "write", "file sync"])
 def test_project_add_pre_replace_failure_keeps_previous_generation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     config, registry = show_registry(tmp_path, '{"version":1,"projects":{}}')
     before = registry.read_bytes()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+    )
 
     if failure == "temporary creation":
         actual_open = os.open
@@ -434,10 +532,15 @@ def test_project_add_pre_replace_failure_keeps_previous_generation(
                 raise OSError("write failed")
 
         def fdopen(descriptor: int, mode: str) -> object:
-            return FailingWriter(descriptor) if mode == "wb" else actual_fdopen(descriptor, mode)
+            return (
+                FailingWriter(descriptor)
+                if mode == "wb"
+                else actual_fdopen(descriptor, mode)
+            )
 
         monkeypatch.setattr(project_registry.os, "fdopen", fdopen)
     else:
+
         def fail_file_sync(descriptor: int) -> None:
             raise OSError("file sync failed")
 
@@ -454,13 +557,17 @@ def test_project_add_pre_replace_failure_keeps_previous_generation(
 
 
 def test_project_add_directory_sync_failure_warns_update_may_have_committed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
     registry = config / "factory" / "projects.json"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(sys, "argv", ["factory", "project", "add", "api", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+    )
     actual_fsync = os.fsync
 
     def fail_directory_sync(descriptor: int) -> None:
@@ -476,20 +583,28 @@ def test_project_add_directory_sync_failure_warns_update_may_have_committed(
     assert result == 1
     assert output.out == ""
     assert "factory: warning: Project Registry update may have committed" in output.err
-    assert json.loads((config / "factory" / "projects.json").read_text())["projects"] == {
-        "api": str(tmp_path)
-    }
+    assert json.loads((config / "factory" / "projects.json").read_text())[
+        "projects"
+    ] == {"api": str(tmp_path)}
 
 
-def test_project_remove_preserves_other_registration_and_inspection(tmp_path: Path) -> None:
+def test_project_remove_preserves_other_registration_and_inspection(
+    tmp_path: Path,
+) -> None:
     git("init", "-q", cwd=tmp_path)
     first = tmp_path / "first"
     second = tmp_path / "second"
     first.mkdir()
     second.mkdir()
-    config, registry = show_registry(tmp_path, json.dumps({
-        "version": 1, "projects": {"Api": str(first), "other": str(second)},
-    }))
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {"Api": str(first), "other": str(second)},
+            }
+        ),
+    )
     env = {"XDG_CONFIG_HOME": str(config)}
 
     result = invoke("project", "remove", "Api", env=env)
@@ -497,9 +612,14 @@ def test_project_remove_preserves_other_registration_and_inspection(tmp_path: Pa
     assert result.returncode == 0
     assert result.stdout == f'Removed project "Api" from "{first}".\n'.encode()
     assert result.stderr == b""
-    assert registry.read_bytes() == (
-        '{\n  "version": 1,\n  "projects": {\n    "other": "' + str(second) + '"\n  }\n}\n'
-    ).encode()
+    assert (
+        registry.read_bytes()
+        == (
+            '{\n  "version": 1,\n  "projects": {\n    "other": "'
+            + str(second)
+            + '"\n  }\n}\n'
+        ).encode()
+    )
     assert invoke("project", "list", env=env).stdout == (
         f'NAME\tSTATUS\tPATH\n"other"\tvalid\t"{second}"\n'.encode()
     )
@@ -509,9 +629,15 @@ def test_project_remove_preserves_other_registration_and_inspection(tmp_path: Pa
 
 
 def test_project_remove_unknown_name_keeps_registry_unchanged(tmp_path: Path) -> None:
-    config, registry = show_registry(tmp_path, json.dumps({
-        "version": 1, "projects": {"Api": str(tmp_path)},
-    }))
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {"Api": str(tmp_path)},
+            }
+        ),
+    )
     before = registry.read_bytes()
     before_stat = registry.stat()
 
@@ -525,10 +651,18 @@ def test_project_remove_unknown_name_keeps_registry_unchanged(tmp_path: Path) ->
     assert registry.stat().st_mtime_ns == before_stat.st_mtime_ns
 
 
-def test_project_remove_last_registration_writes_valid_empty_registry(tmp_path: Path) -> None:
-    config, registry = show_registry(tmp_path, json.dumps({
-        "version": 1, "projects": {"api": str(tmp_path)},
-    }))
+def test_project_remove_last_registration_writes_valid_empty_registry(
+    tmp_path: Path,
+) -> None:
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {"api": str(tmp_path)},
+            }
+        ),
+    )
     env = {"XDG_CONFIG_HOME": str(config)}
 
     result = invoke("project", "remove", "--", "api", env=env)
@@ -544,7 +678,9 @@ def test_project_remove_last_registration_writes_valid_empty_registry(tmp_path: 
     assert show.stderr == b'factory: error: Project "api" is not registered.\n'
 
 
-def test_project_remove_unknown_from_missing_registry_creates_no_state(tmp_path: Path) -> None:
+def test_project_remove_unknown_from_missing_registry_creates_no_state(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / "config"
 
     result = invoke("project", "remove", "api", env={"XDG_CONFIG_HOME": str(config)})
@@ -556,11 +692,19 @@ def test_project_remove_unknown_from_missing_registry_creates_no_state(tmp_path:
 
 
 def test_project_remove_replace_failure_keeps_previous_generation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    config, registry = show_registry(tmp_path, json.dumps({
-        "version": 1, "projects": {"api": str(tmp_path)},
-    }))
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {"api": str(tmp_path)},
+            }
+        ),
+    )
     before = registry.read_bytes()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(sys, "argv", ["factory", "project", "remove", "api"])
@@ -581,11 +725,19 @@ def test_project_remove_replace_failure_keeps_previous_generation(
 
 
 def test_project_remove_directory_sync_failure_warns_update_may_have_committed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    config, registry = show_registry(tmp_path, json.dumps({
-        "version": 1, "projects": {"api": str(tmp_path)},
-    }))
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {"api": str(tmp_path)},
+            }
+        ),
+    )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(sys, "argv", ["factory", "project", "remove", "api"])
     actual_fsync = os.fsync
@@ -606,7 +758,9 @@ def test_project_remove_directory_sync_failure_warns_update_may_have_committed(
     assert registry.read_bytes() == b'{\n  "version": 1,\n  "projects": {}\n}\n'
 
 
-def test_project_list_missing_registry_is_empty_without_creating_state(tmp_path: Path) -> None:
+def test_project_list_missing_registry_is_empty_without_creating_state(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / "config"
 
     result = invoke("project", "list", env={"XDG_CONFIG_HOME": str(config)})
@@ -630,12 +784,15 @@ def test_project_list_valid_empty_registry_prints_empty_message(tmp_path: Path) 
     assert result.stderr == b""
 
 
-def test_project_show_prints_exact_registered_name_path_and_valid_status(tmp_path: Path) -> None:
+def test_project_show_prints_exact_registered_name_path_and_valid_status(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "café\nproject"
     project.mkdir()
     git("init", "-q", cwd=project)
     config, registry = show_registry(
-        tmp_path, json.dumps({"version": 1, "projects": {"Api": str(project)}}),
+        tmp_path,
+        json.dumps({"version": 1, "projects": {"Api": str(project)}}),
     )
     before = registry.read_bytes()
 
@@ -643,7 +800,8 @@ def test_project_show_prints_exact_registered_name_path_and_valid_status(tmp_pat
 
     assert result.returncode == 0
     assert result.stdout == (
-        b'Name: "Api"\nPath: "' + str(project).replace("\n", "\\n").encode()
+        b'Name: "Api"\nPath: "'
+        + str(project).replace("\n", "\\n").encode()
         + b'"\nStatus: valid\n'
     )
     assert result.stderr == b""
@@ -651,16 +809,24 @@ def test_project_show_prints_exact_registered_name_path_and_valid_status(tmp_pat
     assert not (registry.parent / "projects.lock").exists()
 
 
-def test_project_show_distinguishes_each_stale_status_without_repair(tmp_path: Path) -> None:
+def test_project_show_distinguishes_each_stale_status_without_repair(
+    tmp_path: Path,
+) -> None:
     file_path = tmp_path / "file"
     file_path.write_text("data")
     outside = tmp_path / "outside"
     outside.mkdir()
     missing = tmp_path / "missing"
     paths = {"missing": missing, "file": file_path, "outside": outside}
-    config, registry = show_registry(tmp_path, json.dumps({"version": 1, "projects": {
-        name: str(path) for name, path in paths.items()
-    }}))
+    config, registry = show_registry(
+        tmp_path,
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {name: str(path) for name, path in paths.items()},
+            }
+        ),
+    )
     before = registry.read_bytes()
     statuses = {
         "missing": "stale: path does not exist",
@@ -679,9 +845,12 @@ def test_project_show_distinguishes_each_stale_status_without_repair(tmp_path: P
     assert not (registry.parent / "projects.lock").exists()
 
 
-def test_project_show_unknown_name_fails_operationally_and_case_sensitively(tmp_path: Path) -> None:
+def test_project_show_unknown_name_fails_operationally_and_case_sensitively(
+    tmp_path: Path,
+) -> None:
     config, _ = show_registry(
-        tmp_path, json.dumps({"version": 1, "projects": {"Api": str(tmp_path)}}),
+        tmp_path,
+        json.dumps({"version": 1, "projects": {"Api": str(tmp_path)}}),
     )
 
     for name in ("api", "missing"):
@@ -694,7 +863,8 @@ def test_project_show_unknown_name_fails_operationally_and_case_sensitively(tmp_
 
 def test_project_show_rejects_malformed_registry_without_stdout(tmp_path: Path) -> None:
     config, _ = show_registry(
-        tmp_path, '{"version":1,"projects":{"api":"/one","api":"/two"}}',
+        tmp_path,
+        '{"version":1,"projects":{"api":"/one","api":"/two"}}',
     )
 
     result = invoke("project", "show", "api", env={"XDG_CONFIG_HOME": str(config)})
@@ -709,34 +879,48 @@ def test_project_show_accepts_separator_before_name(tmp_path: Path) -> None:
     project.mkdir()
     git("init", "-q", cwd=project)
     config, _ = show_registry(
-        tmp_path, json.dumps({"version": 1, "projects": {"Api": str(project)}}),
+        tmp_path,
+        json.dumps({"version": 1, "projects": {"Api": str(project)}}),
     )
 
-    result = invoke("project", "show", "--", "Api", env={"XDG_CONFIG_HOME": str(config)})
+    result = invoke(
+        "project", "show", "--", "Api", env={"XDG_CONFIG_HOME": str(config)}
+    )
 
     assert result.returncode == 0
     assert result.stdout == f'Name: "Api"\nPath: "{project}"\nStatus: valid\n'.encode()
     assert result.stderr == b""
 
 
-def test_project_show_validation_failure_emits_no_partial_stdout(tmp_path: Path) -> None:
+def test_project_show_validation_failure_emits_no_partial_stdout(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
     git("init", "-q", cwd=project)
     config, _ = show_registry(
-        tmp_path, json.dumps({"version": 1, "projects": {"api": str(project)}}),
+        tmp_path,
+        json.dumps({"version": 1, "projects": {"api": str(project)}}),
     )
 
-    result = invoke("project", "show", "api", env={
-        "XDG_CONFIG_HOME": str(config), "PATH": "",
-    })
+    result = invoke(
+        "project",
+        "show",
+        "api",
+        env={
+            "XDG_CONFIG_HOME": str(config),
+            "PATH": "",
+        },
+    )
 
     assert result.returncode == 1
     assert result.stdout == b""
     assert b"Git inspection failed" in result.stderr
 
 
-def test_project_list_sorts_and_reports_stale_entries_without_writing(tmp_path: Path) -> None:
+def test_project_list_sorts_and_reports_stale_entries_without_writing(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / "config"
     registry = config / "factory" / "projects.json"
     registry.parent.mkdir(parents=True)
@@ -748,43 +932,64 @@ def test_project_list_sorts_and_reports_stale_entries_without_writing(tmp_path: 
     outside = tmp_path / "outside"
     outside.mkdir()
     missing = tmp_path / "missing"
-    registry.write_text(json.dumps({"version": 1, "projects": {
-        "z": str(outside), "a": str(file_path), "Alpha": str(valid),
-        "b": str(missing),
-    }}))
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {
+                    "z": str(outside),
+                    "a": str(file_path),
+                    "Alpha": str(valid),
+                    "b": str(missing),
+                },
+            }
+        )
+    )
     before = registry.read_bytes()
 
     result = invoke("project", "list", env={"XDG_CONFIG_HOME": str(config)})
 
     assert result.returncode == 0
     assert result.stdout == (
-        b'NAME\tSTATUS\tPATH\n'
-        + b'"Alpha"\tvalid\t"' + str(valid).replace("\n", "\\n").encode() + b'"\n'
-        + b'"a"\tstale: path is not a directory\t"' + str(file_path).encode() + b'"\n'
-        + b'"b"\tstale: path does not exist\t"' + str(missing).encode() + b'"\n'
+        b"NAME\tSTATUS\tPATH\n"
+        + b'"Alpha"\tvalid\t"'
+        + str(valid).replace("\n", "\\n").encode()
+        + b'"\n'
+        + b'"a"\tstale: path is not a directory\t"'
+        + str(file_path).encode()
+        + b'"\n'
+        + b'"b"\tstale: path does not exist\t"'
+        + str(missing).encode()
+        + b'"\n'
         + b'"z"\tstale: path is not inside a non-bare Git worktree\t"'
-        + str(outside).encode() + b'"\n'
+        + str(outside).encode()
+        + b'"\n'
     )
     assert result.stderr == b""
     assert registry.read_bytes() == before
     assert not (registry.parent / "projects.lock").exists()
 
 
-@pytest.mark.parametrize("document", [
-    '{"version":1,"version":1,"projects":{}}',
-    '{"version":1,"projects":{"a":"/one","a":"/two"}}',
-    '{"version":1,"projects":{},"extra":0}',
-    '{"version":2,"projects":{}}',
-    '{"version":true,"projects":{}}',
-    '{"version":1,"projects":[]}',
-    '{"version":1,"projects":{"bad name":"/tmp"}}',
-    '{"version":1,"projects":{"a":"relative"}}',
-    '{"version":1,"projects":{"a":12}}',
-    '{"version":1,"projects":{"a":"/bad\\u0000path"}}',
-    '{"version":1,"projects":{"a":"/bad\\ud800path"}}',
-    '{"version":1,"projects":{}} trailing',
-])
-def test_project_list_rejects_malformed_registry_as_a_whole(tmp_path: Path, document: str) -> None:
+@pytest.mark.parametrize(
+    "document",
+    [
+        '{"version":1,"version":1,"projects":{}}',
+        '{"version":1,"projects":{"a":"/one","a":"/two"}}',
+        '{"version":1,"projects":{},"extra":0}',
+        '{"version":2,"projects":{}}',
+        '{"version":true,"projects":{}}',
+        '{"version":1,"projects":[]}',
+        '{"version":1,"projects":{"bad name":"/tmp"}}',
+        '{"version":1,"projects":{"a":"relative"}}',
+        '{"version":1,"projects":{"a":12}}',
+        '{"version":1,"projects":{"a":"/bad\\u0000path"}}',
+        '{"version":1,"projects":{"a":"/bad\\ud800path"}}',
+        '{"version":1,"projects":{}} trailing',
+    ],
+)
+def test_project_list_rejects_malformed_registry_as_a_whole(
+    tmp_path: Path, document: str
+) -> None:
     config = tmp_path / "config"
     registry = config / "factory" / "projects.json"
     registry.parent.mkdir(parents=True)
@@ -825,9 +1030,17 @@ def test_project_list_git_failure_emits_no_partial_stdout(tmp_path: Path) -> Non
     project = tmp_path / "project"
     project.mkdir()
     git("init", "-q", cwd=project)
-    registry.write_text(json.dumps({"version": 1, "projects": {
-        "a": str(tmp_path / "missing"), "b": str(project),
-    }}))
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {
+                    "a": str(tmp_path / "missing"),
+                    "b": str(project),
+                },
+            }
+        )
+    )
 
     result = invoke("project", "list", env={"XDG_CONFIG_HOME": str(config), "PATH": ""})
 
@@ -842,25 +1055,40 @@ def test_project_list_rejects_git_command_failure_as_a_whole(tmp_path: Path) -> 
     registry.parent.mkdir(parents=True)
     project = tmp_path / "project"
     project.mkdir()
-    registry.write_text(json.dumps({"version": 1, "projects": {
-        "a": str(tmp_path / "missing"), "b": str(project),
-    }}))
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {
+                    "a": str(tmp_path / "missing"),
+                    "b": str(project),
+                },
+            }
+        )
+    )
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_git = fake_bin / "git"
     fake_git.write_text("#!/bin/sh\necho 'fatal: bad config' >&2\nexit 128\n")
     fake_git.chmod(0o755)
 
-    result = invoke("project", "list", env={
-        "XDG_CONFIG_HOME": str(config), "PATH": str(fake_bin),
-    })
+    result = invoke(
+        "project",
+        "list",
+        env={
+            "XDG_CONFIG_HOME": str(config),
+            "PATH": str(fake_bin),
+        },
+    )
 
     assert result.returncode == 1
     assert result.stdout == b""
     assert b"Git inspection failed" in result.stderr
 
 
-def test_explicit_path_preserves_canonical_subdirectory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_explicit_path_preserves_canonical_subdirectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     git("init", "-q", cwd=tmp_path)
     boundary = tmp_path / "service"
     boundary.mkdir()
@@ -876,7 +1104,9 @@ def test_explicit_path_preserves_canonical_subdirectory(tmp_path: Path, monkeypa
 
 @pytest.mark.parametrize("value", ["missing", "empty"])
 def test_explicit_path_rejects_unset_or_empty_variable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
 ) -> None:
     git("init", "-q", cwd=tmp_path)
     if value == "missing":
@@ -896,7 +1126,9 @@ def test_explicit_path_rejects_unset_or_empty_variable(
 
 
 @pytest.mark.parametrize("kind", ["missing", "file", "dangling", "outside-git"])
-def test_explicit_path_refuses_invalid_directory_without_fallback(tmp_path: Path, kind: str) -> None:
+def test_explicit_path_refuses_invalid_directory_without_fallback(
+    tmp_path: Path, kind: str
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
     git("init", "-q", cwd=project)
@@ -941,7 +1173,9 @@ def test_explicit_path_handles_newline_in_git_worktree_path(tmp_path: Path) -> N
     boundary = project / "service"
     boundary.mkdir()
 
-    assert select_explicit_project(str(boundary), tmp_path) == Project(boundary, project)
+    assert select_explicit_project(str(boundary), tmp_path) == Project(
+        boundary, project
+    )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem byte paths")
@@ -956,15 +1190,27 @@ def test_explicit_path_handles_non_utf8_git_worktree_path(tmp_path: Path) -> Non
     boundary = project / "service"
     boundary.mkdir()
 
-    assert select_explicit_project(str(boundary), tmp_path) == Project(boundary, project)
+    assert select_explicit_project(str(boundary), tmp_path) == Project(
+        boundary, project
+    )
 
 
 def test_explicit_path_accepts_linked_worktree(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     git("init", "-q", cwd=source)
-    git("-c", "user.name=Test", "-c", "user.email=test@example.com",
-        "commit", "--allow-empty", "-m", "initial", "-q", cwd=source)
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+        "-q",
+        cwd=source,
+    )
     linked = tmp_path / "linked"
     git("worktree", "add", "-q", "-b", "linked", str(linked), cwd=source)
     boundary = linked / "service"
@@ -977,18 +1223,37 @@ def test_explicit_path_accepts_submodule(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     git("init", "-q", cwd=source)
-    git("-c", "user.name=Test", "-c", "user.email=test@example.com",
-        "commit", "--allow-empty", "-m", "initial", "-q", cwd=source)
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+        "-q",
+        cwd=source,
+    )
     parent = tmp_path / "parent"
     parent.mkdir()
     git("init", "-q", cwd=parent)
-    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source),
-        "module", cwd=parent)
+    git(
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(source),
+        "module",
+        cwd=parent,
+    )
     boundary = parent / "module" / "service"
     boundary.mkdir()
 
     assert select_explicit_project(str(boundary), parent) == Project(
-        boundary, parent / "module",
+        boundary,
+        parent / "module",
     )
 
 
@@ -1000,7 +1265,9 @@ def test_explicit_path_rejects_bare_repository(tmp_path: Path) -> None:
         select_explicit_project(str(bare), tmp_path)
 
 
-def test_explicit_path_rejects_missing_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_explicit_path_rejects_missing_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("PATH", "")
 
     with pytest.raises(ProjectSelectionError, match="Git inspection failed"):
@@ -1013,7 +1280,9 @@ def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:
     boundary.mkdir()
 
     result = invoke(
-        "--path=$FACTORY_TEST_BOUNDARY", "Fix", cwd=tmp_path,
+        "--path=$FACTORY_TEST_BOUNDARY",
+        "Fix",
+        cwd=tmp_path,
         env={"FACTORY_TEST_BOUNDARY": "service"},
     )
 
@@ -1024,7 +1293,9 @@ def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("case", ["outside", "bare", "missing-git", "inspection-failure"])
+@pytest.mark.parametrize(
+    "case", ["outside", "bare", "missing-git", "inspection-failure"]
+)
 def test_discovery_refuses_unusable_git_context(tmp_path: Path, case: str) -> None:
     env: dict[str, str] = {}
     if case == "bare":
@@ -1040,8 +1311,11 @@ def test_discovery_refuses_unusable_git_context(tmp_path: Path, case: str) -> No
 
     assert result.returncode == 1
     assert result.stdout == b""
-    expected = (b"Git inspection failed" if case in ("missing-git", "inspection-failure")
-                else b"non-bare Git worktree")
+    expected = (
+        b"Git inspection failed"
+        if case in ("missing-git", "inspection-failure")
+        else b"non-bare Git worktree"
+    )
     assert expected in result.stderr
     assert b"Traceback" not in result.stderr
 
@@ -1101,7 +1375,10 @@ def test_explicit_project_help_is_stable_stdout() -> None:
     [
         ((), b"Try 'factory --help' for more information."),
         (("--project", "api"), b"Try 'factory --help' for more information."),
-        (("--path", "./api", "--project", "api", "Fix"), b"Try 'factory --help' for more information."),
+        (
+            ("--path", "./api", "--project", "api", "Fix"),
+            b"Try 'factory --help' for more information.",
+        ),
         (("--force", "--force", "Fix"), b"Try 'factory --help' for more information."),
         (("--file", "-oops", "Fix"), b"Try 'factory --help' for more information."),
         (("--unknown", "Fix"), b"Try 'factory --help' for more information."),
@@ -1109,10 +1386,22 @@ def test_explicit_project_help_is_stable_stdout() -> None:
         (("--version", "--help"), b"Try 'factory --help' for more information."),
         (("--", "  "), b"Try 'factory --help' for more information."),
         (("project",), b"Try 'factory project --help' for more information."),
-        (("project", "add", "api"), b"Try 'factory project --help' for more information."),
-        (("project", "list", "extra"), b"Try 'factory project --help' for more information."),
-        (("project", "show", "--help"), b"Try 'factory project --help' for more information."),
-        (("project", "--version"), b"Try 'factory project --help' for more information."),
+        (
+            ("project", "add", "api"),
+            b"Try 'factory project --help' for more information.",
+        ),
+        (
+            ("project", "list", "extra"),
+            b"Try 'factory project --help' for more information.",
+        ),
+        (
+            ("project", "show", "--help"),
+            b"Try 'factory project --help' for more information.",
+        ),
+        (
+            ("project", "--version"),
+            b"Try 'factory project --help' for more information.",
+        ),
     ],
 )
 def test_malformed_commands_have_relevant_usage_and_no_traceback(
@@ -1123,8 +1412,11 @@ def test_malformed_commands_have_relevant_usage_and_no_traceback(
     assert result.returncode == 2
     assert result.stdout == b""
     assert result.stderr.startswith(b"factory: error: ")
-    assert (b"factory project add [--] NAME PATH" if args[:1] == ("project",) else
-            b"factory [--harness codex|claude] [--project NAME | --path PATH]") in result.stderr
+    assert (
+        b"factory project add [--] NAME PATH"
+        if args[:1] == ("project",)
+        else b"factory [--harness codex|claude] [--project NAME | --path PATH]"
+    ) in result.stderr
     assert hint in result.stderr
     assert b"Traceback" not in result.stderr
 
@@ -1152,24 +1444,39 @@ def test_valid_grammar_reaches_operational_stage(args: tuple[str, ...]) -> None:
 @pytest.mark.parametrize(
     "args",
     [
-        ("--file", "first.txt", "--project=api", "--file=first.txt", "--force",
-         "--", "  Fix  this  ", "--file", "last\tword"),
+        (
+            "--file",
+            "first.txt",
+            "--project=api",
+            "--file=first.txt",
+            "--force",
+            "--",
+            "  Fix  this  ",
+            "--file",
+            "last\tword",
+        ),
         ("--", "project", "list"),
         ("--project", "api", "Fix"),
         ("--file=-log", "--file", "next.log", "Fix"),
         ("-", "--force"),
     ],
     ids=[
-        "repeated-context-and-whitespace", "terminator-escapes-project",
+        "repeated-context-and-whitespace",
+        "terminator-escapes-project",
         "separate-selector",
-        "repeatable-files", "lone-dash-instruction",
+        "repeatable-files",
+        "lone-dash-instruction",
     ],
 )
-def test_run_accepts_documented_forms_through_cli(args: tuple[str, ...], tmp_path: Path) -> None:
+def test_run_accepts_documented_forms_through_cli(
+    args: tuple[str, ...], tmp_path: Path
+) -> None:
     git("init", "-q", cwd=tmp_path)
     (tmp_path / "-log").write_text("context")
     (tmp_path / "next.log").write_text("context")
-    result = invoke(*args, cwd=tmp_path, env={"XDG_CONFIG_HOME": str(tmp_path / "config")})
+    result = invoke(
+        *args, cwd=tmp_path, env={"XDG_CONFIG_HOME": str(tmp_path / "config")}
+    )
 
     assert result.returncode == 1
     assert result.stdout == b""
@@ -1182,10 +1489,19 @@ def test_run_accepts_documented_forms_through_cli(args: tuple[str, ...], tmp_pat
 
 
 def test_run_parser_returns_instruction_selector_context_sources_and_force() -> None:
-    parsed = _parse_run([
-        "--file", "first.txt", "--project=api", "--file=first.txt",
-        "--force", "--", "  Fix  this  ", "--file", "last\tword",
-    ])
+    parsed = _parse_run(
+        [
+            "--file",
+            "first.txt",
+            "--project=api",
+            "--file=first.txt",
+            "--force",
+            "--",
+            "  Fix  this  ",
+            "--file",
+            "last\tword",
+        ]
+    )
 
     assert parsed.instruction == "  Fix  this   --file last\tword"
     assert parsed.harness == "codex"
@@ -1197,9 +1513,18 @@ def test_run_parser_returns_instruction_selector_context_sources_and_force() -> 
 def test_run_parser_returns_selected_harness() -> None:
     assert _parse_run(["--harness", "claude", "Fix"]).harness == "claude"
     assert _parse_run(["--harness=codex", "--file=x", "Fix"]).harness == "codex"
-    assert _parse_run([
-        "--file=x", "--force", "--harness=claude", "--", "Fix",
-    ]).harness == "claude"
+    assert (
+        _parse_run(
+            [
+                "--file=x",
+                "--force",
+                "--harness=claude",
+                "--",
+                "Fix",
+            ]
+        ).harness
+        == "claude"
+    )
 
     trailing = _parse_run(["Fix", "--harness", "claude"])
     assert trailing.harness == "codex"
@@ -1212,7 +1537,10 @@ def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) 
     (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
 
     result = invoke(
-        "--harness", "claude", "Fix", cwd=tmp_path,
+        "--harness",
+        "claude",
+        "Fix",
+        cwd=tmp_path,
         env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
     )
 
@@ -1222,17 +1550,22 @@ def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) 
     # quoted executable path varies with the temporary directory.
     assert result.stderr.startswith(b'factory: error: Claude Code executable "')
     assert result.stderr.endswith(
-        b" reported an unrecognized version; "
-        b"install a stable Claude Code release.\n",
+        b" reported an unrecognized version; install a stable Claude Code release.\n",
     )
 
 
-@pytest.mark.parametrize(("harness", "version_output", "label"), [
-    ("codex", "codex-cli 9.9.9\n", "Codex"),
-    ("claude", "9.9.9 (Claude Code)\n", "Claude Code"),
-])
+@pytest.mark.parametrize(
+    ("harness", "version_output", "label"),
+    [
+        ("codex", "codex-cli 9.9.9\n", "Codex"),
+        ("claude", "9.9.9 (Claude Code)\n", "Claude Code"),
+    ],
+)
 def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
-    tmp_path: Path, harness: str, version_output: str, label: str,
+    tmp_path: Path,
+    harness: str,
+    version_output: str,
+    label: str,
 ) -> None:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -1244,7 +1577,10 @@ def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
     (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
 
     result = invoke(
-        "--harness", harness, "Fix", cwd=tmp_path,
+        "--harness",
+        harness,
+        "Fix",
+        cwd=tmp_path,
         env={
             "XDG_CONFIG_HOME": str(tmp_path / "config"),
             "PATH": os.pathsep.join((str(fake_bin), os.environ["PATH"])),
@@ -1262,11 +1598,15 @@ def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
 def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
     git("init", "-q", cwd=tmp_path)
     explicit = invoke(
-        "--harness", "codex", "Fix", cwd=tmp_path,
+        "--harness",
+        "codex",
+        "Fix",
+        cwd=tmp_path,
         env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
     )
     omitted = invoke(
-        "Fix", cwd=tmp_path,
+        "Fix",
+        cwd=tmp_path,
         env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
     )
 
@@ -1281,7 +1621,10 @@ def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("args", "reason"),
     [
-        (("--project", "api", "--project", "api", "Fix"), b"--project may appear only once"),
+        (
+            ("--project", "api", "--project", "api", "Fix"),
+            b"--project may appear only once",
+        ),
         (("--path=a", "--path=b", "Fix"), b"--path may appear only once"),
         (("--project=api", "--path=./api", "Fix"), b"cannot be combined"),
         (("--force", "--force", "Fix"), b"--force may appear only once"),
@@ -1289,7 +1632,10 @@ def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
         (("--project", "--", "Fix"), b"--project requires a value"),
         (("--file=", "Fix"), b"--file requires a non-empty value"),
         (("--path",), b"--path requires a non-empty value"),
-        (("--harness", "claude", "--harness", "codex", "Fix"), b"--harness may appear only once"),
+        (
+            ("--harness", "claude", "--harness", "codex", "Fix"),
+            b"--harness may appear only once",
+        ),
         (("--harness=", "Fix"), b"--harness requires a non-empty value"),
         (("--harness",), b"--harness requires a non-empty value"),
         (("--harness", "-claude", "Fix"), b"--harness requires a value"),
@@ -1300,11 +1646,23 @@ def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
         (("--", " \t", "\n"), b"non-whitespace text is required"),
     ],
     ids=[
-        "duplicate-project", "duplicate-path", "conflicting-selectors", "duplicate-force",
-        "separate-dash-file", "separate-terminator-selector", "empty-equals-file",
-        "missing-path", "duplicate-harness", "empty-equals-harness", "missing-harness",
-        "separate-dash-harness", "unknown-separate-harness", "unknown-equals-harness",
-        "force-has-no-value", "unknown-option", "blank-instruction",
+        "duplicate-project",
+        "duplicate-path",
+        "conflicting-selectors",
+        "duplicate-force",
+        "separate-dash-file",
+        "separate-terminator-selector",
+        "empty-equals-file",
+        "missing-path",
+        "duplicate-harness",
+        "empty-equals-harness",
+        "missing-harness",
+        "separate-dash-harness",
+        "unknown-separate-harness",
+        "unknown-equals-harness",
+        "force-has-no-value",
+        "unknown-option",
+        "blank-instruction",
     ],
 )
 def test_run_grammar_failures_exit_two(args: tuple[str, ...], reason: bytes) -> None:
@@ -1347,8 +1705,10 @@ class _BrokenStream:
     ids=["help-stdout", "usage-stderr"],
 )
 def test_failed_factory_output_write_exits_one_without_a_traceback(
-    argv: list[str], broken_stream: str,
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    broken_stream: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(sys, broken_stream, _BrokenStream())

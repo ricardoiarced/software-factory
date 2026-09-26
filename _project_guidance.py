@@ -63,8 +63,11 @@ def open_project_spec(boundary: Path) -> BinaryIO | None:
             f"Project Spec cannot be resolved: {error}",
         ) from error
 
-    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or
-            os.open not in os.supports_dir_fd):
+    if (
+        not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or os.open not in os.supports_dir_fd
+    ):
         raise ProjectGuidanceError(
             "Project Spec cannot be opened safely on this platform",
         )
@@ -72,18 +75,21 @@ def open_project_spec(boundary: Path) -> BinaryIO | None:
     directory = -1
     try:
         directory = os.open(
-            boundary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            boundary,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
         )
         parts = resolved.relative_to(boundary).parts
         for part in parts[:-1]:
             next_directory = os.open(
-                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                 dir_fd=directory,
             )
             os.close(directory)
             directory = next_directory
         descriptor = os.open(
-            parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            parts[-1],
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
             dir_fd=directory,
         )
         try:

@@ -32,7 +32,8 @@ def _test_functions(relative_path: Path) -> set[str]:
         filename=str(relative_path),
     )
     return {
-        node.name for node in tree.body
+        node.name
+        for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
     }
 
@@ -65,13 +66,17 @@ def _matrix_rows() -> list[tuple[str, set[str], set[str]]]:
         if not line.startswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) != 4 or not re.fullmatch(r"[A-Z]{1,3}-?[0-9]+(\.[0-9]+)?", cells[0]):
+        if len(cells) != 4 or not re.fullmatch(
+            r"[A-Z]{1,3}-?[0-9]+(\.[0-9]+)?", cells[0]
+        ):
             continue  # header and separator rows
-        rows.append((
-            cells[0],
-            set(re.findall(r"`([^`]+)`", cells[2])),
-            set(re.findall(r"`([^`]+)`", cells[3])),
-        ))
+        rows.append(
+            (
+                cells[0],
+                set(re.findall(r"`([^`]+)`", cells[2])),
+                set(re.findall(r"`([^`]+)`", cells[3])),
+            )
+        )
     return rows
 
 
@@ -80,19 +85,27 @@ def test_traceability_matrix_exists_and_covers_the_final_acceptance_criteria() -
     assert rows, f"{MATRIX} must map normative statements to named tests"
     identifiers = [identifier for identifier, _, _ in rows]
     expected = STATEMENT_IDS | set(ACCEPTANCE_IDS)
-    assert len(identifiers) == len(set(identifiers)), "duplicate normative statement IDs"
+    assert len(identifiers) == len(set(identifiers)), (
+        "duplicate normative statement IDs"
+    )
     assert set(identifiers) == expected, (
         f"missing IDs: {sorted(expected - set(identifiers))}; "
         f"unexpected IDs: {sorted(set(identifiers) - expected)}"
     )
-    empty = [identifier for identifier, tests, assertions in rows if not (tests or assertions)]
+    empty = [
+        identifier
+        for identifier, tests, assertions in rows
+        if not (tests or assertions)
+    ]
     assert not empty, f"normative statements without evidence: {empty}"
 
 
 def test_every_referenced_test_exists() -> None:
     inventory = _suite_inventory()
     dangling = sorted(
-        name for _, tests, _ in _matrix_rows() for name in tests
+        name
+        for _, tests, _ in _matrix_rows()
+        for name in tests
         if name not in inventory
     )
     assert not dangling, f"matrix rows name tests that do not exist: {dangling}"
@@ -101,10 +114,14 @@ def test_every_referenced_test_exists() -> None:
 def test_every_referenced_certification_assertion_exists() -> None:
     assertions = _certification_assertions()
     dangling = sorted(
-        name for _, _, certifications in _matrix_rows()
-        for name in certifications if name not in assertions
+        name
+        for _, _, certifications in _matrix_rows()
+        for name in certifications
+        if name not in assertions
     )
-    assert not dangling, f"matrix rows name unknown certification assertions: {dangling}"
+    assert not dangling, (
+        f"matrix rows name unknown certification assertions: {dangling}"
+    )
 
 
 def test_every_named_test_traces_to_a_normative_statement() -> None:

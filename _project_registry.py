@@ -73,7 +73,9 @@ def _read_generation(directory: int) -> dict[str, str]:
         return {}
     except OSError as error:
         if error.errno == errno.ELOOP:
-            raise RegistryError("malformed Project Registry: not a regular file") from error
+            raise RegistryError(
+                "malformed Project Registry: not a regular file"
+            ) from error
         raise RegistryError(f"Project Registry cannot be read: {error}") from error
     try:
         mode = os.fstat(descriptor).st_mode
@@ -90,7 +92,9 @@ def _read_generation(directory: int) -> dict[str, str]:
                 object_pairs_hook=_unique_json_object,
             )
     except (UnicodeError, ValueError, RecursionError) as error:
-        raise RegistryError("malformed Project Registry: invalid JSON or UTF-8") from error
+        raise RegistryError(
+            "malformed Project Registry: invalid JSON or UTF-8"
+        ) from error
     except OSError as error:
         raise RegistryError(f"Project Registry cannot be read: {error}") from error
     if not isinstance(document, dict) or set(document) != {"version", "projects"}:
@@ -101,13 +105,22 @@ def _read_generation(directory: int) -> dict[str, str]:
     if not isinstance(projects, dict):
         raise RegistryError("malformed Project Registry: invalid projects")
     for name, path in projects.items():
-        if (not isinstance(name, str) or not _PROJECT_NAME.fullmatch(name) or
-                not isinstance(path, str) or not os.path.isabs(path) or "\x00" in path):
-            raise RegistryError("malformed Project Registry: invalid Project Name or path")
+        if (
+            not isinstance(name, str)
+            or not _PROJECT_NAME.fullmatch(name)
+            or not isinstance(path, str)
+            or not os.path.isabs(path)
+            or "\x00" in path
+        ):
+            raise RegistryError(
+                "malformed Project Registry: invalid Project Name or path"
+            )
         try:
             path.encode("utf-8", errors="strict")
         except UnicodeError as error:
-            raise RegistryError("malformed Project Registry: invalid path text") from error
+            raise RegistryError(
+                "malformed Project Registry: invalid path text"
+            ) from error
     return projects
 
 
@@ -131,7 +144,9 @@ def _open_config_directory(*, create: bool) -> int:
 
     path = _config_directory()
     if not path.is_absolute() or ".." in path.parts:
-        raise RegistryError("Project Registry location is not an absolute normalized path")
+        raise RegistryError(
+            "Project Registry location is not an absolute normalized path"
+        )
     directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for part in path.parts[1:]:
@@ -175,12 +190,16 @@ def _temporary_file(directory: int) -> tuple[int, str]:
         except FileExistsError:
             continue
         return descriptor, name
-    raise FileExistsError(errno.EEXIST, "cannot create unique Project Registry temporary")
+    raise FileExistsError(
+        errno.EEXIST, "cannot create unique Project Registry temporary"
+    )
 
 
 def _write_generation(directory: int, projects: dict[str, str]) -> None:
     document = {"version": 1, "projects": dict(sorted(projects.items()))}
-    payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode(
+        "utf-8"
+    )
     try:
         previous_mode = stat.S_IMODE(
             os.stat(_REGISTRY, dir_fd=directory, follow_symlinks=False).st_mode,

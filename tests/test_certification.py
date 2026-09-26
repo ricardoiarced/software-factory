@@ -18,10 +18,20 @@ def make_candidate_repository(tmp_path: Path) -> Path:
     candidates.mkdir(parents=True)
     (tmp_path / "tracked").write_text("tracked\n")
     subprocess.run(["git", "add", "tracked"], cwd=tmp_path, check=True)
-    subprocess.run([
-        "git", "-c", "user.name=Factory Test", "-c",
-        "user.email=factory@example.invalid", "commit", "-qm", "initial",
-    ], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Factory Test",
+            "-c",
+            "user.email=factory@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
     return candidates
 
 
@@ -39,16 +49,30 @@ def candidate_document(digest: str = "a" * 64) -> dict[str, object]:
 
 
 def commit_candidate(
-    root: Path, candidate: Path, document: dict[str, object] | None = None,
+    root: Path,
+    candidate: Path,
+    document: dict[str, object] | None = None,
 ) -> None:
     candidate.write_text(json.dumps(document or candidate_document()) + "\n")
     subprocess.run(
-        ["git", "add", candidate.relative_to(root)], cwd=root, check=True,
+        ["git", "add", candidate.relative_to(root)],
+        cwd=root,
+        check=True,
     )
-    subprocess.run([
-        "git", "-c", "user.name=Factory Test", "-c",
-        "user.email=factory@example.invalid", "commit", "-qm", "candidate",
-    ], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Factory Test",
+            "-c",
+            "user.email=factory@example.invalid",
+            "commit",
+            "-qm",
+            "candidate",
+        ],
+        cwd=root,
+        check=True,
+    )
 
 
 def test_certification_loads_one_exact_committed_candidate(tmp_path: Path) -> None:
@@ -73,7 +97,8 @@ def test_certification_loads_one_exact_committed_candidate(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("state", ["untracked", "modified"])
 def test_uncommitted_digest_cannot_select_an_executable_for_certification(
-    tmp_path: Path, state: str,
+    tmp_path: Path,
+    state: str,
 ) -> None:
     candidates = make_candidate_repository(tmp_path)
     candidate = candidates / "linux-x86_64.json"
@@ -82,7 +107,8 @@ def test_uncommitted_digest_cannot_select_an_executable_for_certification(
     candidate.write_text(json.dumps(candidate_document("b" * 64)) + "\n")
 
     with pytest.raises(
-        SelectionError, match="must exactly match a file committed at HEAD",
+        SelectionError,
+        match="must exactly match a file committed at HEAD",
     ):
         load_committed_selection(tmp_path, candidate)
 
@@ -113,7 +139,8 @@ def test_certification_refuses_a_manifest_with_unrecognized_fields(
     commit_candidate(tmp_path, candidate, document)
 
     with pytest.raises(
-        SelectionError, match="fields are incomplete or unrecognized",
+        SelectionError,
+        match="fields are incomplete or unrecognized",
     ):
         load_committed_selection(tmp_path, candidate)
 
@@ -127,7 +154,9 @@ def test_certification_refuses_a_manifest_with_unrecognized_fields(
     ],
 )
 def test_certification_requires_a_certified_harness_and_channel(
-    tmp_path: Path, harness: str, install_channel: str,
+    tmp_path: Path,
+    harness: str,
+    install_channel: str,
 ) -> None:
     candidates = make_candidate_repository(tmp_path)
     candidate = candidates / "linux-x86_64.json"
@@ -137,7 +166,8 @@ def test_certification_requires_a_certified_harness_and_channel(
     commit_candidate(tmp_path, candidate, document)
 
     with pytest.raises(
-        SelectionError, match="not a certified Harness|not certified for",
+        SelectionError,
+        match="not a certified Harness|not certified for",
     ):
         load_committed_selection(tmp_path, candidate)
 
@@ -163,7 +193,10 @@ def test_certification_requires_a_certified_harness_and_channel(
     ],
 )
 def test_certification_selects_every_first_scope_artifact_family(
-    tmp_path: Path, harness: str, install_channel: str, official_source: str,
+    tmp_path: Path,
+    harness: str,
+    install_channel: str,
+    official_source: str,
 ) -> None:
     candidates = make_candidate_repository(tmp_path)
     candidate = candidates / "linux-x86_64.json"
@@ -199,7 +232,9 @@ def test_certification_pins_official_source_to_the_artifact_family(
         load_committed_selection(tmp_path, candidate)
 
 
-def test_only_the_certified_linux_tuple_enters_the_production_compatibility_set() -> None:
+def test_only_the_certified_linux_tuple_enters_the_production_compatibility_set() -> (
+    None
+):
     assert len(_codex._COMPATIBILITY_SET) == 1
     policy = _codex._COMPATIBILITY_SET[0]
     assert policy.version == "0.155.1"
@@ -216,15 +251,12 @@ def test_only_the_certified_linux_tuple_enters_the_production_compatibility_set(
 
 def test_every_named_candidate_has_a_recorded_support_decision() -> None:
     results = PROJECT / "certification" / "results"
-    records = [
-        path.read_text(encoding="utf-8") for path in results.glob("*.md")
-    ]
+    records = [path.read_text(encoding="utf-8") for path in results.glob("*.md")]
     for manifest in sorted(
         (PROJECT / "certification" / "candidates").glob("*.json"),
     ):
         path = f"certification/candidates/{manifest.name}"
         decisions = [
-            record for record in records
-            if path in record and '"result":"' in record
+            record for record in records if path in record and '"result":"' in record
         ]
         assert decisions, path

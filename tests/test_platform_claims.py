@@ -42,23 +42,27 @@ _CHECKS_BY_HARNESS = {
 # The retired report schema 1 had exactly these required assertions; a
 # historical record authorizes its tuple only when it is as complete as
 # the gate that recorded it demanded.
-_SCHEMA_ONE_EVIDENCE = frozenset({
-    "filesystem",
-    "temporary-root",
-    "network",
-    "runtime",
-    "project-spec-exclusivity",
-    "extension",
-    "capability",
-    "negative-control",
-})
-_SCHEMA_ONE_CHECKS = frozenset({
-    "identity",
-    "strict-invocation-builder",
-    "strict-configuration-inspectors",
-    "permission-profile",
-    "host-admission-probe",
-})
+_SCHEMA_ONE_EVIDENCE = frozenset(
+    {
+        "filesystem",
+        "temporary-root",
+        "network",
+        "runtime",
+        "project-spec-exclusivity",
+        "extension",
+        "capability",
+        "negative-control",
+    }
+)
+_SCHEMA_ONE_CHECKS = frozenset(
+    {
+        "identity",
+        "strict-invocation-builder",
+        "strict-configuration-inspectors",
+        "permission-profile",
+        "host-admission-probe",
+    }
+)
 
 
 def _advertised_tuples() -> list[dict[str, str]]:
@@ -66,7 +70,8 @@ def _advertised_tuples() -> list[dict[str, str]]:
 
     document = SUPPORT_DOCUMENT.read_text(encoding="utf-8")
     section = re.search(
-        r"^## Advertised tuples\s*$\n(.*?)(?=^## |\Z)", document,
+        r"^## Advertised tuples\s*$\n(.*?)(?=^## |\Z)",
+        document,
         re.MULTILINE | re.DOTALL,
     )
     assert section is not None, (
@@ -246,7 +251,5 @@ def test_incomplete_certification_cannot_authorize_a_support_claim() -> None:
         name: "established" for name in sorted(_SCHEMA_ONE_EVIDENCE)[:-1]
     }
     assert not _completed_certification(schema_one)
-    schema_one["evidence"] = {
-        name: "established" for name in _SCHEMA_ONE_EVIDENCE
-    }
+    schema_one["evidence"] = {name: "established" for name in _SCHEMA_ONE_EVIDENCE}
     assert _completed_certification(schema_one)

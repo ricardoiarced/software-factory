@@ -97,7 +97,8 @@ def _committed_bytes(root: Path, relative: Path) -> tuple[bytes, str]:
 
 
 def load_committed_selection(
-    project_root: Path, candidate_argument: str | os.PathLike[str],
+    project_root: Path,
+    candidate_argument: str | os.PathLike[str],
 ) -> CertificationSelection:
     """Load an exact candidate only when its manifest is committed at HEAD."""
 
@@ -121,9 +122,14 @@ def load_committed_selection(
         raise SelectionError(
             "candidate manifest must be inside certification/candidates",
         ) from error
-    if not candidate.is_file() or re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9._-]*\.json", candidate.name,
-    ) is None:
+    if (
+        not candidate.is_file()
+        or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]*\.json",
+            candidate.name,
+        )
+        is None
+    ):
         raise SelectionError("candidate manifest must be a named JSON file")
 
     try:

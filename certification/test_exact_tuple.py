@@ -83,7 +83,10 @@ CLAUDE_PRODUCTION_CHECKS = (
 # denial control proven to detect egress before the sandboxed Run stayed
 # quiet (the negative control), and suppressed guidance left undiscovered.
 CLAUDE_PROBE_EVIDENCE_PROPERTIES = tuple(
-    name for name in EVIDENCE_PROPERTIES if name not in (
+    name
+    for name in EVIDENCE_PROPERTIES
+    if name
+    not in (
         "inference-run",
         "stale-version-refusal",
         "wrong-digest-refusal",
@@ -127,11 +130,13 @@ class CertificationReport(TypedDict):
 def _rejected_report(selection: CertificationSelection) -> CertificationReport:
     evidence_names = (
         CODEX_EVIDENCE_PROPERTIES
-        if selection.harness == "codex" else EVIDENCE_PROPERTIES
+        if selection.harness == "codex"
+        else EVIDENCE_PROPERTIES
     )
     production_check_names = (
         CODEX_PRODUCTION_CHECKS
-        if selection.harness == "codex" else CLAUDE_PRODUCTION_CHECKS
+        if selection.harness == "codex"
+        else CLAUDE_PRODUCTION_CHECKS
     )
     return {
         "schema": 2,
@@ -159,12 +164,15 @@ def _rejected_report(selection: CertificationSelection) -> CertificationReport:
 
 def _report_line(report: CertificationReport) -> str:
     return "FACTORY_REAL_HOST_CERTIFICATION=" + json.dumps(
-        report, sort_keys=True, separators=(",", ":"),
+        report,
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
 def _control_refused(
-    report: CertificationReport, establishment: Callable[[], object],
+    report: CertificationReport,
+    establishment: Callable[[], object],
     *required_phrases: str,
 ) -> bool:
     """Prove one fixed admission decision refuses on this real artifact.
@@ -206,11 +214,15 @@ def _inference_project(
 
 
 def _perform_inference_run(
-    root: Path, boundary: Path, start: Callable[[BinaryIO], int],
+    root: Path,
+    boundary: Path,
+    start: Callable[[BinaryIO], int],
 ) -> None:
     """Compose the Run Request spool, submit it, and require Run success."""
 
-    descriptor, name = tempfile.mkstemp(dir=root, prefix="run-request-", suffix=".spool")
+    descriptor, name = tempfile.mkstemp(
+        dir=root, prefix="run-request-", suffix=".spool"
+    )
     spool = os.fdopen(descriptor, "r+b")
     try:
         spool.write(b"# Run Request\n\n## Instruction\n\n")
@@ -269,7 +281,9 @@ def _certify_codex(
         )
     monkeypatch.setattr(_codex, "_COMPATIBILITY_SET", (policy,))
     monkeypatch.setattr(
-        _codex, "_cache_directory", lambda: tmp_path / "fresh-probe-cache",
+        _codex,
+        "_cache_directory",
+        lambda: tmp_path / "fresh-probe-cache",
     )
     admitted_policy, _ = _codex._admit_run(Project(tmp_path, tmp_path))
     if admitted_policy is not policy:
@@ -288,7 +302,8 @@ def _certify_codex(
 
     with monkeypatch.context() as patched:
         patched.setattr(
-            _codex, "_COMPATIBILITY_SET",
+            _codex,
+            "_COMPATIBILITY_SET",
             (replace(policy, sha256="0" * 64),),
         )
         if not _control_refused(
@@ -309,7 +324,8 @@ def _certify_codex(
 
     boundary, source, original = _inference_project(tmp_path / "codex-inference")
     _perform_inference_run(
-        tmp_path / "codex-inference", boundary,
+        tmp_path / "codex-inference",
+        boundary,
         lambda spool: _codex.CodexRunner().run(Project(boundary, boundary), spool),
     )
     if not _docstring_was_added(source, original):
@@ -362,7 +378,8 @@ def _certify_claude(
     managed_home = tmp_path / "managed-home"
     (managed_home / ".claude").mkdir(parents=True)
     (managed_home / ".claude" / "remote-settings.json").write_text(
-        "{}\n", encoding="utf-8",
+        "{}\n",
+        encoding="utf-8",
     )
     with monkeypatch.context() as patched:
         patched.setenv("HOME", str(managed_home))
@@ -388,9 +405,9 @@ def _certify_claude(
             executable=executable,
         )
     with monkeypatch.context() as patched:
-        patched.setattr(_claude, "_CLAUDE_COMPATIBILITY_SET", (
-            replace(policy, sha256="0" * 64),
-        ))
+        patched.setattr(
+            _claude, "_CLAUDE_COMPATIBILITY_SET", (replace(policy, sha256="0" * 64),)
+        )
         if not _control_refused(
             report,
             lambda: _claude._match_compatibility(executable, policy.version),
@@ -402,7 +419,8 @@ def _certify_claude(
     if not _control_refused(
         report,
         lambda: _claude.verify_claude_code_newest_stable(
-            executable, _STALE_VERSION,
+            executable,
+            _STALE_VERSION,
         ),
         "older than the newest stable release",
     ):
@@ -413,7 +431,9 @@ def _certify_claude(
     # Host Admission Probe against a fresh probe cache: admission must pass
     # unmodified with the candidate policy installed.
     monkeypatch.setattr(
-        _claude, "_cache_directory", lambda: tmp_path / "fresh-probe-cache",
+        _claude,
+        "_cache_directory",
+        lambda: tmp_path / "fresh-probe-cache",
     )
     admitted_policy, invocation = _claude._admit_run(Project(tmp_path, tmp_path))
     if admitted_policy is not policy:
@@ -423,8 +443,13 @@ def _certify_claude(
         )
     report["production_checks"]["host-admission-probe"] = "established"
     for required in (
-        "-p", "--restricted", "--safe-mode", "--strict-mcp-config",
-        "--permission-mode", "dontAsk", "--settings",
+        "-p",
+        "--restricted",
+        "--safe-mode",
+        "--strict-mcp-config",
+        "--permission-mode",
+        "dontAsk",
+        "--settings",
     ):
         if required not in invocation:
             raise RunAdmissionError(
@@ -456,7 +481,8 @@ def _certify_claude(
 
     boundary, source, original = _inference_project(tmp_path / "claude-inference")
     _perform_inference_run(
-        tmp_path / "claude-inference", boundary,
+        tmp_path / "claude-inference",
+        boundary,
         lambda spool: launch(Project(boundary, boundary), prepared, spool),
     )
     if not _docstring_was_added(source, original):
@@ -499,7 +525,10 @@ def test_selected_codex_tuple_passes_the_complete_production_path(
     """Certify only evidence established by the complete production path."""
 
     _selected_certification(
-        certification_selection, tmp_path, monkeypatch, "codex",
+        certification_selection,
+        tmp_path,
+        monkeypatch,
+        "codex",
     )
 
 
@@ -511,5 +540,8 @@ def test_selected_claude_tuple_passes_the_complete_production_path(
     """Certify only evidence established by the production admission path."""
 
     _selected_certification(
-        certification_selection, tmp_path, monkeypatch, "claude",
+        certification_selection,
+        tmp_path,
+        monkeypatch,
+        "claude",
     )

@@ -50,14 +50,19 @@ HOST_PROBE_PROMPT = (
     "## Instruction\n\n"
     "factory-host-admission-run-request-v1"
 )
-HOST_PROBE_PROMPT_INPUT = json.dumps([{
-    "type": "message",
-    "role": "user",
-    "content": [{"type": "input_text", "text": HOST_PROBE_PROMPT}],
-}], separators=(",", ":"))
+HOST_PROBE_PROMPT_INPUT = json.dumps(
+    [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": HOST_PROBE_PROMPT}],
+        }
+    ],
+    separators=(",", ":"),
+)
 MALFORMED_PROFILE_REJECTION = (
     b'Error: invalid type: string "{", expected struct PermissionProfileToml\n'
-    b'in `permissions`\n\n'
+    b"in `permissions`\n\n"
 )
 OFFICIAL_FEATURE_OUTPUT = (
     Path(__file__).parent / "data" / "codex-0.155.1-features.txt"
@@ -66,13 +71,16 @@ OFFICIAL_FEATURE_OUTPUT = (
 
 @pytest.fixture(autouse=True)
 def isolated_host_admission_probe_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("_codex._cache_directory", lambda: tmp_path / "cache")
 
 
 def make_executable(path: Path, version: str = "0.155.1") -> None:
-    path.write_text(f"#!/bin/sh\nif [ \"$1\" = --version ]; then\n  echo 'codex-cli {version}'\nfi\n")
+    path.write_text(
+        f"#!/bin/sh\nif [ \"$1\" = --version ]; then\n  echo 'codex-cli {version}'\nfi\n"
+    )
     path.chmod(0o755)
 
 
@@ -97,9 +105,12 @@ elif [ "$1" = sandbox ]; then
   printf 'factory-host-admission-probe-v1\n'
 fi
 """
-    path.write_text(script.replace(
-        "FACTORY_HOST_PROBE_PROMPT_INPUT", HOST_PROBE_PROMPT_INPUT,
-    ))
+    path.write_text(
+        script.replace(
+            "FACTORY_HOST_PROBE_PROMPT_INPUT",
+            HOST_PROBE_PROMPT_INPUT,
+        )
+    )
     path.chmod(0o755)
 
 
@@ -116,7 +127,9 @@ def safe_feature_output(active_feature: str | None = None) -> bytes:
 
 
 def certify(
-    executable: Path, *, host_probe_timeout_seconds: float = 10,
+    executable: Path,
+    *,
+    host_probe_timeout_seconds: float = 10,
 ) -> _Codex01551Policy:
     metadata = executable.stat()
     with executable.open("rb") as artifact:
@@ -154,31 +167,53 @@ def expected_permission_profile(executable: Path) -> str:
 
 def expected_configuration(executable: Path, git_root: Path) -> list[str]:
     return [
-        "-c", "approval_policy=\"never\"",
-        "-c", "project_doc_max_bytes=0",
-        "-c", "skills.include_instructions=false",
-        "-c", "project_root_markers=[]",
-        "-c", "allow_login_shell=false",
-        "-c", "shell_environment_policy.inherit=\"core\"",
-        "-c", "shell_environment_policy.ignore_default_excludes=false",
-        "-c", "features.apps=false",
-        "-c", "features.hooks=false",
-        "-c", "features.plugins=false",
-        "-c", "features.remote_plugin=false",
-        "-c", "features.browser_use=false",
-        "-c", "features.browser_use_external=false",
-        "-c", "features.browser_use_full_cdp_access=false",
-        "-c", "features.in_app_browser=false",
-        "-c", "features.computer_use=false",
-        "-c", "features.multi_agent=false",
-        "-c", "features.memories=false",
-        "-c", "features.skip_host_skill_discovery=true",
-        "-c", "default_permissions=\"factory-isolated\"",
-        "-c", "permissions.factory-isolated=" + expected_permission_profile(executable),
-        "-c", (
+        "-c",
+        'approval_policy="never"',
+        "-c",
+        "project_doc_max_bytes=0",
+        "-c",
+        "skills.include_instructions=false",
+        "-c",
+        "project_root_markers=[]",
+        "-c",
+        "allow_login_shell=false",
+        "-c",
+        'shell_environment_policy.inherit="core"',
+        "-c",
+        "shell_environment_policy.ignore_default_excludes=false",
+        "-c",
+        "features.apps=false",
+        "-c",
+        "features.hooks=false",
+        "-c",
+        "features.plugins=false",
+        "-c",
+        "features.remote_plugin=false",
+        "-c",
+        "features.browser_use=false",
+        "-c",
+        "features.browser_use_external=false",
+        "-c",
+        "features.browser_use_full_cdp_access=false",
+        "-c",
+        "features.in_app_browser=false",
+        "-c",
+        "features.computer_use=false",
+        "-c",
+        "features.multi_agent=false",
+        "-c",
+        "features.memories=false",
+        "-c",
+        "features.skip_host_skill_discovery=true",
+        "-c",
+        'default_permissions="factory-isolated"',
+        "-c",
+        "permissions.factory-isolated=" + expected_permission_profile(executable),
+        "-c",
+        (
             "projects."
             + json.dumps(os.fspath(git_root), ensure_ascii=False)
-            + ".trust_level=\"untrusted\""
+            + '.trust_level="untrusted"'
         ),
     ]
 
@@ -217,7 +252,8 @@ def version_reply(command: list[str]) -> subprocess.CompletedProcess[bytes] | No
 
 
 def successful_inspection(
-    command: list[str], **kwargs: object,
+    command: list[str],
+    **kwargs: object,
 ) -> subprocess.CompletedProcess[bytes]:
     reply = version_reply(command)
     if reply is not None:
@@ -229,7 +265,10 @@ def successful_inspection(
         return subprocess.CompletedProcess(command, 0, output, b"")
     if command[1] == "sandbox":
         return subprocess.CompletedProcess(
-            command, 1, b"", MALFORMED_PROFILE_REJECTION,
+            command,
+            1,
+            b"",
+            MALFORMED_PROFILE_REJECTION,
         )
     return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
 
@@ -268,7 +307,8 @@ def capture_policy_preparation(
     probes: list[list[str]] = []
 
     def inspect(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         inspections.append(command)
         return successful_inspection(command, **kwargs)
@@ -284,7 +324,9 @@ def capture_policy_preparation(
 
 
 def install_compatibility_fixture(
-    executable: Path, monkeypatch: pytest.MonkeyPatch, *,
+    executable: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
     host_probe_timeout_seconds: float = 10,
 ) -> _Codex01551Policy:
     policy = certify(
@@ -299,7 +341,8 @@ def install_compatibility_fixture(
 
 
 def install_launch_fixture(
-    executable: Path, monkeypatch: pytest.MonkeyPatch,
+    executable: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     make_executable(executable)
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
@@ -309,7 +352,9 @@ def install_launch_fixture(
 
 
 def install_faked_launch_fixture(
-    executable: Path, monkeypatch: pytest.MonkeyPatch, status: int,
+    executable: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
 ) -> None:
     """Serve the version read from the executable while faking only the launch."""
 
@@ -325,7 +370,9 @@ def install_faked_launch_fixture(
             return None
 
         def communicate(
-            self, input: object = None, timeout: float | None = None,
+            self,
+            input: object = None,
+            timeout: float | None = None,
         ) -> tuple[bytes, bytes]:
             assert self._version_read
             return b"codex-cli 0.155.1\n", b""
@@ -341,7 +388,8 @@ def install_faked_launch_fixture(
 
 
 def policy_with_recorded_host_admission_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Path, _Codex01551Policy, list[list[str]]]:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -495,14 +543,19 @@ while True:
   exit 99
 fi
 """
-    path.write_text(script.replace(
-        "FACTORY_HOST_PROBE_PROMPT_INPUT", HOST_PROBE_PROMPT_INPUT,
-    ))
+    path.write_text(
+        script.replace(
+            "FACTORY_HOST_PROBE_PROMPT_INPUT",
+            HOST_PROBE_PROMPT_INPUT,
+        )
+    )
     path.chmod(0o755)
 
 
 def prepare_probe_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
     host_probe_timeout_seconds: float = 10,
 ) -> tuple[Project, Path, Path]:
     boundary = tmp_path / "selected-project"
@@ -515,7 +568,9 @@ def prepare_probe_run(
     prompt_probe_gate = tmp_path / "prompt-probe-ran"
     negative_profile_gate = tmp_path / "negative-profile-ran"
     launch_gate = tmp_path / "run-launched"
-    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"]))
+    )
     monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output().decode("ascii"))
     monkeypatch.setenv("FACTORY_SELECTED_PROJECT", str(boundary))
     monkeypatch.setenv("FACTORY_PROBE_GATE", str(probe_gate))
@@ -560,7 +615,9 @@ def fork_runtime_run(
 
 
 def wait_for_runtime_marker(
-    marker: Path, factory_pid: int, failure: str,
+    marker: Path,
+    factory_pid: int,
+    failure: str,
 ) -> None:
     deadline = time.monotonic() + 5
     while not marker.exists() and time.monotonic() < deadline:
@@ -620,7 +677,8 @@ def start_signal_runtime(
 
 
 def test_codex_0_155_1_policy_preparation_is_deterministic_and_exact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "Codex Runtime" / "codex"
     boundary = tmp_path / "Project Boundary"
@@ -635,13 +693,17 @@ def test_codex_0_155_1_policy_preparation_is_deterministic_and_exact(
 
 
 def test_codex_0_155_1_permission_profile_allows_only_the_required_access(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "runtime" / "codex"
     policy = policy_for(executable)
 
     invocation, _, _ = capture_policy_preparation(
-        policy, tmp_path / "boundary", tmp_path / "git-root", monkeypatch,
+        policy,
+        tmp_path / "boundary",
+        tmp_path / "git-root",
+        monkeypatch,
     )
 
     assert permission_profile_from(invocation) == {
@@ -659,7 +721,8 @@ def test_codex_0_155_1_permission_profile_allows_only_the_required_access(
 
 
 def test_codex_0_155_1_permission_profile_reopens_the_canonical_executable_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "installation" / "codex"
     executable.parent.mkdir()
@@ -670,7 +733,10 @@ def test_codex_0_155_1_permission_profile_reopens_the_canonical_executable_direc
     policy = policy_for(executable)
 
     invocation, _, _ = capture_policy_preparation(
-        policy, tmp_path / "boundary", tmp_path / "git-root", monkeypatch,
+        policy,
+        tmp_path / "boundary",
+        tmp_path / "git-root",
+        monkeypatch,
     )
     profile = permission_profile_from(invocation)
 
@@ -679,7 +745,8 @@ def test_codex_0_155_1_permission_profile_reopens_the_canonical_executable_direc
 
 
 def test_codex_0_155_1_policy_uses_one_configuration_for_evidence_and_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "Codex Runtime" / "codex"
     boundary = tmp_path / "Project Boundary"
@@ -687,7 +754,10 @@ def test_codex_0_155_1_policy_uses_one_configuration_for_evidence_and_launch(
     policy = policy_for(executable)
 
     invocation, inspections, probes = capture_policy_preparation(
-        policy, boundary, git_root, monkeypatch,
+        policy,
+        boundary,
+        git_root,
+        monkeypatch,
     )
 
     configuration = expected_configuration(executable, git_root)
@@ -697,41 +767,48 @@ def test_codex_0_155_1_policy_uses_one_configuration_for_evidence_and_launch(
         [os.fspath(executable), "mcp", "list", "--json", *configuration],
     ]
     host_features = next(
-        command for command in inspections[2:]
-        if command[1:3] == ["features", "list"]
+        command for command in inspections[2:] if command[1:3] == ["features", "list"]
     )
     prompt_input = next(
-        command for command in inspections
-        if command[1:3] == ["debug", "prompt-input"]
+        command for command in inspections if command[1:3] == ["debug", "prompt-input"]
     )
     assert prompt_input == [
         os.fspath(executable),
-        "debug", "prompt-input",
+        "debug",
+        "prompt-input",
         *host_features[3:],
         HOST_PROBE_PROMPT,
     ]
     assert probes[0][:3] == [os.fspath(executable), "sandbox", "-C"]
     assert probes[0][4:6] == [
-        "-c", "permissions.factory-isolated=" + expected_permission_profile(executable),
+        "-c",
+        "permissions.factory-isolated=" + expected_permission_profile(executable),
     ]
     probe_boundary = probes[0][3]
     malformed_profile = next(
-        command for command in inspections
+        command
+        for command in inspections
         if command[1] == "sandbox" and "factory-malformed" in command
     )
     assert malformed_profile == [
         os.fspath(executable),
         "sandbox",
-        "-C", probe_boundary,
-        "-c", "permissions.factory-malformed={",
-        "-P", "factory-malformed",
+        "-C",
+        probe_boundary,
+        "-c",
+        "permissions.factory-malformed={",
+        "-P",
+        "factory-malformed",
         "--",
-        "/bin/sh", "-c", "exit 0",
+        "/bin/sh",
+        "-c",
+        "exit 0",
     ]
 
 
 def test_run_creates_one_native_foreground_codex_process(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -749,7 +826,9 @@ def test_run_creates_one_native_foreground_codex_process(
         def wait(self) -> int:
             return 17
 
-    def launch(command: list[str], **kwargs: object) -> SuccessfulProbeProcess | Process:
+    def launch(
+        command: list[str], **kwargs: object
+    ) -> SuccessfulProbeProcess | Process:
         if command[1] == "sandbox":
             return SuccessfulProbeProcess()
         calls.append((command, kwargs, spool.closed, spool.tell()))
@@ -759,20 +838,30 @@ def test_run_creates_one_native_foreground_codex_process(
 
     run(Project(boundary, git_root), spool)
 
-    assert calls == [(invocation, {
-        "cwd": boundary,
-        "stdin": spool,
-        "stdout": None,
-        "stderr": None,
-        "env": None,
-        "shell": False,
-        "start_new_session": False,
-    }, False, 0)]
+    assert calls == [
+        (
+            invocation,
+            {
+                "cwd": boundary,
+                "stdin": spool,
+                "stdout": None,
+                "stderr": None,
+                "env": None,
+                "shell": False,
+                "start_new_session": False,
+            },
+            False,
+            0,
+        )
+    ]
 
 
 def assert_run_uses_native_signal_disposition(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    runtime_signal: signal.Signals, *, during_process_creation: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_signal: signal.Signals,
+    *,
+    during_process_creation: bool,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -787,7 +876,8 @@ def assert_run_uses_native_signal_disposition(
             return 0
 
     def launch(
-        command: list[str], **_kwargs: object,
+        command: list[str],
+        **_kwargs: object,
     ) -> SuccessfulProbeProcess | Process:
         if command[1] == "sandbox":
             return SuccessfulProbeProcess()
@@ -798,7 +888,9 @@ def assert_run_uses_native_signal_disposition(
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
     factory_pid = fork_runtime_run(
-        Project(boundary, boundary), tmp_path, default_signal=runtime_signal,
+        Project(boundary, boundary),
+        tmp_path,
+        default_signal=runtime_signal,
     )
     _, status = os.waitpid(factory_pid, 0)
 
@@ -807,24 +899,33 @@ def assert_run_uses_native_signal_disposition(
 
 
 def test_run_does_not_swallow_a_signal_during_process_creation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert_run_uses_native_signal_disposition(
-        tmp_path, monkeypatch, signal.SIGTERM, during_process_creation=True,
+        tmp_path,
+        monkeypatch,
+        signal.SIGTERM,
+        during_process_creation=True,
     )
 
 
 def test_run_does_not_defer_a_factory_local_timer_signal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert_run_uses_native_signal_disposition(
-        tmp_path, monkeypatch, signal.SIGALRM, during_process_creation=False,
+        tmp_path,
+        monkeypatch,
+        signal.SIGALRM,
+        during_process_creation=False,
     )
 
 
 @pytest.mark.parametrize("runtime_signal", [signal.SIGTERM, signal.SIGKILL])
 def test_run_exposes_signal_terminated_child_as_the_same_signal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     runtime_signal: signal.Signals,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
@@ -840,12 +941,17 @@ def test_run_exposes_signal_terminated_child_as_the_same_signal(
 
 @pytest.mark.parametrize("runtime_signal", [signal.SIGTERM, signal.SIGUSR1])
 def test_run_preserves_status_when_foreground_child_handles_signal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     runtime_signal: signal.Signals,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
     factory_pid, child_pid, child_process_group = start_signal_runtime(
-        project, tmp_path, monkeypatch, runtime_signal, exit_status=23,
+        project,
+        tmp_path,
+        monkeypatch,
+        runtime_signal,
+        exit_status=23,
     )
     assert child_pid != factory_pid
     assert child_process_group == factory_pid
@@ -862,12 +968,17 @@ def test_run_preserves_status_when_foreground_child_handles_signal(
     [signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM],
 )
 def test_run_preserves_foreground_termination_signals_without_tracebacks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capfdbinary: pytest.CaptureFixture[bytes], runtime_signal: signal.Signals,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfdbinary: pytest.CaptureFixture[bytes],
+    runtime_signal: signal.Signals,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
     factory_pid, _, child_process_group = start_signal_runtime(
-        project, tmp_path, monkeypatch, runtime_signal,
+        project,
+        tmp_path,
+        monkeypatch,
+        runtime_signal,
     )
     assert child_process_group == factory_pid
 
@@ -881,13 +992,18 @@ def test_run_preserves_foreground_termination_signals_without_tracebacks(
 
 
 def test_run_preserves_foreground_suspend_and_resume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
     resume_ready = tmp_path / "signal-resumed"
     monkeypatch.setenv("FACTORY_RUNTIME_RESUME_READY", str(resume_ready))
     factory_pid, _, child_process_group = start_signal_runtime(
-        project, tmp_path, monkeypatch, signal.SIGTERM, exit_status=0,
+        project,
+        tmp_path,
+        monkeypatch,
+        signal.SIGTERM,
+        exit_status=0,
     )
     assert child_process_group == factory_pid
 
@@ -898,7 +1014,9 @@ def test_run_preserves_foreground_suspend_and_resume(
 
     os.killpg(factory_pid, signal.SIGCONT)
     wait_for_runtime_marker(
-        resume_ready, factory_pid, "foreground child did not resume",
+        resume_ready,
+        factory_pid,
+        "foreground child did not resume",
     )
 
     os.killpg(factory_pid, signal.SIGTERM)
@@ -919,8 +1037,10 @@ def test_run_preserves_foreground_suspend_and_resume(
 
 @pytest.mark.parametrize("status", [0, 1, 2])
 def test_run_preserves_native_output_environment_spool_and_ordinary_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capfdbinary: pytest.CaptureFixture[bytes], status: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfdbinary: pytest.CaptureFixture[bytes],
+    status: int,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
     codex_home = tmp_path / "codex-home-with-authentication"
@@ -946,7 +1066,8 @@ def test_run_preserves_native_output_environment_spool_and_ordinary_status(
 
 
 def test_run_preserves_child_tty_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
     request_path = tmp_path / "run-request"
@@ -991,7 +1112,8 @@ def test_run_preserves_child_tty_identity(
 
 
 def test_run_does_not_retry_failed_process_creation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1001,7 +1123,8 @@ def test_run_does_not_retry_failed_process_creation(
     attempts = 0
 
     def fail_to_start(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> SuccessfulProbeProcess | None:
         nonlocal attempts
         if command[1] == "sandbox":
@@ -1028,7 +1151,8 @@ def test_run_does_not_retry_failed_process_creation(
 
 
 def test_run_uses_the_project_selection_git_root_without_rediscovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1063,7 +1187,8 @@ def test_run_uses_the_project_selection_git_root_without_rediscovery(
 
 
 def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1097,7 +1222,9 @@ def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
 
 @pytest.mark.parametrize("change", ["replacement", "self-update"])
 def test_run_refuses_an_executable_change_without_evaluating_it_before_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1120,7 +1247,9 @@ def test_run_refuses_an_executable_change_without_evaluating_it_before_launch(
         enclosing_git_root: Path,
     ) -> list[str]:
         invocation = actual_prepare_run(
-            self, project_boundary, enclosing_git_root,
+            self,
+            project_boundary,
+            enclosing_git_root,
         )
         changed = executable.read_text() + "# changed\n"
         if change == "replacement":
@@ -1134,13 +1263,17 @@ def test_run_refuses_an_executable_change_without_evaluating_it_before_launch(
         return invocation
 
     def inspect(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         nonlocal version_checks
         if command[1:] == ["--version"]:
             version_checks += 1
             return subprocess.CompletedProcess(
-                command, 0, b"codex-cli 0.155.1\n", b"",
+                command,
+                0,
+                b"codex-cli 0.155.1\n",
+                b"",
             )
         return successful_inspection(command, **kwargs)
 
@@ -1168,7 +1301,8 @@ def test_run_refuses_an_executable_change_without_evaluating_it_before_launch(
 
 
 def test_run_requires_a_successful_synthetic_probe_before_launching_codex(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
 
@@ -1183,7 +1317,8 @@ def test_run_requires_a_successful_synthetic_probe_before_launching_codex(
 
 
 def test_run_reuses_a_complete_host_admission_probe_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1193,7 +1328,8 @@ def test_run_reuses_a_complete_host_admission_probe_success(
     probes: list[list[str]] = []
 
     def inspect(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         inspections.append(command)
         return successful_inspection(command, **kwargs)
@@ -1213,17 +1349,23 @@ def test_run_reuses_a_complete_host_admission_probe_success(
     assert [command[1:3] for command in inspections].count(["mcp", "list"]) == 3
 
 
-@pytest.mark.parametrize("replacement", [
-    b"{",
-    b'{"schema":1}\n',
-    b'{"schema":0,"success":true}\n',
-    b'{"schema":1,"success":true,"factory_version":"other"}\n',
-])
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        b"{",
+        b'{"schema":1}\n',
+        b'{"schema":0,"success":true}\n',
+        b'{"schema":1,"success":true,"factory_version":"other"}\n',
+    ],
+)
 def test_run_reprobes_malformed_stale_partial_or_mismatched_cache_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: bytes,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: bytes,
 ) -> None:
     _, policy, probes = policy_with_recorded_host_admission_probe(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
     )
     policy.prepare_run(tmp_path, tmp_path)
     cached = next((tmp_path / "cache" / "host-admission-probe").iterdir())
@@ -1235,10 +1377,12 @@ def test_run_reprobes_malformed_stale_partial_or_mismatched_cache_state(
 
 
 def test_run_reprobes_after_factory_or_host_upgrade(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, policy, probes = policy_with_recorded_host_admission_probe(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
     )
     factory_version = "1.0"
     host_release = "kernel-1"
@@ -1260,10 +1404,12 @@ def test_run_reprobes_after_factory_or_host_upgrade(
 
 
 def test_run_reprobes_after_codex_artifact_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable, first_policy, probes = policy_with_recorded_host_admission_probe(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
     )
 
     first_policy.prepare_run(tmp_path, tmp_path)
@@ -1275,7 +1421,8 @@ def test_run_reprobes_after_codex_artifact_changes(
 
 
 def test_failed_host_admission_probe_is_not_cached(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1303,7 +1450,8 @@ def test_failed_host_admission_probe_is_not_cached(
 
 
 def test_host_admission_probe_success_is_atomically_stored_with_its_complete_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1351,7 +1499,8 @@ def test_host_admission_probe_success_is_atomically_stored_with_its_complete_ide
 
 
 def test_cache_write_failure_leaves_admission_uncached(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1379,17 +1528,24 @@ def test_cache_write_failure_leaves_admission_uncached(
 
 
 def test_cache_hit_still_rejects_a_forbidden_effective_capability(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, policy, probes = policy_with_recorded_host_admission_probe(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
     )
     policy.prepare_run(tmp_path, tmp_path)
 
     def forbidden_inspection(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        output = safe_feature_output("apps") if command[1:3] == ["features", "list"] else b"[]\n"
+        output = (
+            safe_feature_output("apps")
+            if command[1:3] == ["features", "list"]
+            else b"[]\n"
+        )
         return subprocess.CompletedProcess(command, 0, output, b"")
 
     monkeypatch.setattr("_codex.subprocess.run", forbidden_inspection)
@@ -1401,7 +1557,8 @@ def test_cache_hit_still_rejects_a_forbidden_effective_capability(
 
 
 def test_cache_hit_still_rechecks_the_executable_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1417,14 +1574,16 @@ def test_cache_hit_still_rechecks_the_executable_identity(
             return 0
 
     def inspect(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         if command[1:] == ["--version"]:
             return subprocess.CompletedProcess(command, 0, b"codex-cli 0.155.1\n", b"")
         return successful_inspection(command, **kwargs)
 
     def launch(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> SuccessfulProbeProcess | RunProcess:
         nonlocal probes, launches
         if command[1] == "sandbox":
@@ -1450,10 +1609,12 @@ def test_cache_hit_still_rechecks_the_executable_identity(
 
 
 def test_concurrent_cache_readers_observe_a_complete_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, policy, probes = policy_with_recorded_host_admission_probe(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
     )
     policy.prepare_run(tmp_path, tmp_path)
 
@@ -1467,13 +1628,15 @@ def test_concurrent_cache_readers_observe_a_complete_success(
 
 
 def test_run_refuses_when_the_malformed_profile_negative_control_succeeds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     monkeypatch.setenv("FACTORY_NEGATIVE_PROFILE_EXIT", "0")
 
     with pytest.raises(
-        RunAdmissionError, match="malformed permission profile was accepted",
+        RunAdmissionError,
+        match="malformed permission profile was accepted",
     ):
         run(boundary, io.BytesIO())
 
@@ -1483,14 +1646,20 @@ def test_run_refuses_when_the_malformed_profile_negative_control_succeeds(
     assert not launch_gate.exists()
 
 
-@pytest.mark.parametrize(("exit_status", "stdout", "stderr"), [
-    ("2", "", MALFORMED_PROFILE_REJECTION.decode()),
-    ("1", "unexpected output\n", MALFORMED_PROFILE_REJECTION.decode()),
-    ("1", "", "unrelated failure\n"),
-])
+@pytest.mark.parametrize(
+    ("exit_status", "stdout", "stderr"),
+    [
+        ("2", "", MALFORMED_PROFILE_REJECTION.decode()),
+        ("1", "unexpected output\n", MALFORMED_PROFILE_REJECTION.decode()),
+        ("1", "", "unrelated failure\n"),
+    ],
+)
 def test_run_requires_pinned_malformed_profile_rejection_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    exit_status: str, stdout: str, stderr: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_status: str,
+    stdout: str,
+    stderr: str,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     monkeypatch.setenv("FACTORY_NEGATIVE_PROFILE_EXIT", exit_status)
@@ -1508,42 +1677,53 @@ def test_run_requires_pinned_malformed_profile_rejection_evidence(
     assert not launch_gate.exists()
 
 
-@pytest.mark.parametrize(("prompt_input", "reason"), [
-    (b"{", "unrecognized prompt-input output"),
-    (b"[" * 2000 + b"]" * 2000, "unrecognized prompt-input output"),
-    (b"{}", "unrecognized prompt-input output"),
-    (
-        json.dumps([{
-            "type": "unknown",
-            "role": "user",
-            "content": [{
-                "type": "input_text",
-                "text": "factory-host-admission-project-guidance-v1",
-            }],
-        }]).encode(),
-        "unrecognized prompt-input output",
-    ),
-    (
+@pytest.mark.parametrize(
+    ("prompt_input", "reason"),
+    [
+        (b"{", "unrecognized prompt-input output"),
+        (b"[" * 2000 + b"]" * 2000, "unrecognized prompt-input output"),
+        (b"{}", "unrecognized prompt-input output"),
         (
-            b'[{"type":"message","role":"user","content":'
-            b'[{"type":"input_text","text":"other guidance"}]}]'
+            json.dumps(
+                [
+                    {
+                        "type": "unknown",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "factory-host-admission-project-guidance-v1",
+                            }
+                        ],
+                    }
+                ]
+            ).encode(),
+            "unrecognized prompt-input output",
         ),
-        "Project Guidance was not retained",
-    ),
-    (
         (
-            b'[{"type":"message","role":"user","content":['
-            b'{"type":"input_text","text":'
-            b'"factory-host-admission-project-guidance-v1"},'
-            b'{"type":"input_text","text":'
-            b'"factory-host-admission-forbidden-project-guidance-v1"}]}]'
+            (
+                b'[{"type":"message","role":"user","content":'
+                b'[{"type":"input_text","text":"other guidance"}]}]'
+            ),
+            "Project Guidance was not retained",
         ),
-        "project instruction or extension was discovered",
-    ),
-])
+        (
+            (
+                b'[{"type":"message","role":"user","content":['
+                b'{"type":"input_text","text":'
+                b'"factory-host-admission-project-guidance-v1"},'
+                b'{"type":"input_text","text":'
+                b'"factory-host-admission-forbidden-project-guidance-v1"}]}]'
+            ),
+            "project instruction or extension was discovered",
+        ),
+    ],
+)
 def test_run_refuses_incomplete_or_unrecognized_prompt_input_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    prompt_input: bytes, reason: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prompt_input: bytes,
+    reason: str,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1554,7 +1734,8 @@ def test_run_refuses_incomplete_or_unrecognized_prompt_input_evidence(
     launched = False
 
     def inspect(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         reply = version_reply(command)
         if reply is not None:
@@ -1575,27 +1756,37 @@ def test_run_refuses_incomplete_or_unrecognized_prompt_input_evidence(
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
     with pytest.raises(
-        RunAdmissionError, match=reason,
+        RunAdmissionError,
+        match=reason,
     ):
         run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert not launched
 
 
-@pytest.mark.parametrize(("stdout", "stderr", "exit_status", "reason"), [
-    ("", "", "0", "unexpected output"),
-    ("factory-host-admission-probe-v1", "", "0", "unexpected output"),
-    (
-        "factory-host-admission-probe-v1\nfactory-host-admission-probe-v1\n",
-        "", "0", "unexpected output",
-    ),
-    ("unexpected\n", "", "0", "unexpected output"),
-    ("factory-host-admission-probe-v1\n", "warning\n", "0", "unexpected output"),
-    ("factory-host-admission-probe-v1\n", "", "7", "exit status 7"),
-])
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "exit_status", "reason"),
+    [
+        ("", "", "0", "unexpected output"),
+        ("factory-host-admission-probe-v1", "", "0", "unexpected output"),
+        (
+            "factory-host-admission-probe-v1\nfactory-host-admission-probe-v1\n",
+            "",
+            "0",
+            "unexpected output",
+        ),
+        ("unexpected\n", "", "0", "unexpected output"),
+        ("factory-host-admission-probe-v1\n", "warning\n", "0", "unexpected output"),
+        ("factory-host-admission-probe-v1\n", "", "7", "exit status 7"),
+    ],
+)
 def test_run_refuses_partial_ambiguous_or_failed_host_probe_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    stdout: str, stderr: str, exit_status: str, reason: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    stderr: str,
+    exit_status: str,
+    reason: str,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     monkeypatch.setenv("FACTORY_PROBE_STDOUT", stdout)
@@ -1610,14 +1801,19 @@ def test_run_refuses_partial_ambiguous_or_failed_host_probe_evidence(
 
 
 def test_run_refuses_a_timed_out_host_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(
-        tmp_path, monkeypatch, host_probe_timeout_seconds=0.5,
+        tmp_path,
+        monkeypatch,
+        host_probe_timeout_seconds=0.5,
     )
     actual_run = subprocess.run
 
-    def run_setup(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def run_setup(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         # The short limit belongs to the sandbox probe, not the inspectors or
         # network control that run before it.
         kwargs["timeout"] = 10
@@ -1628,7 +1824,9 @@ def test_run_refuses_a_timed_out_host_probe(
     monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SLEEP", "1.5")
     monkeypatch.setenv("FACTORY_PROBE_DESCENDANT_SURVIVED", str(descendant_survived))
     started = time.monotonic()
-    with pytest.raises(RunAdmissionError, match="Host Admission Probe failed: timed out"):
+    with pytest.raises(
+        RunAdmissionError, match="Host Admission Probe failed: timed out"
+    ):
         run(boundary, io.BytesIO())
 
     assert time.monotonic() - started < 3
@@ -1639,13 +1837,15 @@ def test_run_refuses_a_timed_out_host_probe(
 
 
 def test_run_refuses_a_timed_out_network_denial_control(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     original_run = subprocess.run
 
     def run_subprocess(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         if command[0] == "/bin/bash":
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
@@ -1654,7 +1854,8 @@ def test_run_refuses_a_timed_out_network_denial_control(
     monkeypatch.setattr("_codex.subprocess.run", run_subprocess)
 
     with pytest.raises(
-        RunAdmissionError, match="network denial control timed out",
+        RunAdmissionError,
+        match="network denial control timed out",
     ):
         run(boundary, io.BytesIO())
 
@@ -1663,7 +1864,8 @@ def test_run_refuses_a_timed_out_network_denial_control(
 
 
 def test_host_probe_ignores_bash_startup_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     startup_file = tmp_path / "bash-env"
@@ -1673,16 +1875,15 @@ def test_host_probe_ignores_bash_startup_environment(
     original_popen = subprocess.Popen
 
     def launch(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.Popen[bytes]:
         if command[1] == "sandbox" and "factory-malformed" not in command:
             assert command[9:12] == ["/bin/bash", "-p", "-c"]
             environment = kwargs["env"]
             assert isinstance(environment, dict)
             assert "BASH_ENV" not in environment
-            assert not any(
-                name.startswith("BASH_FUNC_") for name in environment
-            )
+            assert not any(name.startswith("BASH_FUNC_") for name in environment)
         return original_popen(command, **kwargs)
 
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
@@ -1696,7 +1897,8 @@ def test_host_probe_ignores_bash_startup_environment(
 
 
 def test_run_refuses_when_synthetic_probe_data_cannot_be_created(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     monkeypatch.setattr(
@@ -1704,7 +1906,8 @@ def test_run_refuses_when_synthetic_probe_data_cannot_be_created(
         lambda **kwargs: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left")),
     )
     with pytest.raises(
-        RunAdmissionError, match="Host Admission Probe failed: No space left",
+        RunAdmissionError,
+        match="Host Admission Probe failed: No space left",
     ):
         run(boundary, io.BytesIO())
 
@@ -1713,7 +1916,8 @@ def test_run_refuses_when_synthetic_probe_data_cannot_be_created(
 
 
 def test_run_requires_complete_strict_configuration_inspection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1728,7 +1932,9 @@ def test_run_requires_complete_strict_configuration_inspection(
 
     inspected: list[list[str]] = []
 
-    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def inspect(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         inspected.append(command)
         reply = version_reply(command)
         if reply is not None:
@@ -1741,7 +1947,10 @@ def test_run_requires_complete_strict_configuration_inspection(
             return successful_inspection(command)
         if command[1] == "sandbox":
             return subprocess.CompletedProcess(
-                command, 1, b"", MALFORMED_PROFILE_REJECTION,
+                command,
+                1,
+                b"",
+                MALFORMED_PROFILE_REJECTION,
             )
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
@@ -1767,19 +1976,24 @@ def test_run_requires_complete_strict_configuration_inspection(
 
 
 def test_run_refuses_a_timed_out_strict_configuration_inspector(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
     make_executable(executable)
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(
-        executable, monkeypatch, host_probe_timeout_seconds=0.25,
+        executable,
+        monkeypatch,
+        host_probe_timeout_seconds=0.25,
     )
     monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     launched = False
 
-    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes] | None:
+    def inspect(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes] | None:
         # The short limit belongs to the strict-configuration inspectors; the
         # version read that precedes them completes immediately.
         reply = version_reply(command)
@@ -1796,7 +2010,8 @@ def test_run_refuses_a_timed_out_strict_configuration_inspector(
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
     with pytest.raises(
-        RunAdmissionError, match="strict configuration inspection failed: timed out",
+        RunAdmissionError,
+        match="strict configuration inspection failed: timed out",
     ):
         run(Project(tmp_path, tmp_path), io.BytesIO())
 
@@ -1804,7 +2019,8 @@ def test_run_refuses_a_timed_out_strict_configuration_inspector(
 
 
 def test_run_refuses_stderr_from_a_successful_strict_configuration_inspector(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1815,14 +2031,18 @@ def test_run_refuses_stderr_from_a_successful_strict_configuration_inspector(
     launched = False
 
     def inspect(
-        command: list[str], **kwargs: object,
+        command: list[str],
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         reply = version_reply(command)
         if reply is not None:
             return reply
         if command[1:3] == ["features", "list"]:
             return subprocess.CompletedProcess(
-                command, 0, safe_feature_output(), b"unknown warning\n",
+                command,
+                0,
+                safe_feature_output(),
+                b"unknown warning\n",
             )
         return subprocess.CompletedProcess(command, 0, b"[]\n", b"")
 
@@ -1842,16 +2062,28 @@ def test_run_refuses_stderr_from_a_successful_strict_configuration_inspector(
     assert not launched
 
 
-@pytest.mark.parametrize("features, mcp", [
-    (b"apps stable false\n", b"[]\n"),
-    (b"apps                         stable             true\n", b"[]\n"),
-    (b"apps                         stable             false unexpected\n", b"[]\n"),
-    (b"apps                         stable             false\n" * 2, b"[]\n"),
-    (b"apps                         stable             false\n", b"{}\n"),
-    (b"apps                         stable             false\n", b"[{\"name\": \"unexpected\"}]\n"),
-])
+@pytest.mark.parametrize(
+    "features, mcp",
+    [
+        (b"apps stable false\n", b"[]\n"),
+        (b"apps                         stable             true\n", b"[]\n"),
+        (
+            b"apps                         stable             false unexpected\n",
+            b"[]\n",
+        ),
+        (b"apps                         stable             false\n" * 2, b"[]\n"),
+        (b"apps                         stable             false\n", b"{}\n"),
+        (
+            b"apps                         stable             false\n",
+            b'[{"name": "unexpected"}]\n',
+        ),
+    ],
+)
 def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, features: bytes, mcp: bytes,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    features: bytes,
+    mcp: bytes,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1861,7 +2093,9 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
     monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
     launched = False
 
-    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def inspect(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         reply = version_reply(command)
         if reply is not None:
             return reply
@@ -1884,21 +2118,26 @@ def test_run_refuses_incomplete_or_unrecognized_inspector_evidence(
     assert not launched
 
 
-@pytest.mark.parametrize("forbidden_feature", [
-    "apps",
-    "hooks",
-    "plugins",
-    "remote_plugin",
-    "browser_use",
-    "browser_use_external",
-    "browser_use_full_cdp_access",
-    "in_app_browser",
-    "computer_use",
-    "multi_agent",
-    "memories",
-])
+@pytest.mark.parametrize(
+    "forbidden_feature",
+    [
+        "apps",
+        "hooks",
+        "plugins",
+        "remote_plugin",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "in_app_browser",
+        "computer_use",
+        "multi_agent",
+        "memories",
+    ],
+)
 def test_run_refuses_each_active_effective_capability(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forbidden_feature: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forbidden_feature: str,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -1909,7 +2148,9 @@ def test_run_refuses_each_active_effective_capability(
     launched = False
     features = safe_feature_output(forbidden_feature)
 
-    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def inspect(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         reply = version_reply(command)
         if reply is not None:
             return reply
@@ -1927,23 +2168,30 @@ def test_run_refuses_each_active_effective_capability(
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
 
     with pytest.raises(
-        RunAdmissionError, match=f"forbidden capability {forbidden_feature}",
+        RunAdmissionError,
+        match=f"forbidden capability {forbidden_feature}",
     ):
         run(Project(tmp_path, tmp_path), io.BytesIO())
 
     assert not launched
 
 
-@pytest.mark.parametrize("features, mcp, expected_reason", [
-    (
-        safe_feature_output(),
-        b'[{"name": "managed-server"}]\n',
-        "active MCP servers",
-    ),
-    (safe_feature_output("hooks"), b"[]\n", "forbidden capability hooks"),
-])
+@pytest.mark.parametrize(
+    "features, mcp, expected_reason",
+    [
+        (
+            safe_feature_output(),
+            b'[{"name": "managed-server"}]\n',
+            "active MCP servers",
+        ),
+        (safe_feature_output("hooks"), b"[]\n", "forbidden capability hooks"),
+    ],
+)
 def test_run_refuses_active_or_ambiguous_extension_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, features: bytes, mcp: bytes,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    features: bytes,
+    mcp: bytes,
     expected_reason: str,
 ) -> None:
     executable = tmp_path / "bin" / "codex"
@@ -1952,7 +2200,10 @@ def test_run_refuses_active_or_ambiguous_extension_evidence(
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     policy = install_compatibility_fixture(executable, monkeypatch)
     monkeypatch.setattr("_codex._match_compatibility", lambda path, version: policy)
-    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+
+    def inspect(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         reply = version_reply(command)
         if reply is not None:
             return reply
@@ -1969,13 +2220,17 @@ def test_run_refuses_active_or_ambiguous_extension_evidence(
 
 
 def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
     make_inspector_executable(executable)
-    monkeypatch.setenv("PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"])))
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"]))
+    )
     # The executable's effective result contradicts Factory's runtime disable,
     # modelling a higher-precedence hidden or environment policy.
     monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output("apps").decode("ascii"))
@@ -1986,7 +2241,9 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     (tmp_path / "context").write_text("context")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        sys, "argv", ["factory", "--path", str(tmp_path), "--file", "context", "--force", "Fix"],
+        sys,
+        "argv",
+        ["factory", "--path", str(tmp_path), "--file", "context", "--force", "Fix"],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
 
@@ -1994,21 +2251,34 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     assert "forbidden capability apps is active" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("features, mcp, environment", [
-    (
-        safe_feature_output(),
-        b"[]\n", {},
-    ),
-    (
-        safe_feature_output() + b"future_feature               stable             true\n",
-        b"[]\n", {},
-    ),
-    (b"apps                         stable             true\n", b"[]\n", {}),
-    (b"apps                         stable             false\n", b"[]\n", {"FACTORY_FEATURE_EXIT": "1"}),
-    (b"apps                         stable             false\n", b"not json\n", {}),
-])
+@pytest.mark.parametrize(
+    "features, mcp, environment",
+    [
+        (
+            safe_feature_output(),
+            b"[]\n",
+            {},
+        ),
+        (
+            safe_feature_output()
+            + b"future_feature               stable             true\n",
+            b"[]\n",
+            {},
+        ),
+        (b"apps                         stable             true\n", b"[]\n", {}),
+        (
+            b"apps                         stable             false\n",
+            b"[]\n",
+            {"FACTORY_FEATURE_EXIT": "1"},
+        ),
+        (b"apps                         stable             false\n", b"not json\n", {}),
+    ],
+)
 def test_run_uses_executable_fakes_for_strict_inspector_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, features: bytes, mcp: bytes,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    features: bytes,
+    mcp: bytes,
     environment: dict[str, str],
 ) -> None:
     executable = tmp_path / "bin" / "codex"
@@ -2036,7 +2306,8 @@ def test_run_uses_executable_fakes_for_strict_inspector_evidence(
 
 
 def test_run_refuses_an_installed_codex_older_than_newest_stable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
     live_newest_stable_verification: None,
 ) -> None:
@@ -2046,10 +2317,12 @@ def test_run_refuses_an_installed_codex_older_than_newest_stable(
     executable.parent.mkdir(parents=True)
     make_executable(executable, version="0.155.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    publisher_responses.install({
-        CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
-    })
+    publisher_responses.install(
+        {
+            CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
+            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
+        }
+    )
 
     with pytest.raises(RunAdmissionError) as refused:
         run(Project(tmp_path, tmp_path), io.BytesIO())
@@ -2061,7 +2334,8 @@ def test_run_refuses_an_installed_codex_older_than_newest_stable(
 
 
 def test_run_refuses_a_local_version_failure_before_any_publisher_lookup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
     live_newest_stable_verification: None,
 ) -> None:
@@ -2075,7 +2349,8 @@ def test_run_refuses_a_local_version_failure_before_any_publisher_lookup(
 
 
 def test_run_refuses_an_uncertified_newest_release_and_names_the_factory_update(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     publisher_responses: PublisherResponses,
     live_newest_stable_verification: None,
 ) -> None:
@@ -2083,10 +2358,12 @@ def test_run_refuses_an_uncertified_newest_release_and_names_the_factory_update(
     executable.parent.mkdir()
     make_executable(executable, version="0.156.1")
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
-    publisher_responses.install({
-        CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
-        CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
-    })
+    publisher_responses.install(
+        {
+            CODEX_GITHUB_RELEASES: github_release("rust-v0.156.1"),
+            CODEX_NPM_DIST_TAGS: npm_dist_tags(latest="0.156.1"),
+        }
+    )
 
     with pytest.raises(RunAdmissionError) as refused:
         run(Project(tmp_path, tmp_path), io.BytesIO())
@@ -2097,7 +2374,8 @@ def test_run_refuses_an_uncertified_newest_release_and_names_the_factory_update(
 
 
 def test_identity_matches_an_exact_private_compatibility_fixture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
@@ -2107,7 +2385,8 @@ def test_identity_matches_an_exact_private_compatibility_fixture(
 
 
 def test_identity_refuses_multiple_policies_for_one_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
@@ -2119,15 +2398,20 @@ def test_identity_refuses_multiple_policies_for_one_artifact(
         _match_compatibility(executable, "0.155.1")
 
 
-@pytest.mark.parametrize("output", [
-    b"0.155.1\n",
-    b"codex 0.155.1\n",
-    b"codex-cli 0.155.1 extra\n",
-    b"codex-cli 0.155.1\r\n",
-    b"codex-cli 0.155.1\nmore\n",
-])
+@pytest.mark.parametrize(
+    "output",
+    [
+        b"0.155.1\n",
+        b"codex 0.155.1\n",
+        b"codex-cli 0.155.1 extra\n",
+        b"codex-cli 0.155.1\r\n",
+        b"codex-cli 0.155.1\nmore\n",
+    ],
+)
 def test_version_report_refuses_malformed_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: bytes,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output: bytes,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
@@ -2141,7 +2425,8 @@ def test_version_report_refuses_malformed_output(
 
 
 def test_identity_refuses_a_changed_digest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
@@ -2154,20 +2439,23 @@ def test_identity_refuses_a_changed_digest(
 
 
 def test_identity_refuses_another_platform(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
     entry = certify(executable)
     monkeypatch.setattr(
         "_codex._COMPATIBILITY_SET",
-        (_Codex01551Policy(
-            sha256=entry.sha256,
-            operating_system="other-os",
-            architecture=entry.architecture,
-            canonical_path=entry.canonical_path,
-            filesystem_identity=entry.filesystem_identity,
-        ),),
+        (
+            _Codex01551Policy(
+                sha256=entry.sha256,
+                operating_system="other-os",
+                architecture=entry.architecture,
+                canonical_path=entry.canonical_path,
+                filesystem_identity=entry.filesystem_identity,
+            ),
+        ),
     )
 
     with pytest.raises(RunAdmissionError, match="platform does not match"):
@@ -2175,20 +2463,23 @@ def test_identity_refuses_another_platform(
 
 
 def test_identity_refuses_another_architecture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
     entry = certify(executable)
     monkeypatch.setattr(
         "_codex._COMPATIBILITY_SET",
-        (_Codex01551Policy(
-            sha256=entry.sha256,
-            operating_system=entry.operating_system,
-            architecture="other-architecture",
-            canonical_path=entry.canonical_path,
-            filesystem_identity=entry.filesystem_identity,
-        ),),
+        (
+            _Codex01551Policy(
+                sha256=entry.sha256,
+                operating_system=entry.operating_system,
+                architecture="other-architecture",
+                canonical_path=entry.canonical_path,
+                filesystem_identity=entry.filesystem_identity,
+            ),
+        ),
     )
 
     with pytest.raises(RunAdmissionError, match="platform does not match"):
@@ -2196,7 +2487,8 @@ def test_identity_refuses_another_architecture(
 
 
 def test_identity_uses_the_canonical_target_of_a_symlink(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "installation" / "codex"
     executable.parent.mkdir()
@@ -2210,7 +2502,8 @@ def test_identity_uses_the_canonical_target_of_a_symlink(
 
 
 def test_identity_refuses_a_replaced_filesystem_object(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
@@ -2225,7 +2518,8 @@ def test_identity_refuses_a_replaced_filesystem_object(
 
 
 def test_identity_refuses_replacement_between_version_and_artifact_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = tmp_path / "codex"
     make_executable(executable)
@@ -2247,7 +2541,8 @@ def test_identity_refuses_replacement_between_version_and_artifact_read(
 
 
 def test_run_refuses_when_codex_is_missing_from_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     empty_path = tmp_path / "empty"
     empty_path.mkdir()
@@ -2261,7 +2556,8 @@ def test_run_refuses_when_codex_is_missing_from_path(
 
 
 def test_run_canonicalizes_a_direct_codex_executable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     executable = tmp_path / "bin" / "codex"
@@ -2277,7 +2573,8 @@ def test_run_canonicalizes_a_direct_codex_executable(
 
 
 def test_run_canonicalizes_a_symlinked_codex_executable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     executable = tmp_path / "installation" / "codex-real"
@@ -2296,7 +2593,8 @@ def test_run_canonicalizes_a_symlinked_codex_executable(
 
 
 def test_run_refuses_a_dangling_codex_symlink(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path_directory = tmp_path / "bin"
     path_directory.mkdir()
@@ -2314,7 +2612,8 @@ def test_run_refuses_a_dangling_codex_symlink(
 
 
 def test_run_refuses_a_codex_symlink_loop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path_directory = tmp_path / "bin"
     path_directory.mkdir()
@@ -2332,7 +2631,8 @@ def test_run_refuses_a_codex_symlink_loop(
 
 
 def test_run_refuses_a_codex_symlink_loop_reported_as_os_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path_directory = tmp_path / "bin"
     path_directory.mkdir()
@@ -2342,7 +2642,9 @@ def test_run_refuses_a_codex_symlink_loop_reported_as_os_error(
 
     def looped_resolve(path: Path, *, strict: bool = False) -> Path:
         if path == candidate and strict:
-            raise OSError(errno.ELOOP, "Too many levels of symbolic links", os.fspath(path))
+            raise OSError(
+                errno.ELOOP, "Too many levels of symbolic links", os.fspath(path)
+            )
         return original_resolve(path, strict=strict)
 
     monkeypatch.setenv("PATH", os.fspath(path_directory))
@@ -2359,7 +2661,9 @@ def test_run_refuses_a_codex_symlink_loop_reported_as_os_error(
 
 @pytest.mark.parametrize("kind", ["non-regular", "non-executable"])
 def test_run_refuses_an_unusable_codex_path_entry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
 ) -> None:
     path_directory = tmp_path / "bin"
     path_directory.mkdir()
@@ -2386,7 +2690,8 @@ def test_run_refuses_an_unusable_codex_path_entry(
 
 
 def test_run_reports_an_inaccessible_codex_candidate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path_directory = tmp_path / "bin"
     path_directory.mkdir()
@@ -2412,7 +2717,8 @@ def test_run_reports_an_inaccessible_codex_candidate(
 
 
 def test_run_reports_an_inaccessible_resolved_codex_executable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path_directory = tmp_path / "bin"
     path_directory.mkdir()
@@ -2438,7 +2744,8 @@ def test_run_reports_an_inaccessible_resolved_codex_executable(
 
 
 def test_factory_reports_an_admission_failure_without_a_traceback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     git = shutil.which("git")
@@ -2460,7 +2767,8 @@ def test_factory_reports_an_admission_failure_without_a_traceback(
 
 
 def test_an_empty_compatibility_set_refuses_every_run_before_launching_codex(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Uncertified releases stay installable while refusing every Run."""
 

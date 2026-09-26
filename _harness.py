@@ -176,7 +176,11 @@ def resolve_executable(name: str, label: str) -> Path:
 
 
 def reported_version(
-    executable: Path, *, pattern: re.Pattern[bytes], label: str, remedy: str,
+    executable: Path,
+    *,
+    pattern: re.Pattern[bytes],
+    label: str,
+    remedy: str,
 ) -> str:
     """Read the installed release's self-reported version string."""
 
@@ -219,13 +223,16 @@ _CHILD_FOREGROUND_SIGNALS = (
 
 
 def _defer_runtime_signal_to_child(
-    _signal_number: int, _frame: FrameType | None,
+    _signal_number: int,
+    _frame: FrameType | None,
 ) -> None:
     """Let the foreground child status decide the Run's signal outcome."""
 
 
 def launch(
-    project: Project, prepared: PreparedRun, run_request_spool: BinaryIO,
+    project: Project,
+    prepared: PreparedRun,
+    run_request_spool: BinaryIO,
 ) -> int:
     """Run the admitted launch plan under the shared lifecycle contract.
 

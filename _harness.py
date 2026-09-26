@@ -1,16 +1,16 @@
 """Shared Harness selection, the Runner interface, and the Run lifecycle."""
 
-from collections.abc import Callable
-from dataclasses import dataclass
 import errno
 import json
 import os
-from pathlib import Path
 import platform
 import re
 import signal
 import stat
 import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from types import FrameType
 from typing import Any, BinaryIO, Protocol
 
@@ -65,11 +65,9 @@ class PreparedRun:
 class Runner(Protocol):
     """The only Run boundary the Factory command consumes."""
 
-    def admit(self, project: Project) -> PreparedRun:
-        """Complete this Harness's Run Admission and freeze the launch plan."""
+    def admit(self, project: Project) -> PreparedRun: ...
 
-    def run(self, project: Project, run_request_spool: BinaryIO) -> int:
-        """Admit, then launch one Run and return the Harness's status."""
+    def run(self, project: Project, run_request_spool: BinaryIO) -> int: ...
 
 
 DEFAULT_HARNESS = "codex"
@@ -186,8 +184,7 @@ def reported_version(
         result = subprocess.run(
             [os.fspath(executable), "--version"],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
     except OSError as error:
@@ -212,9 +209,7 @@ def reported_version(
     return match.group(1).decode("ascii")
 
 
-# Keep this to the foreground-group contract. Synchronous faults and
-# process-local timer/resource signals retain Factory's native dispositions.
-_CHILD_RUNTIME_SIGNALS = (
+_CHILD_FOREGROUND_SIGNALS = (
     signal.SIGHUP,
     signal.SIGINT,
     signal.SIGQUIT,
@@ -269,11 +264,11 @@ def launch(
             executable=prepared.executable,
         ) from error
     try:
-        for runtime_signal in _CHILD_RUNTIME_SIGNALS:
-            previous_handler = signal.getsignal(runtime_signal)
-            previous_handlers[runtime_signal] = previous_handler
+        for foreground_signal in _CHILD_FOREGROUND_SIGNALS:
+            previous_handler = signal.getsignal(foreground_signal)
+            previous_handlers[foreground_signal] = previous_handler
             if previous_handler != signal.SIG_IGN:
-                signal.signal(runtime_signal, _defer_runtime_signal_to_child)
+                signal.signal(foreground_signal, _defer_runtime_signal_to_child)
         status = process.wait()
     finally:
         for handled_signal, handler in previous_handlers.items():

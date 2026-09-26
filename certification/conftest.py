@@ -4,8 +4,8 @@ import pytest
 
 from certification._selection import (
     CertificationSelection,
-    load_committed_selection,
     SelectionError,
+    load_committed_selection,
 )
 
 

@@ -1,12 +1,12 @@
 """Real-host certification for one independently selected Harness tuple."""
 
-from collections.abc import Callable
-from dataclasses import replace
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
+from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
 from typing import BinaryIO, Literal, NotRequired, TypedDict
 
 import pytest
@@ -22,7 +22,6 @@ from _harness import (
 )
 from _project import Project
 from certification._selection import CertificationSelection
-
 
 pytestmark = pytest.mark.real_host_certification
 
@@ -165,13 +164,15 @@ def _report_line(report: CertificationReport) -> str:
 
 
 def _control_refused(
-    report: CertificationReport, establishment: Callable[[], None],
+    report: CertificationReport, establishment: Callable[[], object],
     *required_phrases: str,
 ) -> bool:
     """Prove one fixed admission decision refuses on this real artifact.
 
     A control that does not refuse, or refuses with a different diagnostic,
     fails the certification instead of establishing its evidence property.
+    The establishment callable may return any evidence value; only the
+    raised RunAdmissionError and its diagnostic matter here.
     """
 
     try:
@@ -437,7 +438,7 @@ def _certify_claude(
         invocation=tuple(invocation),
         environment=_claude._ENVIRONMENT_PINS,
     )
-    if set(name for name, _ in _claude._ENVIRONMENT_PINS) > {
+    if {name for name, _ in _claude._ENVIRONMENT_PINS} > {
         name for name, _ in prepared.environment
     }:
         raise RunAdmissionError(

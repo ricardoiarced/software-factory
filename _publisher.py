@@ -11,16 +11,15 @@ failed lookup never stale-allows a Run.
 
 import json
 import os
-from pathlib import Path
 import re
 import time
-from typing import Any
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+from typing import Protocol
 
 from _harness import RunAdmissionError
-
 
 _CONNECT_TIMEOUT_SECONDS = 3.0
 _TOTAL_TIMEOUT_SECONDS = 10.0
@@ -42,11 +41,20 @@ def parse_stable_version(value: str) -> tuple[int, int, int] | None:
     match = _STABLE_SEMVER.fullmatch(value)
     if match is None:
         return None
-    return tuple(int(part) for part in match.groups())
+    major, minor, patch = match.groups()
+    return int(major), int(minor), int(patch)
 
 
 class _TransportError(Exception):
     """A connect error, timeout, or server-side 5xx from one GET."""
+
+
+class _ReadableResponse(Protocol):
+    """The one response surface the bounded reader consumes."""
+
+    def read(self, size: int) -> bytes:
+        """Return up to ``size`` bytes; an empty result ends the body."""
+        ...
 
 
 def _publisher_request(url: str) -> urllib.request.Request:
@@ -58,7 +66,7 @@ def _publisher_request(url: str) -> urllib.request.Request:
     )
 
 
-def _read_bounded(response: Any, deadline: float) -> bytes:
+def _read_bounded(response: _ReadableResponse, deadline: float) -> bytes:
     """Read the body in chunks under one shared absolute deadline.
 
     The per-recv socket timeout alone cannot bound a slow-drip response, so
@@ -268,8 +276,7 @@ def _pointer_latest(lookup: _Lookup, url: str) -> str:
             lookup.harness, "downloads.claude.ai latest pointer",
             "response is not UTF-8 text",
         ) from None
-    if text.endswith("\n"):
-        text = text[:-1]
+    text = text.removesuffix("\n")
     if parse_stable_version(text) is None:
         raise _metadata_failure(
             lookup.harness, "downloads.claude.ai latest pointer",
@@ -354,7 +361,7 @@ def require_newest_stable(
             f"install the {harness} stable release with {update_command}",
         )
     newest_tuple = parse_stable_version(newest)
-    assert newest_tuple is not None  # the lookup only returns stable versions
+    assert newest_tuple is not None, "the lookup only returns stable versions"
     if installed_tuple < newest_tuple:
         raise RunAdmissionError(
             f"{harness} release {json.dumps(installed)} is older than the newest "

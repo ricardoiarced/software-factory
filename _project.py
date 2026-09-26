@@ -1,12 +1,12 @@
 """Select a canonical Project together with its authoritative Git proof."""
 
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 
 from _project_guidance import ProjectMarkerError, has_project_marker
 

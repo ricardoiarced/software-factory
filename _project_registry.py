@@ -1,16 +1,16 @@
 """Read and durably mutate the local Project Registry."""
 
-from collections.abc import Callable
-from dataclasses import dataclass
 import errno
 import fcntl
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import stat
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
 from _project import Project
 
@@ -253,6 +253,8 @@ def _mutate_registry(
                 except FileNotFoundError:
                     if attempt == 2:
                         raise
+            else:
+                raise RegistryError("Project Registry lock was never opened")
             with os.fdopen(descriptor, "rb+") as lock:
                 if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
                     raise RegistryError("Project Registry lock is not a regular file")
@@ -306,11 +308,11 @@ def add_project(name: str, project: Project) -> None:
     def add(projects: dict[str, str]) -> tuple[str, bool]:
         old_path = projects.get(name)
         if old_path == path:
-            return (
+            message = (
                 f"Project {json.dumps(name, ensure_ascii=False)} is already registered "
-                f"at {json.dumps(path, ensure_ascii=False)}.\n",
-                False,
+                f"at {json.dumps(path, ensure_ascii=False)}.\n"
             )
+            return message, False
         projects[name] = path
         if old_path is None:
             message = (
@@ -344,11 +346,11 @@ def remove_project(name: str) -> None:
             path = projects.pop(name)
         except KeyError as error:
             raise RegistryError(missing) from error
-        return (
+        message = (
             f"Removed project {json.dumps(name, ensure_ascii=False)} "
-            f"from {json.dumps(path, ensure_ascii=False)}.\n",
-            True,
+            f"from {json.dumps(path, ensure_ascii=False)}.\n"
         )
+        return message, True
 
     _report_update(
         _mutate_registry(

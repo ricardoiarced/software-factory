@@ -833,10 +833,31 @@ class _ClaudePolicy:
         presence: the recorded report, the captured session output, and the
         fixture's on-disk state must all agree with the certified boundary."""
 
-        sentinel = self._probe_forbidden_guidance.encode("ascii")
-        credential_sentinel = self._probe_credential_canary.encode("ascii")
         if report_bytes is None:
             raise self._host_probe_failure("the probe report was not written")
+        self._assert_session_sentinels(report_bytes, stdout, stderr)
+        self._assert_report_evidence(report_bytes)
+        try:
+            self._assert_realized_inside_writes(fixture)
+            self._assert_untouched_planted_reads(fixture)
+        except OSError as error:
+            raise self._host_probe_failure(
+                f"probe fixture evidence could not be inspected: "
+                f"{error.strerror or error}",
+            ) from error
+        self._assert_absent_outside_writes(fixture)
+        self._assert_intact_credential_canaries(fixture)
+
+    def _assert_session_sentinels(
+        self,
+        report_bytes: bytes,
+        stdout: bytes,
+        stderr: bytes,
+    ) -> None:
+        """Refuse when a planted sentinel reached the probe session."""
+
+        sentinel = self._probe_forbidden_guidance.encode("ascii")
+        credential_sentinel = self._probe_credential_canary.encode("ascii")
         for captured in (stdout, stderr, report_bytes):
             if sentinel in captured:
                 raise self._host_probe_failure(
@@ -846,6 +867,10 @@ class _ClaudePolicy:
                 raise self._host_probe_failure(
                     "a planted credential canary reached the probe session",
                 )
+
+    def _assert_report_evidence(self, report_bytes: bytes) -> None:
+        """Refuse when the recorded report disagrees with the probe steps."""
+
         try:
             report = json.loads(report_bytes)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -869,7 +894,11 @@ class _ClaudePolicy:
                     f"step {identifier} was recorded {observed!r} instead "
                     f"of {expected_outcome!r}",
                 )
-        discoveries = report["discoveries"]
+        self._assert_discoveries_suppressed(report["discoveries"])
+
+    def _assert_discoveries_suppressed(self, discoveries: object) -> None:
+        """Refuse when the probe session discovered suppressed configuration."""
+
         if (
             not isinstance(discoveries, dict)
             or set(discoveries) != set(self._probe_discovery_names)
@@ -879,42 +908,48 @@ class _ClaudePolicy:
                 "the probe session discovered suppressed configuration",
             )
 
+    def _assert_realized_inside_writes(self, fixture: _ProbeFixture) -> None:
+        """Refuse unless every inside-boundary effect was realized on the
+        fixture."""
+
         def realize(step: str) -> None:
             raise self._host_probe_failure(
                 f"an inside-boundary effect was not realized on the fixture ({step})",
             )
 
-        try:
-            for path, step, content in (
-                (
-                    fixture.bash_write_inside,
-                    "bash-write-inside",
-                    "probe-write\n",
-                ),
-                (fixture.tool_write_inside, "write-inside", "probe-write\n"),
-                (fixture.edit_target, "edit-inside", "beta\n"),
-            ):
-                try:
-                    observed = path.read_text(encoding="utf-8")
-                except FileNotFoundError:
+        for path, step, content in (
+            (
+                fixture.bash_write_inside,
+                "bash-write-inside",
+                "probe-write\n",
+            ),
+            (fixture.tool_write_inside, "write-inside", "probe-write\n"),
+            (fixture.edit_target, "edit-inside", "beta\n"),
+        ):
+            try:
+                observed = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                realize(step)
+            else:
+                if observed != content:
                     realize(step)
-                else:
-                    if observed != content:
-                        realize(step)
-            for planted in (
-                fixture.outside_read,
-                fixture.sibling_read,
-                fixture.tmp_read,
-            ):
-                if planted.read_text(encoding="utf-8") != "outside-boundary\n":
-                    raise self._host_probe_failure(
-                        "a planted outside file was modified",
-                    )
-        except OSError as error:
-            raise self._host_probe_failure(
-                f"probe fixture evidence could not be inspected: "
-                f"{error.strerror or error}",
-            ) from error
+
+    def _assert_untouched_planted_reads(self, fixture: _ProbeFixture) -> None:
+        """Refuse when a planted outside file was modified."""
+
+        for planted in (
+            fixture.outside_read,
+            fixture.sibling_read,
+            fixture.tmp_read,
+        ):
+            if planted.read_text(encoding="utf-8") != "outside-boundary\n":
+                raise self._host_probe_failure(
+                    "a planted outside file was modified",
+                )
+
+    def _assert_absent_outside_writes(self, fixture: _ProbeFixture) -> None:
+        """Refuse when an outside-boundary effect landed on the host."""
+
         for landed in fixture.outside_writes:
             if landed.exists():
                 raise self._host_probe_failure(
@@ -932,6 +967,10 @@ class _ClaudePolicy:
             raise self._host_probe_failure(
                 "the planted settings hook executed",
             )
+
+    def _assert_intact_credential_canaries(self, fixture: _ProbeFixture) -> None:
+        """Refuse when a planted credential canary is missing or modified."""
+
         for canary in (fixture.ssh_canary, fixture.aws_canary):
             try:
                 content = canary.read_text(encoding="utf-8")

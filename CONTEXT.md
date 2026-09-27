@@ -85,6 +85,10 @@ _Avoid_: Compatibility mode
 A cacheable synthetic sandbox check that proves the current host enforces the certified permission boundary required for Run Admission.
 _Avoid_: Sandbox detection
 
+**Masked Denial**:
+An in-session exit-0 write into a read-denied region that lands in the sandbox's ephemeral overlay instead of on the host. Expected sandbox behavior: the Host Admission Probe accepts a forbidden write recorded as succeeded only with Factory-verified non-landing on every monitored path, and never conflates it with a real escape.
+_Avoid_: Suppressed write, silent denial, blocked write
+
 **Newest-Stable Verification**:
 The live per-Run publisher check that identifies each Harness's newest stable release and refuses a Run whose installed release is older, unstable, or unverifiable. Factory performs one unauthenticated lookup per Harness, cross-checks the authoritative publisher surfaces before trusting any of them, and treats transport faults, disagreeing surfaces, and rate limits as refusals — never as a stale allow. A release at or above the verified newest stable still requires membership in the selected Harness's Compatibility Set.
 _Avoid_: Version check, update check, cached release lookup

@@ -1,3 +1,5 @@
+agent_message_board                      under development  false
+analytics_plan_history                   experimental       false
 api_key_model_discovery                  under development  false
 apply_patch_freeform                     removed            false
 apply_patch_preserve_line_endings        under development  false
@@ -28,6 +30,7 @@ content_item_kinds                       stable             true
 context_management                       under development  false
 current_time_reminder                    under development  false
 cwd_relative_turn_diffs                  under development  false
+daemon_auto_start                        stable             true
 default_mode_request_user_input          under development  false
 deferred_executor                        under development  false
 deferred_tool_world_state                under development  false
@@ -45,11 +48,11 @@ fast_mode                                stable             true
 goals                                    stable             true
 guardian_approval                        stable             true
 guardian_enhanced_node_repl_transcripts  under development  false
-guardian_ext                             under development  false
+guardian_ext                             removed            false
 guardian_node_repl_transcript_images     under development  false
-guardian_reuse_parent_compaction         under development  false
+guardian_reuse_parent_compaction         stable             true
 guardianv2                               under development  false
-guardianv2.thread_context                under development  false
+guardianv2.thread_context                stable             true
 hooks                                    stable             false
 image_detail_original                    removed            false
 image_generation                         stable             true
@@ -73,15 +76,17 @@ multi_agent_mode                         removed            false
 multi_agent_v2                           stable             false
 network_proxy                            experimental       false
 non_prefixed_mcp_tool_names              under development  false
+nonfatal_clock_read_errors               under development  false
 omit_app_server_notification_media       under development  false
-personality                              stable             true
+personality                              removed            false
 plugin_hooks                             removed            false
 plugin_sharing                           stable             true
 plugins                                  stable             false
 powershell_shell_version                 under development  false
+prefer_mxc                               under development  false
 prevent_idle_sleep                       experimental       false
 psp                                      under development  false
-realtime_conversation                    experimental       false
+realtime_conversation                    stable             true
 reasoning_effort_override                under development  false
 recommended_plugins                      stable             false
 remote_compaction_v2                     removed            false
@@ -100,6 +105,7 @@ runtime_metrics                          under development  false
 search_tool                              removed            false
 secret_auth_storage                      stable             false
 send_async_message                       removed            false
+send_message_to_user_async               under development  false
 shell_snapshot                           stable             true
 shell_snapshot_v2                        under development  false
 shell_tool                               stable             true
@@ -113,6 +119,7 @@ sqlite                                   removed            true
 standalone_web_search                    under development  false
 steer                                    removed            true
 step_model_switching                     under development  false
+system_proxy_fallback                    stable             true
 terminal_resize_reflow                   removed            true
 terminal_visualization_instructions      under development  false
 token_budget                             under development  false
@@ -120,7 +127,7 @@ tool_call_mcp_elicitation                stable             true
 tool_search                              removed            false
 tool_search_always_defer_mcp_tools       removed            true
 tool_suggest                             stable             true
-transcript_v2                            under development  false
+transcript_v2                            deprecated         false
 tui_app_server                           removed            true
 unavailable_dummy_tools                  removed            false
 unbounded_connection_retries             stable             true
@@ -132,11 +139,12 @@ unified_image_budget                     under development  false
 use_agent_identity                       under development  false
 use_legacy_landlock                      deprecated         false
 use_linux_sandbox_bwrap                  removed            false
+use_xaa                                  under development  false
 view_image                               stable             true
 web_search_cached                        deprecated         false
 web_search_request                       deprecated         false
 windows_sandbox_service                  under development  false
 workspace_dependencies                   stable             true
 workspace_owner_usage_nudge              removed            false
-worktrees                                experimental       false
+worktrees                                stable             true
 write_stdin_approval                     under development  false

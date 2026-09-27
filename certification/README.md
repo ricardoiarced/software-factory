@@ -20,10 +20,10 @@ manifests migrated when schema 2 landed.
 {
   "schema": 2,
   "harness": "codex",
-  "harness_version": "0.155.1",
+  "harness_version": "0.157.1",
   "install_channel": "github-asset",
   "official_sha256": "<64-lowercase-hex-digest>",
-  "official_source": "https://github.com/openai/codex/releases/tag/rust-v0.155.1",
+  "official_source": "https://github.com/openai/codex/releases/tag/rust-v0.157.1",
   "operating_system": "Linux",
   "architecture": "x86_64"
 }

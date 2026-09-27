@@ -19,9 +19,9 @@ architecture, or Harness artifact to another.
 [
   {
     "harness": "codex",
-    "harness_version": "0.155.1",
+    "harness_version": "0.157.1",
     "install_channel": "github-asset",
-    "official_sha256": "0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761",
+    "official_sha256": "3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970",
     "operating_system": "Linux",
     "architecture": "x86_64"
   }
@@ -29,7 +29,7 @@ architecture, or Harness artifact to another.
 ```
 
 Exactly one Codex artifact has completed real-host certification: the
-official `0.155.1` x86_64-unknown-linux-musl standalone executable, certified
+official `0.157.1` x86_64-unknown-linux-musl standalone executable, certified
 on the tested Linux host recorded under `certification/results/`. The package
 still installs and serves help, version, and `factory project` administration
 everywhere, and every Run that does not resolve to exactly this artifact on

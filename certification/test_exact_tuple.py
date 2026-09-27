@@ -66,6 +66,17 @@ PRODUCTION_CHECKS = (
 CODEX_EVIDENCE_PROPERTIES = tuple(
     name for name in EVIDENCE_PROPERTIES if name != "managed-policy-refusal"
 )
+CODEX_PROBE_EVIDENCE_PROPERTIES = tuple(
+    name
+    for name in CODEX_EVIDENCE_PROPERTIES
+    if name
+    not in (
+        "inference-run",
+        "stale-version-refusal",
+        "wrong-digest-refusal",
+        "forbidden-guidance-suppression",
+    )
+)
 CODEX_PRODUCTION_CHECKS = (
     "identity",
     "strict-invocation-builder",
@@ -271,7 +282,7 @@ def _certify_codex(
             "manifest digest; the selection is not the certified candidate",
             executable=executable,
         )
-    policy = _codex._Codex01551Policy(
+    policy = _codex._Codex01571Policy(
         sha256=selection.official_sha256,
         operating_system=selection.operating_system,
         architecture=selection.architecture,
@@ -299,6 +310,8 @@ def _certify_codex(
     report["production_checks"] = {
         name: "established" for name in CODEX_PRODUCTION_CHECKS
     }
+    for name in CODEX_PROBE_EVIDENCE_PROPERTIES:
+        report["evidence"][name] = "established"
 
     report["evidence"]["forbidden-guidance-suppression"] = "established"
 

@@ -1,0 +1,10 @@
+{
+  "schema": 2,
+  "harness": "claude",
+  "harness_version": "2.1.282",
+  "install_channel": "native-installer",
+  "official_sha256": "3afe8535c0cc33f0e24f7b25dab7a1727b8b592196f8496a8bc302ba2161eed3",
+  "official_source": "https://downloads.claude.ai/claude-code-releases",
+  "operating_system": "Linux",
+  "architecture": "x86_64"
+}

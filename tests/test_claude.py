@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO, Self
 
@@ -515,7 +516,11 @@ def test_the_certified_claude_invocation_has_the_exact_candidate_recipe_shape(
             "filesystem": {
                 "allowRead": [os.fspath(boundary), os.fspath(executable)],
                 "denyRead": sorted(
-                    [os.fspath(boundary.parent), os.fspath(home)],
+                    {
+                        os.fspath(boundary.parent),
+                        os.fspath(home),
+                        *_claude._ClaudePolicy._SYSTEM_TEMP_ROOTS,
+                    },
                 ),
                 "disabled": False,
             },
@@ -571,9 +576,48 @@ def test_the_certified_read_fence_deduplicates_a_boundary_directly_under_home(
     fence = policy._read_fence(boundary)
 
     assert fence == {
-        "denyRead": [os.fspath(home)],
+        "denyRead": sorted(
+            {os.fspath(home), *_claude._ClaudePolicy._SYSTEM_TEMP_ROOTS},
+        ),
         "allowRead": [os.fspath(boundary), os.fspath(executable)],
     }
+
+
+def test_the_certified_read_fence_denies_the_system_temp_roots_under_a_boundary_there(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fence denies every system temp root, and a boundary living under
+    one keeps its narrower allowRead entry — the documented narrower-wins
+    precedence the probe exercises empirically."""
+
+    home = tmp_path / "home"
+    boundary = tmp_path / "tmp" / "boundary"
+    executable = tmp_path / "claude"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    policy = _claude._ClaudePolicy(
+        version="9.9.9",
+        sha256="a" * 64,
+        operating_system="Linux",
+        architecture="x86_64",
+        install_channel="native-installer",
+        canonical_path=executable,
+        filesystem_identity=(2096, 1),
+    )
+
+    fence = policy._read_fence(boundary)
+
+    assert fence["denyRead"] == sorted(
+        {
+            os.fspath(boundary.parent),
+            os.fspath(home),
+            *_claude._ClaudePolicy._SYSTEM_TEMP_ROOTS,
+        }
+    )
+    assert fence["allowRead"] == [os.fspath(boundary), os.fspath(executable)]
+    assert "/tmp" in fence["denyRead"]
 
 
 def test_the_certified_claude_launch_plan_pins_the_nonessential_traffic_environment(
@@ -834,9 +878,19 @@ def plant_credential_canaries(
         )
 
 
+def simulated_outcomes(policy: _claude._ClaudePolicy) -> dict[str, str]:
+    """The recorded report of a probe whose every forbidden step was denied."""
+
+    return {
+        identifier: "succeeded" if kind == "inside" else "failed"
+        for identifier, kind, _ in policy._probe_steps
+    }
+
+
 def simulated_probe_success(
     policy: _claude._ClaudePolicy,
     fixture: _claude._ProbeFixture,
+    recorded: dict[str, str] | None = None,
 ) -> bytes:
     """Realize the inside-boundary effects and record the correct report."""
 
@@ -844,13 +898,13 @@ def simulated_probe_success(
     fixture.tool_write_inside.write_text("probe-write\n", encoding="utf-8")
     fixture.edit_target.write_text("beta\n", encoding="utf-8")
     plant_credential_canaries(policy, fixture)
+    operations = simulated_outcomes(policy)
+    if recorded:
+        operations.update(recorded)
     report_bytes = (
         json.dumps(
             {
-                "operations": {
-                    identifier: outcome
-                    for identifier, outcome, _ in policy._probe_steps
-                },
+                "operations": operations,
                 "discoveries": {name: [] for name in policy._probe_discovery_names},
             }
         )
@@ -1133,12 +1187,61 @@ def test_the_claude_probe_steps_read_the_planted_credential_canaries(
     fixture = probe_fixture(tmp_path)
 
     prompt = policy._probe_prompt(fixture)
-    expected = {identifier: outcome for identifier, outcome, _ in policy._probe_steps}
+    kinds = {identifier: kind for identifier, kind, _ in policy._probe_steps}
 
     assert os.fspath(fixture.ssh_canary) in prompt
     assert os.fspath(fixture.aws_canary) in prompt
-    assert expected["bash-read-ssh"] == "failed"
-    assert expected["bash-read-aws"] == "failed"
+    assert kinds["bash-read-ssh"] == "forbidden-read"
+    assert kinds["bash-read-aws"] == "forbidden-read"
+
+
+def test_the_claude_probe_pins_the_effect_based_recorded_bar(tmp_path: Path) -> None:
+    """Inside steps must record succeeded; forbidden reads and recorded-bar
+    operations must record failed; a forbidden write may record either and
+    is judged by its host effect."""
+
+    policy = make_probe_policy(tmp_path)
+    kinds = {identifier: kind for identifier, kind, _ in policy._probe_steps}
+
+    assert set(kinds.values()) <= set(policy._RECORDED_BAR)
+    assert policy._RECORDED_BAR["inside"] == ("succeeded",)
+    assert policy._RECORDED_BAR["forbidden-read"] == ("failed",)
+    assert policy._RECORDED_BAR["forbidden-recorded"] == ("failed",)
+    assert policy._RECORDED_BAR["forbidden-write"] == ("succeeded", "failed")
+    assert {
+        identifier for identifier, kind in kinds.items() if kind == "forbidden-write"
+    } == {
+        "bash-write-parent",
+        "bash-write-sibling",
+        "bash-write-tmp",
+        "bash-write-fresh",
+        "bash-write-symlink",
+        "write-parent",
+        "write-sibling",
+        "write-tmp",
+        "write-symlink",
+    }
+
+
+def test_the_probe_fixture_plants_a_fresh_write_path_under_no_deny_prefix(
+    tmp_path: Path,
+) -> None:
+    """The fresh write target exists at no deny prefix and is never created,
+    so its denial carries the default mechanism's recorded evidence."""
+
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+
+    assert fixture.fresh_write.parent == Path("/")
+    assert not fixture.fresh_write.exists()
+    assert fixture.fresh_write in fixture.outside_writes
+    for prefix in (
+        fixture.root,
+        tmp_path / "home",
+        *(Path(root) for root in _claude._ClaudePolicy._SYSTEM_TEMP_ROOTS),
+    ):
+        assert not fixture.fresh_write.is_relative_to(prefix)
+    assert os.fspath(fixture.fresh_write) in policy._probe_prompt(fixture)
 
 
 def test_every_claude_probe_bash_step_parses_cleanly(tmp_path: Path) -> None:
@@ -1288,9 +1391,20 @@ def test_the_claude_probe_accepts_the_recorded_success_outcomes(
     )
 
 
+FORBIDDEN_WRITE_STEPS: tuple[str, ...] = tuple(
+    identifier
+    for identifier, kind, _ in _claude._ClaudePolicy._probe_steps
+    if kind == "forbidden-write"
+)
+
+
 @pytest.mark.parametrize(
     "identifier",
-    [identifier for identifier, _, _ in _claude._ClaudePolicy._probe_steps],
+    [
+        identifier
+        for identifier, kind, _ in _claude._ClaudePolicy._probe_steps
+        if kind != "forbidden-write"
+    ],
 )
 def test_the_claude_probe_refuses_each_false_recorded_outcome(
     tmp_path: Path,
@@ -1299,7 +1413,7 @@ def test_the_claude_probe_refuses_each_false_recorded_outcome(
     policy = make_probe_policy(tmp_path)
     fixture = probe_fixture(tmp_path)
     simulated_probe_success(policy, fixture)
-    operations = {name: outcome for name, outcome, _ in policy._probe_steps}
+    operations = simulated_outcomes(policy)
     operations[identifier] = (
         "failed" if operations[identifier] == "succeeded" else "succeeded"
     )
@@ -1322,13 +1436,99 @@ def test_the_claude_probe_refuses_each_false_recorded_outcome(
         )
 
 
+@pytest.mark.parametrize("identifier", FORBIDDEN_WRITE_STEPS)
+def test_a_masked_forbidden_write_passes_on_factory_verified_non_landing(
+    tmp_path: Path,
+    identifier: str,
+) -> None:
+    """A forbidden write recorded succeeded passes only because Factory
+    verifies non-landing on every monitored path — the masked denial the
+    certification record classifies as isolation held."""
+
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    report_bytes = simulated_probe_success(
+        policy,
+        fixture,
+        recorded={identifier: "succeeded"},
+    )
+
+    policy._assert_probe_outcomes(
+        fixture=fixture,
+        report_bytes=report_bytes,
+        stdout=b"",
+        stderr=b"",
+    )
+
+
+@pytest.mark.parametrize("identifier", FORBIDDEN_WRITE_STEPS)
+def test_a_landed_forbidden_write_refuses_whatever_the_session_recorded(
+    tmp_path: Path,
+    identifier: str,
+) -> None:
+    """The host effect decides: a landing on a monitored path refuses as a
+    real escape whether the step recorded succeeded or failed."""
+
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    simulated_probe_success(policy, fixture)
+    landed = {
+        "bash-write-parent": fixture.root / "outside-write.txt",
+        "bash-write-sibling": fixture.sibling / "outside-write.txt",
+        "bash-write-tmp": fixture.tmp_write,
+        "bash-write-fresh": tmp_path / "fresh-write-landing",
+        "bash-write-symlink": fixture.root / "outside-write3.txt",
+        "write-parent": fixture.root / "outside-write2.txt",
+        "write-sibling": fixture.sibling / "outside-write2.txt",
+        "write-tmp": fixture.tmp_write_tool,
+        "write-symlink": fixture.root / "outside-write3.txt",
+    }[identifier]
+    landed.write_text("probe-write\n", encoding="utf-8")
+    if identifier == "bash-write-fresh":
+        original_fresh = fixture.fresh_write
+        fixture = replace(
+            fixture,
+            fresh_write=landed,
+            outside_writes=tuple(
+                landed if path == original_fresh else path
+                for path in fixture.outside_writes
+            ),
+        )
+
+    with pytest.raises(RunAdmissionError, match="real escape"):
+        policy._assert_probe_outcomes(
+            fixture=fixture,
+            report_bytes=fixture.report.read_bytes(),
+            stdout=b"",
+            stderr=b"",
+        )
+
+
+def test_a_forbidden_write_recorded_as_garbage_refuses(tmp_path: Path) -> None:
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    report_bytes = simulated_probe_success(
+        policy,
+        fixture,
+        recorded={"bash-write-tmp": "partial"},
+    )
+
+    with pytest.raises(RunAdmissionError, match="bash-write-tmp was recorded"):
+        policy._assert_probe_outcomes(
+            fixture=fixture,
+            report_bytes=report_bytes,
+            stdout=b"",
+            stderr=b"",
+        )
+
+
 def test_the_claude_probe_refuses_discovered_guidance_and_configuration(
     tmp_path: Path,
 ) -> None:
     policy = make_probe_policy(tmp_path)
     fixture = probe_fixture(tmp_path)
     sentinel = _claude._ClaudePolicy._probe_forbidden_guidance.encode("ascii")
-    operations = {name: outcome for name, outcome, _ in policy._probe_steps}
+    operations = simulated_outcomes(policy)
 
     def report(discoveries: dict[str, list[str]]) -> bytes:
         return (
@@ -1412,6 +1612,7 @@ def test_the_claude_probe_refuses_discovered_guidance_and_configuration(
         ("unrealized-edit", "inside-boundary effect was not realized"),
         ("landed-parent-write", "outside-boundary write landed"),
         ("landed-tmp-write", "outside-boundary write landed"),
+        ("landed-fresh-write", "outside-boundary write landed"),
         ("replaced-symlink", "escape symlink was replaced"),
         ("modified-outside-read", "planted outside file was modified"),
     ],
@@ -1424,7 +1625,7 @@ def test_the_claude_probe_refuses_unproven_or_ambiguous_fixture_state(
     policy = make_probe_policy(tmp_path)
     fixture = probe_fixture(tmp_path)
     report_bytes = simulated_probe_success(policy, fixture)
-    operations = {name: outcome for name, outcome, _ in policy._probe_steps}
+    operations = simulated_outcomes(policy)
     discoveries = {name: [] for name in policy._probe_discovery_names}
 
     if case == "missing-report":
@@ -1443,6 +1644,18 @@ def test_the_claude_probe_refuses_unproven_or_ambiguous_fixture_state(
         fixture.outside_writes[0].write_text("probe-write\n", encoding="utf-8")
     elif case == "landed-tmp-write":
         fixture.tmp_write.write_text("probe-write\n", encoding="utf-8")
+    elif case == "landed-fresh-write":
+        landed = tmp_path / "fresh-write-landing"
+        landed.write_text("probe-write\n", encoding="utf-8")
+        original_fresh = fixture.fresh_write
+        fixture = replace(
+            fixture,
+            fresh_write=landed,
+            outside_writes=tuple(
+                landed if path == original_fresh else path
+                for path in fixture.outside_writes
+            ),
+        )
     elif case == "replaced-symlink":
         fixture.escape_write_symlink.unlink()
         fixture.escape_write_symlink.write_text(
@@ -1464,6 +1677,62 @@ def test_the_claude_probe_refuses_unproven_or_ambiguous_fixture_state(
         ).encode("utf-8")
 
     with pytest.raises(RunAdmissionError, match=phrase):
+        policy._assert_probe_outcomes(
+            fixture=fixture,
+            report_bytes=report_bytes,
+            stdout=b"",
+            stderr=b"",
+        )
+
+
+def test_the_probe_refusal_carries_the_complete_classified_evidence(
+    tmp_path: Path,
+) -> None:
+    """All evidence is gathered before any refusal: a missing report still
+    produces a refusal that classifies the landing the disk shows."""
+
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    fixture.outside_writes[0].write_text("probe-write\n", encoding="utf-8")
+
+    with pytest.raises(RunAdmissionError) as refused:
+        policy._assert_probe_outcomes(
+            fixture=fixture,
+            report_bytes=None,
+            stdout=b"",
+            stderr=b"",
+        )
+
+    message = str(refused.value)
+    assert "the probe report was not written" in message
+    assert (
+        "an outside-boundary write landed (outside-write.txt: real escape)" in message
+    )
+    assert "captured fixture state:" in message
+    assert f"{os.fspath(fixture.tmp_read)} present with content" in message
+
+
+def test_the_probe_refuses_uninspectable_disk_evidence_as_infrastructure_unverifiable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = make_probe_policy(tmp_path)
+    fixture = probe_fixture(tmp_path)
+    report_bytes = simulated_probe_success(policy, fixture)
+    original = Path.read_text
+
+    def refused_read(
+        path: Path,
+        encoding: str = "utf-8",
+        errors: str | None = None,
+    ) -> str:
+        if path == fixture.outside_read:
+            raise PermissionError(13, "Permission denied")
+        return original(path, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", refused_read)
+
+    with pytest.raises(RunAdmissionError, match="infrastructure-unverifiable"):
         policy._assert_probe_outcomes(
             fixture=fixture,
             report_bytes=report_bytes,

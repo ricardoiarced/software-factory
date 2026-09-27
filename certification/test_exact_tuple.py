@@ -271,7 +271,7 @@ def _certify_codex(
             "manifest digest; the selection is not the certified candidate",
             executable=executable,
         )
-    policy = _codex._Codex01551Policy(
+    policy = _codex._Codex01571Policy(
         sha256=selection.official_sha256,
         operating_system=selection.operating_system,
         architecture=selection.architecture,

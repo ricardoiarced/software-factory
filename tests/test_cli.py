@@ -44,10 +44,10 @@ def test_built_wheel_installs_and_reports_distribution_version(
     )
 
     assert [path.name for path in artifacts.glob("*.tar.gz")] == [
-        "software_factory-0.1.0.tar.gz"
+        "software_factory-0.1.1.tar.gz"
     ]
     (wheel,) = artifacts.glob("*.whl")
-    assert wheel.name == "software_factory-0.1.0-py3-none-any.whl"
+    assert wheel.name == "software_factory-0.1.1-py3-none-any.whl"
 
     with ZipFile(wheel) as archive:
         metadata_path = next(
@@ -55,7 +55,7 @@ def test_built_wheel_installs_and_reports_distribution_version(
         )
         metadata = Parser().parsestr(archive.read(metadata_path).decode("utf-8"))
         assert metadata["Name"] == "software-factory"
-        assert metadata["Version"] == "0.1.0"
+        assert metadata["Version"] == "0.1.1"
         assert metadata["Requires-Python"] == ">=3.11"
         assert "platformdirs>=4" in metadata.get_all("Requires-Dist")
 
@@ -75,7 +75,7 @@ def test_built_wheel_installs_and_reports_distribution_version(
         capture_output=True,
     )
     assert result.returncode == 0
-    assert result.stdout == b"factory 0.1.0\n"
+    assert result.stdout == b"factory 0.1.1\n"
     assert result.stderr == b""
 
     help_result = subprocess.run(

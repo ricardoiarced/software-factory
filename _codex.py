@@ -39,7 +39,7 @@ def _cache_directory() -> Path:
 
 
 @dataclass(frozen=True)
-class _Codex01551Policy:
+class _Codex01571Policy:
     """The complete Run Admission policy certified for one Codex release."""
 
     sha256: str
@@ -49,7 +49,7 @@ class _Codex01551Policy:
     filesystem_identity: tuple[int, int]
     host_probe_timeout_seconds: float = 10
 
-    version: ClassVar[str] = "0.155.1"
+    version: ClassVar[str] = "0.157.1"
     _feature_output: ClassVar[re.Pattern[bytes]] = re.compile(
         rb"([a-z][a-z0-9_.]*) {2,}"
         rb"(stable|under development|experimental|deprecated|removed)"
@@ -278,7 +278,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                 "incomplete feature output",
             )
         if hashlib.sha256(features).hexdigest() != (
-            "05bd1b9621f494b5941f2180af1cef83898e9ed33c1e6d0229c51291eca71997"
+            "978038969fc7e617c3500b9891abbe9c3de541bb1e126a5823c75aea6519898d"
         ):
             raise self._strict_configuration_failure("unrecognized feature output")
 
@@ -640,16 +640,16 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         return self._invocation(project_boundary, enclosing_git_root)
 
 
-_COMPATIBILITY_SET: tuple[_Codex01551Policy, ...] = (
-    _Codex01551Policy(
-        sha256="0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761",
+_COMPATIBILITY_SET: tuple[_Codex01571Policy, ...] = (
+    _Codex01571Policy(
+        sha256="3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970",
         operating_system="Linux",
         architecture="x86_64",
         canonical_path=Path(
             "/home/ricardoiarced/.codex/packages/standalone/releases/"
-            "0.155.1-x86_64-unknown-linux-musl/bin/codex"
+            "0.157.1-x86_64-unknown-linux-musl/bin/codex"
         ),
-        filesystem_identity=(2096, 13422),
+        filesystem_identity=(2096, 140479),
     ),
 )
 _VERSION_OUTPUT = re.compile(
@@ -682,7 +682,7 @@ def _artifact_identity(executable: Path) -> tuple[str, tuple[int, int]]:
     return digest, (metadata.st_dev, metadata.st_ino)
 
 
-def _match_compatibility(executable: Path, version: str) -> _Codex01551Policy:
+def _match_compatibility(executable: Path, version: str) -> _Codex01571Policy:
     """Return the sole policy whose complete immutable identity matches."""
 
     digest, filesystem_identity = _artifact_identity(executable)
@@ -735,7 +735,7 @@ def _match_compatibility(executable: Path, version: str) -> _Codex01551Policy:
     )
 
 
-def _changed_artifact_failure(policy: _Codex01551Policy) -> RunAdmissionError:
+def _changed_artifact_failure(policy: _Codex01571Policy) -> RunAdmissionError:
     executable = policy.canonical_path
     return RunAdmissionError(
         f"Codex executable {_quoted_absolute_path(executable)} changed "
@@ -744,7 +744,7 @@ def _changed_artifact_failure(policy: _Codex01551Policy) -> RunAdmissionError:
     )
 
 
-def _recheck_artifact(policy: _Codex01551Policy) -> None:
+def _recheck_artifact(policy: _Codex01571Policy) -> None:
     """Refuse a changed artifact without executing it as a new candidate."""
 
     executable = policy.canonical_path
@@ -770,7 +770,7 @@ def _recheck_artifact(policy: _Codex01551Policy) -> None:
         raise _changed_artifact_failure(policy)
 
 
-def _admit_run(project: Project) -> tuple[_Codex01551Policy, list[str]]:
+def _admit_run(project: Project) -> tuple[_Codex01571Policy, list[str]]:
     """Establish the complete production evidence and strict invocation.
 
     The order is fixed: local executable resolution and installed-version

@@ -113,6 +113,42 @@ def inspection_failure(label: str, path: Path, error: OSError) -> RunAdmissionEr
     )
 
 
+def _resolve_candidate(candidate: Path, label: str) -> Path:
+    """Resolve one existing PATH candidate to a regular executable file."""
+    try:
+        executable = candidate.resolve(strict=True)
+        metadata = executable.stat()
+    except FileNotFoundError as error:
+        raise RunAdmissionError(
+            f"{label} executable {_quoted_absolute_path(candidate)} is a dangling symlink; "
+            "repair or remove it from PATH"
+        ) from error
+    except RuntimeError as error:
+        raise RunAdmissionError(
+            f"{label} executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
+            "repair or remove it from PATH"
+        ) from error
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise RunAdmissionError(
+                f"{label} executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
+                "repair or remove it from PATH"
+            ) from error
+        raise inspection_failure(label, candidate, error) from error
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RunAdmissionError(
+            f"{label} executable {_quoted_absolute_path(executable)} "
+            "is not a regular file; "
+            f"install {label} or remove it from PATH"
+        )
+    if not os.access(executable, os.X_OK):
+        raise RunAdmissionError(
+            f"{label} executable {_quoted_absolute_path(executable)} is not executable; "
+            "grant execute permission or replace it"
+        )
+    return executable
+
+
 def resolve_executable(name: str, label: str) -> Path:
     """Resolve one Harness executable from PATH as an executable regular file."""
 
@@ -128,44 +164,11 @@ def resolve_executable(name: str, label: str) -> Path:
             if first_failure is None:
                 first_failure = inspection_failure(label, candidate, error)
             continue
-
         try:
-            executable = candidate.resolve(strict=True)
-            metadata = executable.stat()
-        except FileNotFoundError:
-            failure = RunAdmissionError(
-                f"{label} executable {_quoted_absolute_path(candidate)} is a dangling symlink; "
-                "repair or remove it from PATH"
-            )
-        except RuntimeError:
-            failure = RunAdmissionError(
-                f"{label} executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
-                "repair or remove it from PATH"
-            )
-        except OSError as error:
-            if error.errno == errno.ELOOP:
-                failure = RunAdmissionError(
-                    f"{label} executable {_quoted_absolute_path(candidate)} contains a symlink loop; "
-                    "repair or remove it from PATH"
-                )
-            else:
-                failure = inspection_failure(label, candidate, error)
-        else:
-            if not stat.S_ISREG(metadata.st_mode):
-                failure = RunAdmissionError(
-                    f"{label} executable {_quoted_absolute_path(executable)} "
-                    "is not a regular file; "
-                    f"install {label} or remove it from PATH"
-                )
-            elif not os.access(executable, os.X_OK):
-                failure = RunAdmissionError(
-                    f"{label} executable {_quoted_absolute_path(executable)} is not executable; "
-                    "grant execute permission or replace it"
-                )
-            else:
-                return executable
-        if first_failure is None:
-            first_failure = failure
+            return _resolve_candidate(candidate, label)
+        except RunAdmissionError as failure:
+            if first_failure is None:
+                first_failure = failure
 
     if first_failure is not None:
         raise first_failure

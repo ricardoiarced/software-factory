@@ -48,8 +48,8 @@ baseline to ratchet against — any regression fails outright (see
   and writing out only the codes that currently fire would narrow enforcement
   below the defaults and drop latent coverage (undefined-name detection and
   friends).
-- **Additions: `extend-select = ["ANN", "TID251"]`** — every addition is
-  convention-derived (see the register).
+- **Additions: `extend-select = ["ANN", "TID251", "PLR0912", "PLR0913",
+  "PLR0915"]`** — every addition is convention-derived (see the register).
 - **All selected rules fire as errors. No warning tier.**
 - Scope: all tracked code (`ruff check .`).
 
@@ -94,7 +94,7 @@ baseline to ratchet against — any regression fails outright (see
 | Strict typing: full annotations, modern style | Ruff ANN (annotations) + pyright `standard` (type correctness); modern `X \| None` style via the UP rules in defaults | Division of labor: pyright at basic/standard does not flag missing annotations; ANN does, at +5 findings — production is already fully annotated. |
 | Formatting: `ruff format`, defaults, pinned version | CI check (`ruff format --check` in the Conformance workflow — strict head-ref check ahead of the ratchet counts) | Formatting is binary, so a plain check is exact; the adoption commit makes the floor "already formatted", leaving nothing to count — a regression fails outright. |
 | Self-explanatory; `#` comments banned except pragmas | CI check (comment scan in the Conformance workflow, allowlist `# noqa` / `# type: ignore`) | No ruff rule bans prose comments; a scan is exact and false-positive-free under the pragma allowlist. |
-| Small and focused; `_`-prefixed helpers | Review-only; the module-size half is parked on the map's fog | No stock rule enforces helper naming; size thresholds are an undecided policy. |
+| Small and focused; `_`-prefixed helpers | Ruff PLR0912/0913/0915 for the function-complexity half (CI check under the gate's ratchet); review-only for the module-size half and helper naming | The three stock function-complexity rules joined the selection at the 0.16.9 defaults (12 branches / 5 arguments / 50 statements, tree-wide, all errors). Adopted lane-first: the #142 remediation refactored every over-limit function before the rules landed, so the selection inherits zero findings and the ratchet never rises. Module length has no stock rule and gets no invented threshold — it stays review-only, parked on the map's fog. |
 | Full suite green before acceptance | CI check (the deterministic-suite job plus the Conformance workflow); certification stays maintainer-only | The acceptance rule requires both green; the Publication Gate makes it release-blocking. |
 
 ## Baseline at adoption

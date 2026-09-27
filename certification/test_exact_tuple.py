@@ -1,4 +1,16 @@
-"""Real-host certification for one independently selected Harness tuple."""
+"""Real-host certification for one independently selected Harness tuple.
+
+Each first-scope tuple records exactly the evidence properties and production
+checks named for its harness below. The probe-derived properties prove
+Project Data Isolation on the host, Project Spec Exclusivity suppression
+included; the refusal controls prove the fixed admission decisions bite on
+the real artifact; the inference run proves admission and launch together.
+One passing Claude Host Admission Probe derives inside-boundary success and
+the required runtime read through the admitted tools, denies every forbidden
+read and write, proves the network denial control detects egress before the
+sandboxed Run stays quiet (the negative control), and leaves suppressed
+guidance undiscovered.
+"""
 
 import json
 import os
@@ -25,10 +37,6 @@ from certification._selection import CertificationSelection
 
 pytestmark = pytest.mark.real_host_certification
 
-# Every evidence property and production check of the two-harness suite.
-# The probe-derived properties prove Project Data Isolation on the host;
-# the refusal controls prove the fixed admission decisions bite on the real
-# artifact; the inference-run proves admission and launch together.
 EVIDENCE_PROPERTIES = (
     "filesystem",
     "temporary-root",
@@ -55,9 +63,6 @@ PRODUCTION_CHECKS = (
     "sandbox-dependency-preflight",
 )
 
-# Per-Harness requirements: the certification of each first-scope tuple
-# records exactly these. Each harness's real-host probe derives its
-# isolation properties, Project Spec Exclusivity suppression included.
 CODEX_EVIDENCE_PROPERTIES = tuple(
     name for name in EVIDENCE_PROPERTIES if name != "managed-policy-refusal"
 )
@@ -77,11 +82,6 @@ CLAUDE_PRODUCTION_CHECKS = (
     "managed-policy-gate",
     "sandbox-dependency-preflight",
 )
-# The properties one passing Claude Host Admission Probe derives on the
-# host: inside-boundary success and the required runtime read through the
-# admitted tools, every forbidden read and write denied, the network
-# denial control proven to detect egress before the sandboxed Run stayed
-# quiet (the negative control), and suppressed guidance left undiscovered.
 CLAUDE_PROBE_EVIDENCE_PROPERTIES = tuple(
     name
     for name in EVIDENCE_PROPERTIES
@@ -250,7 +250,12 @@ def _certify_codex(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Establish one Codex tuple's evidence through the production path."""
+    """Establish one Codex tuple's evidence through the production path.
+
+    The probe plants forbidden AGENTS.md, project-skill, and configuration
+    guidance; passing admission proves Project Spec Exclusivity suppressed
+    all of it on this host.
+    """
 
     executable = _codex._resolve_executable()
     report["canonical_executable"] = str(executable)
@@ -295,9 +300,6 @@ def _certify_codex(
         name: "established" for name in CODEX_PRODUCTION_CHECKS
     }
 
-    # The probe plants forbidden AGENTS.md, project-skill, and configuration
-    # guidance; passing admission proves Project Spec Exclusivity suppressed
-    # all of it on this host.
     report["evidence"]["forbidden-guidance-suppression"] = "established"
 
     with monkeypatch.context() as patched:
@@ -346,7 +348,14 @@ def _certify_claude(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Establish one Claude Code tuple's evidence through the production path,
-    including the real-host Host Admission Probe."""
+    including the real-host Host Admission Probe against a fresh probe cache.
+
+    Admission must pass unmodified with the candidate policy installed. The
+    probe plants forbidden project guidance, extensions, and configuration,
+    attempts every admitted and forbidden operation through Bash and the
+    native tools, and asserts each outcome from observed evidence, so passing
+    admission proves the isolation properties on this host.
+    """
 
     executable = _claude._resolve_executable()
     report["canonical_executable"] = str(executable)
@@ -427,9 +436,6 @@ def _certify_claude(
         return
     report["evidence"]["stale-version-refusal"] = "established"
 
-    # The complete production path from the top, now including the real-host
-    # Host Admission Probe against a fresh probe cache: admission must pass
-    # unmodified with the candidate policy installed.
     monkeypatch.setattr(
         _claude,
         "_cache_directory",
@@ -471,11 +477,6 @@ def _certify_claude(
             executable=executable,
         )
 
-    # The probe planted forbidden project guidance, extensions, and
-    # configuration, attempted every admitted and forbidden operation
-    # through Bash and the native tools, and asserted each outcome from
-    # observed evidence; passing admission proves these isolation
-    # properties on this host.
     for name in CLAUDE_PROBE_EVIDENCE_PROPERTIES:
         report["evidence"][name] = "established"
 

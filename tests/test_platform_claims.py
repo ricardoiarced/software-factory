@@ -4,6 +4,10 @@ A Factory release may advertise support only for exact Harness tuples that
 completed real-host certification and that production Run Admission embeds.
 These tests keep the advertised claims and the embedded sets from drifting
 apart in either direction.
+
+The retired report schema 1 required exactly its own assertion set: a
+historical record authorizes its tuple only when it is as complete as the
+gate that recorded it demanded, and that recorded strength stands.
 """
 
 import json
@@ -39,9 +43,6 @@ _CHECKS_BY_HARNESS = {
     "codex": set(CODEX_PRODUCTION_CHECKS),
     "claude": set(CLAUDE_PRODUCTION_CHECKS),
 }
-# The retired report schema 1 had exactly these required assertions; a
-# historical record authorizes its tuple only when it is as complete as
-# the gate that recorded it demanded.
 _SCHEMA_ONE_EVIDENCE = frozenset(
     {
         "filesystem",
@@ -223,8 +224,6 @@ def test_incomplete_certification_cannot_authorize_a_support_claim() -> None:
     }
     assert _completed_certification(report)
 
-    # The retired schema keeps its recorded strength: a historical record
-    # authorizes only with its complete evidence and production checks.
     schema_one: dict[str, object] = {
         "schema": 1,
         "result": "certified",

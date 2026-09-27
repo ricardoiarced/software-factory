@@ -69,7 +69,7 @@ def _matrix_rows() -> list[tuple[str, set[str], set[str]]]:
         if len(cells) != 4 or not re.fullmatch(
             r"[A-Z]{1,3}-?[0-9]+(\.[0-9]+)?", cells[0]
         ):
-            continue  # header and separator rows
+            continue
         rows.append(
             (
                 cells[0],

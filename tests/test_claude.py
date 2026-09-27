@@ -128,8 +128,9 @@ def test_claude_run_refuses_a_local_version_failure_before_any_publisher_lookup(
     publisher_responses: PublisherResponses,
     live_newest_stable_verification: None,
 ) -> None:
-    # The default harness fake is silent, so the local version read refuses
-    # on its own; the offline guard turns any publisher GET into a failure.
+    """The default harness fake is silent, so the local version read refuses
+    on its own; the offline guard turns any publisher GET into a failure.
+    """
 
     with pytest.raises(RunAdmissionError, match="reported an unrecognized version"):
         run_claude(Project(tmp_path, tmp_path))

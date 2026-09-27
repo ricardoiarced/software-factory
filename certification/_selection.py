@@ -1,4 +1,15 @@
-"""Load one immutable, repository-reviewed certification candidate."""
+"""Load one immutable, repository-reviewed certification candidate.
+
+``_SCHEMA`` pins manifest schema 2, the only schema: it names the certified
+tuple of harness, version, artifact family / install channel, operating
+system, and architecture, and the schema-1 Codex manifests migrated when
+schema 2 landed. ``_INSTALL_CHANNELS`` enumerates the install channels of
+the certified first scope; a channel names the artifact family whose
+official distribution surface anchors the digest. The npm-family channels
+anchor the unpacked platform binary and are cross-checked against the
+registry's dist-integrity before review, so ``_SOURCE_PREFIXES`` names each
+channel's official source (the npm package page for the npm family).
+"""
 
 import json
 import os
@@ -13,23 +24,15 @@ class SelectionError(Exception):
     """The real-host certification candidate is not trustworthy."""
 
 
-# Manifest schema 2 names the certified tuple (harness, version, artifact
-# family / install channel, OS, architecture). Exactly one schema exists;
-# schema-1 Codex manifests migrated when schema 2 landed.
 _SCHEMA = 2
 
 _HARNESSES = ("codex", "claude")
 
-# The install channels of the certified first scope. A channel names the
-# artifact family whose official distribution surface anchors the digest.
 _INSTALL_CHANNELS = {
     "codex": ("github-asset", "npm"),
     "claude": ("native-installer", "npm"),
 }
 
-# npm-family digests anchor the unpacked platform binary and are
-# cross-checked against the registry's dist-integrity before review;
-# their official source is the npm package page.
 _SOURCE_PREFIXES = {
     ("codex", "github-asset"): "https://github.com/openai/codex/releases/",
     ("codex", "npm"): "https://www.npmjs.com/package/",

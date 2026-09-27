@@ -20,8 +20,10 @@ def test_built_wheel_installs_and_reports_distribution_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Build isolation installs its backend through pip; the offline guard's
-    # dead proxy is for publisher lookups, not this local packaging step.
+    """Build isolation installs its backend through pip; the offline guard's
+    dead proxy is for publisher lookups, not this local packaging step.
+    """
+
     for variable in ("HTTPS_PROXY", "https_proxy"):
         monkeypatch.delenv(variable, raising=False)
     artifacts = tmp_path / "dist"
@@ -108,7 +110,9 @@ def installed_factory(
 
     The installed ``platformdirs`` dependency is served from the host through
     ``PYTHONPATH`` so the registry works without network access; dependency
-    isolation itself stays with the strict smoke test above.
+    isolation itself stays with the strict smoke test above. Each invocation
+    runs away from the checkout so its modules can never shadow the installed
+    distribution under test.
     """
 
     artifacts = tmp_path_factory.mktemp("dist")
@@ -148,8 +152,6 @@ def installed_factory(
         path_entries = [str(platformdirs_package)]
         if env.get("PYTHONPATH"):
             path_entries.append(env["PYTHONPATH"])
-        # Run away from the checkout so its modules can never shadow the
-        # installed distribution under test.
         return subprocess.run(
             [factory_script, *arguments],
             check=False,

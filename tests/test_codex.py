@@ -632,9 +632,11 @@ def wait_for_runtime_marker(
 
 
 def wait_for_signal_runtime(ready: Path, factory_pid: int) -> tuple[int, int]:
-    # The runtime shim creates the marker and then writes into it, so poll
-    # for the pid/process-group content itself: a bare existence check can
-    # observe the file between creation and write.
+    """Poll for the pid/process-group content, not bare marker existence.
+
+    The runtime shim creates the marker and then writes into it, so a bare
+    existence check can observe the file between creation and write.
+    """
     deadline = time.monotonic() + 5
     while True:
         try:
@@ -1069,6 +1071,10 @@ def test_run_preserves_child_tty_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Drain the master while the slave stays open: BSD ptys discard the
+    buffered output when the last slave descriptor closes, so the queued
+    output must be collected before that teardown.
+    """
     project, _, _ = prepare_probe_run(tmp_path, monkeypatch)
     request_path = tmp_path / "run-request"
     request_path.write_bytes(b"# Run Request\n")
@@ -1088,9 +1094,6 @@ def test_run_preserves_child_tty_identity(
         os.dup2(saved_stderr, 2)
         os.close(saved_stdout)
         os.close(saved_stderr)
-        # Drain the master while the slave stays open: BSD ptys discard the
-        # buffered output when the last slave descriptor closes, so the
-        # queued output must be collected before that teardown.
         while True:
             readable, _, _ = select.select((master,), (), (), 1.0)
             if not readable:
@@ -1814,8 +1817,9 @@ def test_run_refuses_a_timed_out_host_probe(
     def run_setup(
         command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
-        # The short limit belongs to the sandbox probe, not the inspectors or
-        # network control that run before it.
+        """The short limit belongs to the sandbox probe, not the inspectors
+        or network control that run before it.
+        """
         kwargs["timeout"] = 10
         return actual_run(command, **kwargs)
 
@@ -1994,8 +1998,9 @@ def test_run_refuses_a_timed_out_strict_configuration_inspector(
     def inspect(
         command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes] | None:
-        # The short limit belongs to the strict-configuration inspectors; the
-        # version read that precedes them completes immediately.
+        """The short limit belongs to the strict-configuration inspectors; the
+        version read that precedes them completes immediately.
+        """
         reply = version_reply(command)
         if reply is not None:
             return reply
@@ -2224,6 +2229,9 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """The executable's effective result contradicts Factory's runtime
+    disable, modelling a higher-precedence hidden or environment policy.
+    """
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
@@ -2231,8 +2239,6 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     monkeypatch.setenv(
         "PATH", os.pathsep.join((str(executable.parent), os.environ["PATH"]))
     )
-    # The executable's effective result contradicts Factory's runtime disable,
-    # modelling a higher-precedence hidden or environment policy.
     monkeypatch.setenv("FACTORY_FEATURES", safe_feature_output("apps").decode("ascii"))
     monkeypatch.setenv("FACTORY_MCP", "[]\n")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "0")
@@ -2339,8 +2345,9 @@ def test_run_refuses_a_local_version_failure_before_any_publisher_lookup(
     publisher_responses: PublisherResponses,
     live_newest_stable_verification: None,
 ) -> None:
-    # The default harness fake is silent, so the local version read refuses
-    # on its own; the offline guard turns any publisher GET into a failure.
+    """The default harness fake is silent, so the local version read refuses
+    on its own; the offline guard turns any publisher GET into a failure.
+    """
 
     with pytest.raises(RunAdmissionError, match="reported an unrecognized version"):
         run(Project(tmp_path, tmp_path), io.BytesIO())

@@ -239,7 +239,6 @@ def _compose_run(
     except UnicodeError as error:
         raise RunInputError("Instruction is not valid UTF-8") from error
     spool.write(instruction)
-    trailing_lfs = _terminal_lfs(instruction)
     context = _ContextComposition(spool, _terminal_lfs(instruction), False)
     context_bytes = 0
     for supplied in run.files:

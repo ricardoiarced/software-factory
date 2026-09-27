@@ -341,7 +341,7 @@ def _certify_codex(
     report["result"] = "certified"
 
 
-def _established_claude_policy(
+def _established_claude_candidate(
     report: CertificationReport,
     selection: CertificationSelection,
 ) -> tuple[Path, _claude._ClaudePolicy]:
@@ -390,7 +390,7 @@ def _certify_claude(
     admission proves the isolation properties on this host.
     """
 
-    executable, policy = _established_claude_policy(report, selection)
+    executable, policy = _established_claude_candidate(report, selection)
 
     _claude._require_no_managed_policy(executable)
     report["production_checks"]["managed-policy-gate"] = "established"

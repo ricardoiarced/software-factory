@@ -62,6 +62,30 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def _validated_projects(projects: object) -> dict[str, str]:
+    """Return the Project table only when every entry is well-formed."""
+    if not isinstance(projects, dict):
+        raise RegistryError("malformed Project Registry: invalid projects")
+    for name, path in projects.items():
+        if (
+            not isinstance(name, str)
+            or not _PROJECT_NAME.fullmatch(name)
+            or not isinstance(path, str)
+            or not os.path.isabs(path)
+            or "\x00" in path
+        ):
+            raise RegistryError(
+                "malformed Project Registry: invalid Project Name or path"
+            )
+        try:
+            path.encode("utf-8", errors="strict")
+        except UnicodeError as error:
+            raise RegistryError(
+                "malformed Project Registry: invalid path text"
+            ) from error
+    return projects
+
+
 def _read_generation(directory: int) -> dict[str, str]:
     try:
         descriptor = os.open(
@@ -101,27 +125,7 @@ def _read_generation(directory: int) -> dict[str, str]:
         raise RegistryError("malformed Project Registry: invalid schema")
     if type(document["version"]) is not int or document["version"] != 1:
         raise RegistryError("malformed Project Registry: unsupported version")
-    projects = document["projects"]
-    if not isinstance(projects, dict):
-        raise RegistryError("malformed Project Registry: invalid projects")
-    for name, path in projects.items():
-        if (
-            not isinstance(name, str)
-            or not _PROJECT_NAME.fullmatch(name)
-            or not isinstance(path, str)
-            or not os.path.isabs(path)
-            or "\x00" in path
-        ):
-            raise RegistryError(
-                "malformed Project Registry: invalid Project Name or path"
-            )
-        try:
-            path.encode("utf-8", errors="strict")
-        except UnicodeError as error:
-            raise RegistryError(
-                "malformed Project Registry: invalid path text"
-            ) from error
-    return projects
+    return _validated_projects(document["projects"])
 
 
 def read_projects() -> dict[str, str]:

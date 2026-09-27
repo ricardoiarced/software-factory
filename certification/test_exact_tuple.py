@@ -341,21 +341,11 @@ def _certify_codex(
     report["result"] = "certified"
 
 
-def _certify_claude(
+def _established_claude_candidate(
     report: CertificationReport,
     selection: CertificationSelection,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Establish one Claude Code tuple's evidence through the production path,
-    including the real-host Host Admission Probe against a fresh probe cache.
-
-    Admission must pass unmodified with the candidate policy installed. The
-    probe plants forbidden project guidance, extensions, and configuration,
-    attempts every admitted and forbidden operation through Bash and the
-    native tools, and asserts each outcome from observed evidence, so passing
-    admission proves the isolation properties on this host.
-    """
+) -> tuple[Path, _claude._ClaudePolicy]:
+    """Establish one candidate's host identity and return its policy."""
 
     executable = _claude._resolve_executable()
     report["canonical_executable"] = str(executable)
@@ -381,6 +371,26 @@ def _certify_claude(
         canonical_path=executable,
         filesystem_identity=filesystem_identity,
     )
+    return executable, policy
+
+
+def _certify_claude(
+    report: CertificationReport,
+    selection: CertificationSelection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Establish one Claude Code tuple's evidence through the production path,
+    including the real-host Host Admission Probe against a fresh probe cache.
+
+    Admission must pass unmodified with the candidate policy installed. The
+    probe plants forbidden project guidance, extensions, and configuration,
+    attempts every admitted and forbidden operation through Bash and the
+    native tools, and asserts each outcome from observed evidence, so passing
+    admission proves the isolation properties on this host.
+    """
+
+    executable, policy = _established_claude_candidate(report, selection)
 
     _claude._require_no_managed_policy(executable)
     report["production_checks"]["managed-policy-gate"] = "established"

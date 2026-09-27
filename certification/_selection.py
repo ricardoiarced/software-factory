@@ -99,13 +99,13 @@ def _committed_bytes(root: Path, relative: Path) -> tuple[bytes, str]:
     return committed.stdout, commit
 
 
-def load_committed_selection(
-    project_root: Path,
+def _committed_candidate(
+    root: Path,
     candidate_argument: str | os.PathLike[str],
-) -> CertificationSelection:
-    """Load an exact candidate only when its manifest is committed at HEAD."""
+) -> tuple[Path, Path]:
+    """Resolve one candidate manifest argument to a named JSON file inside
+    certification/candidates, returned with its root-relative path."""
 
-    root = project_root.resolve(strict=True)
     candidate = Path(candidate_argument)
     if not candidate.is_absolute():
         candidate = root / candidate
@@ -134,23 +134,13 @@ def load_committed_selection(
         is None
     ):
         raise SelectionError("candidate manifest must be a named JSON file")
+    return candidate, relative
 
-    try:
-        document_bytes = candidate.read_bytes()
-    except OSError as error:
-        raise SelectionError(
-            f"candidate manifest cannot be read: {error.strerror or error}",
-        ) from error
-    committed_bytes, selection_commit = _committed_bytes(root, relative)
-    if document_bytes != committed_bytes:
-        raise SelectionError(
-            "candidate manifest must exactly match a file committed at HEAD",
-        )
 
-    try:
-        document = json.loads(document_bytes, object_pairs_hook=_unique_object)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-        raise SelectionError("candidate manifest is not strict JSON") from error
+def _validated_manifest(document: object) -> tuple[str, str, str, str]:
+    """Return one strict manifest's harness, install channel, digest, and
+    official source once every field is proven exact and certified."""
+
     expected_fields = {
         "schema",
         "harness",
@@ -191,7 +181,34 @@ def load_committed_selection(
             "candidate manifest official_source does not name the artifact "
             "family's official distribution surface",
         )
+    return harness, install_channel, digest, official_source
 
+
+def load_committed_selection(
+    project_root: Path,
+    candidate_argument: str | os.PathLike[str],
+) -> CertificationSelection:
+    """Load an exact candidate only when its manifest is committed at HEAD."""
+
+    root = project_root.resolve(strict=True)
+    candidate, relative = _committed_candidate(root, candidate_argument)
+    try:
+        document_bytes = candidate.read_bytes()
+    except OSError as error:
+        raise SelectionError(
+            f"candidate manifest cannot be read: {error.strerror or error}",
+        ) from error
+    committed_bytes, selection_commit = _committed_bytes(root, relative)
+    if document_bytes != committed_bytes:
+        raise SelectionError(
+            "candidate manifest must exactly match a file committed at HEAD",
+        )
+    try:
+        document = json.loads(document_bytes, object_pairs_hook=_unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        raise SelectionError("candidate manifest is not strict JSON") from error
+
+    harness, install_channel, digest, official_source = _validated_manifest(document)
     return CertificationSelection(
         harness=harness,
         version=document["harness_version"],

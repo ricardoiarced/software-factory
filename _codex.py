@@ -464,6 +464,50 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                 except OSError:
                     pass
 
+    def _plant_host_probe_fixture(
+        self,
+        root: Path,
+        temporary_root: Path,
+    ) -> tuple[Path, Path, Path]:
+        """Plant the probe boundary with its suppressed configuration and
+        return the boundary plus the two outside temporary-write paths."""
+
+        boundary = root / "project"
+        sibling = root / "sibling"
+        boundary.mkdir()
+        sibling.mkdir()
+        (boundary / ".git").mkdir()
+        project_skills = boundary / ".agents" / "skills" / "factory-probe"
+        project_skills.mkdir(parents=True)
+        project_config = boundary / ".codex"
+        project_config.mkdir()
+        inside_read = boundary / "inside-read"
+        parent_read = root / "parent-read"
+        sibling_read = sibling / "outside-read"
+        temporary_write = temporary_root / f".{root.name}-temporary-write"
+        slash_tmp_write = Path("/tmp") / f".{root.name}-slash-tmp-write"
+        inside_read.write_text("inside-boundary\n")
+        parent_read.write_text("outside-boundary\n")
+        sibling_read.write_text("outside-boundary\n")
+        (root / "AGENTS.md").write_text(
+            self._host_probe_forbidden_guidance + "\n",
+        )
+        (boundary / "AGENTS.md").write_text(
+            self._host_probe_forbidden_guidance + "\n",
+        )
+        (project_skills / "SKILL.md").write_text(
+            "---\nname: factory-probe\ndescription: "
+            + self._host_probe_forbidden_guidance
+            + "\n---\n\n"
+            + self._host_probe_forbidden_guidance
+            + "\n",
+        )
+        (project_config / "config.toml").write_text(
+            "[features]\napps = true\n\n"
+            '[mcp_servers.factory_probe]\ncommand = "/bin/false"\n',
+        )
+        return boundary, temporary_write, slash_tmp_write
+
     def _run_host_admission_probe(self) -> None:
         try:
             temporary_root = Path(tempfile.gettempdir()).resolve()
@@ -471,39 +515,8 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                 prefix="factory-host-admission-probe-",
             ) as raw_root:
                 root = Path(raw_root)
-                boundary = root / "project"
-                sibling = root / "sibling"
-                boundary.mkdir()
-                sibling.mkdir()
-                (boundary / ".git").mkdir()
-                project_skills = boundary / ".agents" / "skills" / "factory-probe"
-                project_skills.mkdir(parents=True)
-                project_config = boundary / ".codex"
-                project_config.mkdir()
-                inside_read = boundary / "inside-read"
-                parent_read = root / "parent-read"
-                sibling_read = sibling / "outside-read"
-                temporary_write = temporary_root / f".{root.name}-temporary-write"
-                slash_tmp_write = Path("/tmp") / f".{root.name}-slash-tmp-write"
-                inside_read.write_text("inside-boundary\n")
-                parent_read.write_text("outside-boundary\n")
-                sibling_read.write_text("outside-boundary\n")
-                (root / "AGENTS.md").write_text(
-                    self._host_probe_forbidden_guidance + "\n",
-                )
-                (boundary / "AGENTS.md").write_text(
-                    self._host_probe_forbidden_guidance + "\n",
-                )
-                (project_skills / "SKILL.md").write_text(
-                    "---\nname: factory-probe\ndescription: "
-                    + self._host_probe_forbidden_guidance
-                    + "\n---\n\n"
-                    + self._host_probe_forbidden_guidance
-                    + "\n",
-                )
-                (project_config / "config.toml").write_text(
-                    "[features]\napps = true\n\n"
-                    '[mcp_servers.factory_probe]\ncommand = "/bin/false"\n',
+                boundary, temporary_write, slash_tmp_write = (
+                    self._plant_host_probe_fixture(root, temporary_root)
                 )
 
                 configuration = self._configuration(boundary)

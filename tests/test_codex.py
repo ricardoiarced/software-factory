@@ -1768,29 +1768,33 @@ def test_run_refuses_incomplete_or_unrecognized_prompt_input_evidence(
 
 
 @pytest.mark.parametrize(
-    ("stdout", "stderr", "exit_status", "reason"),
+    ("probe", "reason"),
     [
-        ("", "", "0", "unexpected output"),
-        ("factory-host-admission-probe-v1", "", "0", "unexpected output"),
+        (("", "", "0"), "unexpected output"),
+        (("factory-host-admission-probe-v1", "", "0"), "unexpected output"),
         (
-            "factory-host-admission-probe-v1\nfactory-host-admission-probe-v1\n",
-            "",
-            "0",
+            (
+                "factory-host-admission-probe-v1\nfactory-host-admission-probe-v1\n",
+                "",
+                "0",
+            ),
             "unexpected output",
         ),
-        ("unexpected\n", "", "0", "unexpected output"),
-        ("factory-host-admission-probe-v1\n", "warning\n", "0", "unexpected output"),
-        ("factory-host-admission-probe-v1\n", "", "7", "exit status 7"),
+        (("unexpected\n", "", "0"), "unexpected output"),
+        (
+            ("factory-host-admission-probe-v1\n", "warning\n", "0"),
+            "unexpected output",
+        ),
+        (("factory-host-admission-probe-v1\n", "", "7"), "exit status 7"),
     ],
 )
 def test_run_refuses_partial_ambiguous_or_failed_host_probe_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    stdout: str,
-    stderr: str,
-    exit_status: str,
+    probe: tuple[str, str, str],
     reason: str,
 ) -> None:
+    stdout, stderr, exit_status = probe
     boundary, probe_gate, launch_gate = prepare_probe_run(tmp_path, monkeypatch)
     monkeypatch.setenv("FACTORY_PROBE_STDOUT", stdout)
     monkeypatch.setenv("FACTORY_PROBE_STDERR", stderr)

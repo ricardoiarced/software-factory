@@ -1106,7 +1106,7 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
 
 
 @pytest.mark.parametrize(
-    "threshold,payload,expected",
+    "override",
     [
         (
             "0",
@@ -1132,10 +1132,9 @@ def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    threshold: str,
-    payload: bytes,
-    expected: str,
+    override: tuple[str, bytes, str],
 ) -> None:
+    threshold, payload, expected = override
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "context").write_bytes(payload)
@@ -1228,17 +1227,25 @@ def test_parse_and_project_failures_precede_spooling_and_downstream_failures(
     assert admission_attempts == []
 
 
-@pytest.mark.parametrize("downstream_failure", ["admission", "codex"])
-@pytest.mark.parametrize("selection", ["explicit", "registered", "discovered"])
-@pytest.mark.parametrize("source", ["spec", "file", "stdin"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            (selection, source, downstream_failure),
+            id=f"{selection}-{source}-{downstream_failure}",
+        )
+        for selection in ("explicit", "registered", "discovered")
+        for source in ("spec", "file", "stdin")
+        for downstream_failure in ("admission", "codex")
+    ],
+)
 def test_project_selection_and_context_failures_precede_downstream_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    selection: str,
-    source: str,
-    downstream_failure: str,
+    case: tuple[str, str, str],
 ) -> None:
+    selection, source, downstream_failure = case
     project = tmp_path / "project"
     project.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=project, check=True)

@@ -28,7 +28,7 @@ target-version = "py311"
 required-version = "==0.16.9"
 
 [tool.ruff.lint]
-extend-select = ["ANN", "TID251"]
+extend-select = ["ANN", "TID251", "PLR0912", "PLR0913", "PLR0915"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "abc.ABC".msg = "Use typing.Protocol for architectural contracts instead of abc.ABC (AGENTS.md ## Conventions)."

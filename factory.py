@@ -239,53 +239,52 @@ def _compose_run(
     except UnicodeError as error:
         raise RunInputError("Instruction is not valid UTF-8") from error
     spool.write(instruction)
-    trailing_lfs = _terminal_lfs(instruction)
+    context = _ContextComposition(spool, _terminal_lfs(instruction), False)
     context_bytes = 0
-    context_started = False
     for supplied in run.files:
         label = f"Context file {_quoted(supplied)}"
         heading = b"### File: " + _quoted(supplied).encode("utf-8") + b"\n\n"
         with _open_regular(_context_path(supplied, invocation_dir), label) as source:
-            size, trailing_lfs, context_started = _append_context(
-                source, spool, heading, label, trailing_lfs, context_started
-            )
-            context_bytes += size
+            context_bytes += context.append(source, heading, label)
     try:
         terminal_input = sys.stdin.isatty()
     except (OSError, ValueError) as error:
         raise RunInputError(f"standard input could not be read: {error}") from error
     if not terminal_input:
-        size, trailing_lfs, context_started = _append_context(
+        context_bytes += context.append(
             sys.stdin.buffer,
-            spool,
             b"### Standard Input\n\n",
             "standard input",
-            trailing_lfs,
-            context_started,
         )
-        context_bytes += size
     return context_bytes
 
 
-def _append_context(
-    source: BinaryIO,
-    spool: BinaryIO,
-    heading: bytes,
-    label: str,
-    trailing_lfs: int,
-    started: bool,
-) -> tuple[int, int, bool]:
-    checkpoint = spool.tell()
-    _separator(spool, trailing_lfs)
-    if not started:
-        spool.write(b"## Context\n\n")
-    spool.write(heading)
-    size, payload_lfs = _copy_utf8(source, spool, label)
-    if not size:
-        spool.seek(checkpoint)
-        spool.truncate()
-        return 0, trailing_lfs, started
-    return size, payload_lfs, True
+@dataclass
+class _ContextComposition:
+    """Composed Context accumulating in one Run Request spool.
+
+    Tracks the spool's separator state so every appended Context Source
+    begins two fresh lines after the previous non-empty one.
+    """
+
+    spool: BinaryIO
+    trailing_lfs: int
+    started: bool
+
+    def append(self, source: BinaryIO, heading: bytes, label: str) -> int:
+        checkpoint = self.spool.tell()
+        _separator(self.spool, self.trailing_lfs)
+        if not self.started:
+            self.spool.write(b"## Context\n\n")
+        self.spool.write(heading)
+        size, payload_lfs = _copy_utf8(source, self.spool, label)
+        if not size:
+            self.spool.seek(checkpoint)
+            self.spool.truncate()
+            return 0
+        self.started = True
+        self.trailing_lfs = payload_lfs
+        return size
 
 
 def _context_threshold() -> int:
@@ -306,6 +305,56 @@ def _context_threshold() -> int:
     return threshold
 
 
+def _option_value(
+    args: list[str], position: int, argument: str
+) -> tuple[str, str, int]:
+    """Return one valued option's name and value, and the position past it."""
+    option, equals, inline_value = argument.partition("=")
+    if equals:
+        value = inline_value
+    else:
+        position += 1
+        value = args[position] if position < len(args) else ""
+        if value.startswith("-"):
+            raise UsageError(
+                f"{option} requires a value; use {option}=VALUE for values beginning with -"
+            )
+    if not value:
+        raise UsageError(f"{option} requires a non-empty value")
+    return option, value, position
+
+
+def _parse_selector_option(
+    option: str,
+    value: str,
+    selectors: set[str],
+) -> tuple[str, str]:
+    """Record one exclusive Project selector and return its kind and value."""
+    if option in selectors:
+        raise UsageError(f"{option} may appear only once")
+    selectors.add(option)
+    if len(selectors) > 1:
+        raise UsageError("--project and --path cannot be combined")
+    return option[2:], value
+
+
+def _parse_harness_option(value: str, seen_harness: bool) -> str:
+    """Return the requested Harness name, accepted only once."""
+    if seen_harness:
+        raise UsageError("--harness may appear only once")
+    if value not in HARNESS_NAMES:
+        raise UsageError(f"unknown harness {_quoted(value)}")
+    return value
+
+
+def _run_instruction(args: list[str], position: int) -> str:
+    """Return the Instruction text that follows the parsed options."""
+    instruction = " ".join(args[position:])
+    if not args[position:] or not instruction.strip():
+        raise UsageError("an Instruction with non-whitespace text is required")
+    return instruction
+
+
 def _parse_run(args: list[str]) -> RunArguments:
     selectors: set[str] = set()
     seen_force = False
@@ -321,33 +370,14 @@ def _parse_run(args: list[str]) -> RunArguments:
             break
         if not argument.startswith("-") or argument == "-":
             break
-        option, has_equals, inline_value = argument.partition("=")
+        option, _, _ = argument.partition("=")
         if option in ("--project", "--path", "--file", "--harness"):
-            if has_equals:
-                value = inline_value
-            else:
-                position += 1
-                value = args[position] if position < len(args) else ""
-                if value.startswith("-"):
-                    raise UsageError(
-                        f"{option} requires a value; use {option}=VALUE for values beginning with -"
-                    )
-            if not value:
-                raise UsageError(f"{option} requires a non-empty value")
+            option, value, position = _option_value(args, position, argument)
             if option in ("--project", "--path"):
-                if option in selectors:
-                    raise UsageError(f"{option} may appear only once")
-                selectors.add(option)
-                if len(selectors) > 1:
-                    raise UsageError("--project and --path cannot be combined")
-                selector = (option[2:], value)
+                selector = _parse_selector_option(option, value, selectors)
             elif option == "--harness":
-                if seen_harness:
-                    raise UsageError("--harness may appear only once")
+                harness = _parse_harness_option(value, seen_harness)
                 seen_harness = True
-                if value not in HARNESS_NAMES:
-                    raise UsageError(f"unknown harness {_quoted(value)}")
-                harness = value
             else:
                 files.append(value)
         elif argument == "--force":
@@ -359,9 +389,7 @@ def _parse_run(args: list[str]) -> RunArguments:
         else:
             raise UsageError(f"unknown option {_quoted(argument)}")
         position += 1
-    instruction = " ".join(args[position:])
-    if not args[position:] or not instruction.strip():
-        raise UsageError("an Instruction with non-whitespace text is required")
+    instruction = _run_instruction(args, position)
     return RunArguments(instruction, harness, selector, tuple(files), seen_force)
 
 
@@ -456,74 +484,85 @@ def _usage(error: UsageError) -> int:
     return 2
 
 
-def _dispatch() -> int:
+def _route(arguments: list[str]) -> int:
+    """Return the exit status for one routed command line."""
+    if arguments in (["-h"], ["--help"]):
+        sys.stdout.write(ROOT_HELP)
+        return 0
+    if arguments in (["project", "-h"], ["project", "--help"]):
+        sys.stdout.write(PROJECT_HELP)
+        return 0
+    if arguments == ["--version"]:
+        sys.stdout.write(f"factory {version('software-factory')}\n")
+        return 0
+    if arguments[:1] == ["project"]:
+        command, values = _parse_project(arguments[1:])
+        return _dispatch_project(command, values)
+    return _dispatch_run(_parse_run(arguments))
+
+
+def _dispatch_project(command: str, values: list[str]) -> int:
+    """Run one Project administration command to completion."""
+    if command == "list":
+        _list_projects()
+        return 0
+    if command == "show":
+        _show_project(values[0])
+        return 0
+    if command == "add":
+        _add_project(values[0], values[1])
+        return 0
+    if command == "remove":
+        remove_project(values[0])
+        return 0
+    sys.stderr.write("factory: error: Project administration is not yet available.\n")
+    return 1
+
+
+def _select_run_project(run: RunArguments, invocation_dir: Path) -> Project:
+    """Resolve the Run Request's Project from its selector, never falling back."""
+    if run.selector is None:
+        return discover_project(invocation_dir)
+    if run.selector[0] == "path":
+        return select_explicit_project(run.selector[1], invocation_dir)
+    return _select_registered_project(run.selector[1])
+
+
+def _dispatch_run(run: RunArguments) -> int:
+    """Compose the Context, gate its size, and hand the spool to the Harness."""
+    invocation_dir = Path.cwd()
+    project = _select_run_project(run, invocation_dir)
     try:
-        if sys.argv[1:] in (["-h"], ["--help"]):
-            sys.stdout.write(ROOT_HELP)
-            return 0
-        if sys.argv[1:] in (["project", "-h"], ["project", "--help"]):
-            sys.stdout.write(PROJECT_HELP)
-            return 0
-        if sys.argv[1:] == ["--version"]:
-            sys.stdout.write(f"factory {version('software-factory')}\n")
-            return 0
-        if sys.argv[1:2] == ["project"]:
-            command, values = _parse_project(sys.argv[2:])
-            if command == "list":
-                _list_projects()
-                return 0
-            if command == "show":
-                _show_project(values[0])
-                return 0
-            if command == "add":
-                _add_project(values[0], values[1])
-                return 0
-            if command == "remove":
-                remove_project(values[0])
-                return 0
+        spool = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
+    except OSError as error:
+        raise RunInputError(f"Run Request spool failed: {error}") from error
+    with spool:
+        try:
+            context_bytes = _compose_run(run, project.boundary, invocation_dir, spool)
+        except OSError as error:
+            raise RunInputError(f"Run Request spool failed: {error}") from error
+        threshold = _context_threshold()
+        if context_bytes > threshold:
+            message = f"Context is {context_bytes} bytes; the warning threshold is {threshold} bytes."
+            if not run.force:
+                sys.stderr.write(
+                    f"factory: error: {message} Re-run with --force to continue.\n"
+                )
+                return 1
             sys.stderr.write(
-                "factory: error: Project administration is not yet available.\n"
+                f"factory: warning: {message} Continuing because --force was supplied.\n"
             )
-        else:
-            run = _parse_run(sys.argv[1:])
-            invocation_dir = Path.cwd()
-            if run.selector is None:
-                project = discover_project(invocation_dir)
-            elif run.selector[0] == "path":
-                project = select_explicit_project(run.selector[1], invocation_dir)
-            else:
-                project = _select_registered_project(run.selector[1])
-            try:
-                spool = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
-            except OSError as error:
-                raise RunInputError(f"Run Request spool failed: {error}") from error
-            with spool:
-                try:
-                    context_bytes = _compose_run(
-                        run,
-                        project.boundary,
-                        invocation_dir,
-                        spool,
-                    )
-                except OSError as error:
-                    raise RunInputError(f"Run Request spool failed: {error}") from error
-                threshold = _context_threshold()
-                if context_bytes > threshold:
-                    message = f"Context is {context_bytes} bytes; the warning threshold is {threshold} bytes."
-                    if not run.force:
-                        sys.stderr.write(
-                            f"factory: error: {message} Re-run with --force to continue.\n"
-                        )
-                        return 1
-                    sys.stderr.write(
-                        f"factory: warning: {message} Continuing because --force was supplied.\n"
-                    )
-                try:
-                    spool.seek(0)
-                except OSError as error:
-                    raise RunInputError(f"Run Request spool failed: {error}") from error
-                return select_harness(run.harness).run(project, spool)
-        return 1
+        try:
+            spool.seek(0)
+        except OSError as error:
+            raise RunInputError(f"Run Request spool failed: {error}") from error
+        return select_harness(run.harness).run(project, spool)
+
+
+def _dispatch() -> int:
+    """Route the command line, mapping every failure to an exit status."""
+    try:
+        return _route(sys.argv[1:])
     except UsageError as error:
         return _usage(error)
     except ProjectSelectionError as error:

@@ -1,0 +1,10 @@
+{
+  "schema": 2,
+  "harness": "codex",
+  "harness_version": "0.157.1",
+  "install_channel": "npm",
+  "official_sha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+  "official_source": "https://www.npmjs.com/package/@openai/codex",
+  "operating_system": "Linux",
+  "architecture": "x86_64"
+}

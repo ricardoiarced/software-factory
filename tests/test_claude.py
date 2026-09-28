@@ -146,6 +146,7 @@ def test_claude_run_reaches_the_empty_compatibility_set_when_installed_is_newest
     live_newest_stable_verification: None,
 ) -> None:
     install_native_claude(tmp_path, monkeypatch, version="9.9.9")
+    monkeypatch.setattr(_claude, "_CLAUDE_COMPATIBILITY_SET", ())
     agreeing_claude_publisher(publisher_responses, "9.9.9")
 
     with pytest.raises(

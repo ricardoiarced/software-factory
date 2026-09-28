@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import _claude
 from _claude import ClaudeCodeRunner
 from _codex import CodexRunner
 from _harness import (
@@ -55,7 +56,7 @@ def test_claude_runner_refuses_admission_and_never_launches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A version-reporting fake gets admission past the local version read;
-    no tuple is certified, so the empty Compatibility Set still refuses.
+    an empty Compatibility Set refuses before any launch.
     """
     executable_directory = tmp_path / "claude-fake"
     executable_directory.mkdir()
@@ -63,6 +64,7 @@ def test_claude_runner_refuses_admission_and_never_launches(
     executable.write_text("#!/bin/sh\nprintf '9.9.9 (Claude Code)\\n'\n")
     executable.chmod(0o755)
     monkeypatch.setenv("PATH", os.fspath(executable_directory))
+    monkeypatch.setattr(_claude, "_CLAUDE_COMPATIBILITY_SET", ())
 
     runner = ClaudeCodeRunner()
     project = Project(tmp_path, tmp_path)

@@ -15,6 +15,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
+import _claude
 import _codex
 from certification.test_exact_tuple import (
     CLAUDE_PRODUCTION_CHECKS,
@@ -103,6 +104,16 @@ def _compatibility_claims() -> list[dict[str, str]]:
             "architecture": policy.architecture,
         }
         for policy in _codex._COMPATIBILITY_SET
+    ] + [
+        {
+            "harness": "claude",
+            "harness_version": policy.version,
+            "install_channel": policy.install_channel,
+            "official_sha256": policy.sha256,
+            "operating_system": policy.operating_system,
+            "architecture": policy.architecture,
+        }
+        for policy in _claude._CLAUDE_COMPATIBILITY_SET
     ]
 
 

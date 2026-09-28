@@ -52,14 +52,16 @@ class PreparedRun:
 
     ``harness`` names the selected Harness for Factory-owned diagnostics,
     ``executable`` is the admitted artifact, ``invocation`` is its exact
-    launch command, and ``environment`` pins certified variable values over
-    the inherited host environment (empty for a pure pass-through).
+    launch command; ``environment`` pins certified variable values and
+    ``unset_environment`` removes named variables from the inherited host
+    environment (both empty for a pure pass-through).
     """
 
     harness: str
     executable: Path
     invocation: tuple[str, ...]
     environment: tuple[tuple[str, str], ...] = ()
+    unset_environment: tuple[str, ...] = ()
 
 
 class Runner(Protocol):
@@ -243,14 +245,16 @@ def launch(
     the Project Boundary as the child working directory and the composed Run
     Request spool as its standard input. Standard output, standard error, and
     the host environment pass through unchanged except for the certified
-    environment pins of the admitted launch plan; Factory shares the child's
+    environment edits of the admitted launch plan; Factory shares the child's
     foreground process group, returns its ordinary exit status, and
     re-exposes signal termination as the same signal.
     """
 
-    environment = (
-        {**os.environ, **dict(prepared.environment)} if prepared.environment else None
-    )
+    environment = None
+    if prepared.environment or prepared.unset_environment:
+        environment = {**os.environ, **dict(prepared.environment)}
+        for name in prepared.unset_environment:
+            environment.pop(name, None)
     previous_handlers: dict[
         signal.Signals,
         Callable[[int, FrameType | None], Any] | int | None,

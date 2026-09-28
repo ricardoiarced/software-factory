@@ -17,6 +17,7 @@ from _harness import (
     PreparedRun,
     RunAdmissionError,
     _quoted_absolute_path,
+    _resolve_candidate,
     inspection_failure,
     launch,
     reported_version,
@@ -30,6 +31,23 @@ from _harness import (
 )
 from _project import Project
 from _publisher import verify_codex_newest_stable
+
+_GITHUB_ASSET_CHANNEL = "github-asset"
+_NPM_CHANNEL = "npm"
+_NPM_LAUNCHER_SUFFIX = ("node_modules", "@openai", "codex", "bin", "codex.js")
+_NPM_PLATFORM_LAYOUT = {
+    ("Linux", "x86_64"): ("codex-linux-x64", "x86_64-unknown-linux-musl"),
+    ("Linux", "aarch64"): ("codex-linux-arm64", "aarch64-unknown-linux-musl"),
+    ("Darwin", "x86_64"): ("codex-darwin-x64", "x86_64-apple-darwin"),
+    ("Darwin", "arm64"): ("codex-darwin-arm64", "aarch64-apple-darwin"),
+}
+_CODEX_MANAGED_MARKERS = (
+    "CODEX_MANAGED_PACKAGE_ROOT",
+    "CODEX_MANAGED_BY_NPM",
+    "CODEX_MANAGED_BY_PNPM",
+    "CODEX_MANAGED_BY_BUN",
+    "CODEX_MANAGED_BY_VITE_PLUS",
+)
 
 
 def _cache_directory() -> Path:
@@ -47,9 +65,13 @@ class _Codex01571Policy:
     architecture: str
     canonical_path: Path
     filesystem_identity: tuple[int, int]
+    install_channel: str = _GITHUB_ASSET_CHANNEL
     host_probe_timeout_seconds: float = 10
 
     version: ClassVar[str] = "0.157.1"
+    _feature_inventory_sha256: ClassVar[str] = (
+        "978038969fc7e617c3500b9891abbe9c3de541bb1e126a5823c75aea6519898d"
+    )
     _feature_output: ClassVar[re.Pattern[bytes]] = re.compile(
         rb"([a-z][a-z0-9_.]*) {2,}"
         rb"(stable|under development|experimental|deprecated|removed)"
@@ -277,9 +299,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
             raise self._strict_configuration_failure(
                 "incomplete feature output",
             )
-        if hashlib.sha256(features).hexdigest() != (
-            "978038969fc7e617c3500b9891abbe9c3de541bb1e126a5823c75aea6519898d"
-        ):
+        if hashlib.sha256(features).hexdigest() != self._feature_inventory_sha256:
             raise self._strict_configuration_failure("unrecognized feature output")
 
         mcp = self._run_inspector(
@@ -535,6 +555,7 @@ printf '%s\n' 'factory-host-admission-probe-v1'
                     for name, value in os.environ.items()
                     if (
                         name not in unsafe_bash_environment
+                        and name not in _CODEX_MANAGED_MARKERS
                         and not name.startswith("BASH_FUNC_")
                     )
                 }
@@ -640,6 +661,13 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         return self._invocation(project_boundary, enclosing_git_root)
 
 
+class _Codex01580Policy(_Codex01571Policy):
+    version: ClassVar[str] = "0.158.0"
+    _feature_inventory_sha256: ClassVar[str] = (
+        "5a04b7dbaefad3228c33429f7bdd8f488226864c1ec70ddcf9ebc1b3e647aed5"
+    )
+
+
 _COMPATIBILITY_SET: tuple[_Codex01571Policy, ...] = (
     _Codex01571Policy(
         sha256="3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970",
@@ -658,7 +686,41 @@ _VERSION_OUTPUT = re.compile(
 
 
 def _resolve_executable() -> Path:
-    return resolve_executable("codex", "Codex")
+    executable = resolve_executable("codex", "Codex")
+    if executable.parts[-5:] != _NPM_LAUNCHER_SUFFIX:
+        return executable
+    layout = _NPM_PLATFORM_LAYOUT.get((platform.system(), platform.machine()))
+    if layout is None:
+        raise RunAdmissionError(
+            f"Codex npm launcher {_quoted_absolute_path(executable)} has no "
+            "certified platform binary layout; update Factory",
+            executable=executable,
+        )
+    package, triple = layout
+    package_root = executable.parent.parent
+    sibling = package_root.parent / package / "vendor" / triple / "bin" / "codex"
+    local = package_root / "vendor" / triple / "bin" / "codex"
+    platform_package = package_root.parent / package
+    binary = sibling if (platform_package / "package.json").is_file() else local
+    try:
+        return _resolve_candidate(binary, "Codex")
+    except RunAdmissionError as error:
+        raise RunAdmissionError(
+            f"Codex npm launcher {_quoted_absolute_path(executable)} cannot "
+            "resolve its vendored platform binary; reinstall Codex with "
+            "npm install -g @openai/codex@latest",
+            executable=executable,
+        ) from error
+
+
+def _observed_install_channel(executable: Path) -> str:
+    parts = executable.parts
+    for package, triple in _NPM_PLATFORM_LAYOUT.values():
+        sibling = ("node_modules", "@openai", package, "vendor", triple, "bin", "codex")
+        local = ("node_modules", "@openai", "codex", "vendor", triple, "bin", "codex")
+        if parts[-7:] in (sibling, local):
+            return _NPM_CHANNEL
+    return _GITHUB_ASSET_CHANNEL
 
 
 def _reported_version(executable: Path) -> str:
@@ -688,6 +750,7 @@ def _match_compatibility(executable: Path, version: str) -> _Codex01571Policy:
     digest, filesystem_identity = _artifact_identity(executable)
     operating_system = platform.system()
     architecture = platform.machine()
+    install_channel = _observed_install_channel(executable)
 
     matches = tuple(
         policy
@@ -697,6 +760,7 @@ def _match_compatibility(executable: Path, version: str) -> _Codex01571Policy:
             and policy.sha256 == digest
             and policy.operating_system == operating_system
             and policy.architecture == architecture
+            and policy.install_channel == install_channel
             and policy.canonical_path == executable
             and policy.filesystem_identity == filesystem_identity
         )
@@ -724,6 +788,8 @@ def _match_compatibility(executable: Path, version: str) -> _Codex01571Policy:
         reason = "platform does not match the Codex Compatibility Set"
     elif not any(policy.sha256 == digest for policy in candidates):
         reason = "SHA-256 does not match the Codex Compatibility Set"
+    elif not any(policy.install_channel == install_channel for policy in candidates):
+        reason = "install channel does not match the Codex Compatibility Set"
     elif not any(policy.canonical_path == executable for policy in candidates):
         reason = "canonical path does not match the Codex Compatibility Set"
     else:
@@ -806,6 +872,7 @@ class CodexRunner:
             harness="Codex",
             executable=policy.canonical_path,
             invocation=tuple(invocation),
+            unset_environment=_CODEX_MANAGED_MARKERS,
         )
 
     def run(self, project: Project, run_request_spool: BinaryIO) -> int:

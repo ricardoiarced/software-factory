@@ -282,19 +282,24 @@ def _certify_codex(
             "manifest digest; the selection is not the certified candidate",
             executable=executable,
         )
-    policy = _codex._Codex01571Policy(
+    policy_type = {
+        _codex._Codex01571Policy.version: _codex._Codex01571Policy,
+        _codex._Codex01580Policy.version: _codex._Codex01580Policy,
+    }.get(selection.version)
+    if policy_type is None:
+        raise RunAdmissionError(
+            f"selected Codex version {selection.version!r} has no production "
+            "certification policy",
+            executable=executable,
+        )
+    policy = policy_type(
         sha256=selection.official_sha256,
         operating_system=selection.operating_system,
         architecture=selection.architecture,
         canonical_path=executable,
         filesystem_identity=filesystem_identity,
+        install_channel=selection.install_channel,
     )
-    if selection.version != policy.version:
-        raise RunAdmissionError(
-            f"selected Codex version {selection.version!r} has no production "
-            f"certification policy; expected {policy.version!r}",
-            executable=executable,
-        )
     monkeypatch.setattr(_codex, "_COMPATIBILITY_SET", (policy,))
     monkeypatch.setattr(
         _codex,

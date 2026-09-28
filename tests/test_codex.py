@@ -26,6 +26,7 @@ from conftest import (
     npm_dist_tags,
 )
 
+import _codex
 import factory
 from _codex import (
     CodexRunner,
@@ -821,6 +822,8 @@ def test_run_creates_one_native_foreground_codex_process(
     spool = io.BytesIO(b"# Run Request\n")
     invocation = tuple(expected_invocation(executable, boundary, git_root))
     install_launch_fixture(executable, monkeypatch)
+    for name in _codex._CODEX_MANAGED_MARKERS:
+        monkeypatch.setenv(name, "inherited")
 
     calls: list[tuple[list[str], dict[str, object], bool, int]] = []
 
@@ -848,7 +851,11 @@ def test_run_creates_one_native_foreground_codex_process(
                 "stdin": spool,
                 "stdout": None,
                 "stderr": None,
-                "env": None,
+                "env": {
+                    name: value
+                    for name, value in os.environ.items()
+                    if name not in _codex._CODEX_MANAGED_MARKERS
+                },
                 "shell": False,
                 "start_new_session": False,
             },
@@ -1880,6 +1887,8 @@ def test_host_probe_ignores_bash_startup_environment(
     startup_file.write_text("exit 99\n")
     monkeypatch.setenv("BASH_ENV", os.fspath(startup_file))
     monkeypatch.setenv("BASH_FUNC_exit%%", "() { return 0; }")
+    for name in _codex._CODEX_MANAGED_MARKERS:
+        monkeypatch.setenv(name, "inherited")
     original_popen = subprocess.Popen
 
     def launch(
@@ -1892,6 +1901,9 @@ def test_host_probe_ignores_bash_startup_environment(
             assert isinstance(environment, dict)
             assert "BASH_ENV" not in environment
             assert not any(name.startswith("BASH_FUNC_") for name in environment)
+            assert not any(
+                name in environment for name in _codex._CODEX_MANAGED_MARKERS
+            )
         return original_popen(command, **kwargs)
 
     monkeypatch.setattr("_codex.subprocess.Popen", launch)
@@ -2393,6 +2405,90 @@ def test_identity_matches_an_exact_private_compatibility_fixture(
     install_compatibility_fixture(executable, monkeypatch)
 
     assert _match_compatibility(executable, "0.157.1") == certify(executable)
+
+
+def test_npm_launcher_resolves_to_the_sibling_platform_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "lib" / "node_modules" / "@openai" / "codex"
+    launcher = package_root / "bin" / "codex.js"
+    launcher.parent.mkdir(parents=True)
+    make_executable(launcher)
+    platform_package = package_root.parent / "codex-linux-x64"
+    platform_package.mkdir()
+    (platform_package / "package.json").write_text("{}")
+    binary = platform_package / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
+    binary.parent.mkdir(parents=True)
+    make_executable(binary)
+    path_directory = tmp_path / "bin"
+    path_directory.mkdir()
+    (path_directory / "codex").symlink_to(launcher)
+    monkeypatch.setenv("PATH", os.fspath(path_directory))
+
+    assert _codex._resolve_executable() == binary
+    assert _codex._observed_install_channel(binary) == "npm"
+
+
+def test_npm_launcher_refuses_a_missing_platform_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = tmp_path / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    launcher.parent.mkdir(parents=True)
+    make_executable(launcher)
+    path_directory = tmp_path / "bin"
+    path_directory.mkdir()
+    (path_directory / "codex").symlink_to(launcher)
+    monkeypatch.setenv("PATH", os.fspath(path_directory))
+
+    with pytest.raises(
+        RunAdmissionError, match="cannot resolve its vendored platform binary"
+    ):
+        _codex._resolve_executable()
+
+
+def test_npm_launcher_uses_package_local_vendor_when_platform_package_is_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "node_modules" / "@openai" / "codex"
+    launcher = package_root / "bin" / "codex.js"
+    launcher.parent.mkdir(parents=True)
+    make_executable(launcher)
+    binary = package_root / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
+    binary.parent.mkdir(parents=True)
+    make_executable(binary)
+    path_directory = tmp_path / "bin"
+    path_directory.mkdir()
+    (path_directory / "codex").symlink_to(launcher)
+    monkeypatch.setenv("PATH", os.fspath(path_directory))
+
+    assert _codex._resolve_executable() == binary
+    assert _codex._observed_install_channel(binary) == "npm"
+
+
+def test_codex_compatibility_refuses_the_wrong_install_channel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = (
+        tmp_path
+        / "node_modules"
+        / "@openai"
+        / "codex-linux-x64"
+        / "vendor"
+        / "x86_64-unknown-linux-musl"
+        / "bin"
+        / "codex"
+    )
+    binary.parent.mkdir(parents=True)
+    make_executable(binary)
+    policy = certify(binary)
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", (policy,))
+
+    with pytest.raises(RunAdmissionError, match="install channel does not match"):
+        _match_compatibility(binary, "0.157.1")
 
 
 def test_identity_refuses_multiple_policies_for_one_artifact(

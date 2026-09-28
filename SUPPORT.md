@@ -26,6 +26,14 @@ architecture, or Harness artifact to another.
     "architecture": "x86_64"
   },
   {
+    "harness": "codex",
+    "harness_version": "0.158.0",
+    "install_channel": "npm",
+    "official_sha256": "167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9",
+    "operating_system": "Linux",
+    "architecture": "x86_64"
+  },
+  {
     "harness": "claude",
     "harness_version": "2.1.283",
     "install_channel": "native-installer",
@@ -44,14 +52,13 @@ architecture, or Harness artifact to another.
 ]
 ```
 
-Exactly one Codex artifact has completed real-host certification: the
-official `0.158.0` x86_64-unknown-linux-musl standalone executable, certified
-on the tested Linux host recorded under `certification/results/`. The npm
-channel of the prior `0.157.1` release was rejected because its sandbox
-re-exec target fell outside the certified runtime read. The `0.158.0` npm
-channel has no certification decision and remains unsupported. The package
+Two Codex artifact families have completed real-host certification for
+`0.158.0` on the tested Linux host recorded under `certification/results/`:
+the official GitHub asset and the npm vendored platform binary. Their
+executables have identical bytes, and each channel has its own exact
+Compatibility Set entry. The package
 still installs and serves help, version, and `factory project` administration
-everywhere, and every Run that does not resolve to exactly this artifact on
+everywhere, and every Run that does not resolve to exactly one of these artifacts on
 an identical host fails closed before a Codex process starts: a different
 version, digest, platform, canonical path, or filesystem identity is refused
 with the matching diagnostic from the Codex Compatibility Set check, and a

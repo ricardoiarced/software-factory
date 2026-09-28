@@ -268,6 +268,12 @@ def _certify_codex(
     all of it on this host.
     """
 
+    if selection.version != _codex._Codex01580Policy.version:
+        raise RunAdmissionError(
+            f"selected Codex version {selection.version!r} has no production "
+            "certification policy"
+        )
+
     executable = _codex._resolve_executable()
     report["canonical_executable"] = str(executable)
     digest, filesystem_identity = _codex._artifact_identity(executable)
@@ -288,13 +294,8 @@ def _certify_codex(
         architecture=selection.architecture,
         canonical_path=executable,
         filesystem_identity=filesystem_identity,
+        install_channel=selection.install_channel,
     )
-    if selection.version != policy.version:
-        raise RunAdmissionError(
-            f"selected Codex version {selection.version!r} has no production "
-            f"certification policy; expected {policy.version!r}",
-            executable=executable,
-        )
     monkeypatch.setattr(_codex, "_COMPATIBILITY_SET", (policy,))
     monkeypatch.setattr(
         _codex,

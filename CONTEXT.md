@@ -62,7 +62,7 @@ The exact Claude Code executable artifacts and platform combinations certified b
 _Avoid_: Compatibility range, minimum Claude Code version
 
 **Artifact Family**:
-The packaging of one Harness release that a Compatibility Set tuple is certified against — a publisher release asset, a native installer, or an npm package whose digest anchors the unpacked platform binary. Different families of the same Harness version certify separately and never stand in for one another.
+The packaging of one Harness release that a Compatibility Set tuple is certified against — a publisher release asset, a native installer, or an npm package whose digest anchors the unpacked platform binary or, for packages without a platform binary, the unpacked entry point. Different families of the same Harness version certify separately and never stand in for one another.
 _Avoid_: Package format, release flavor
 
 **Candidate Manifest**:

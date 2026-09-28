@@ -48,6 +48,13 @@ def test_codex_runner_admit_freezes_the_matched_launch_plan(
         harness="Codex",
         executable=executable,
         invocation=tuple(invocation),
+        unset_environment=(
+            "CODEX_MANAGED_PACKAGE_ROOT",
+            "CODEX_MANAGED_BY_NPM",
+            "CODEX_MANAGED_BY_PNPM",
+            "CODEX_MANAGED_BY_BUN",
+            "CODEX_MANAGED_BY_VITE_PLUS",
+        ),
     )
 
 

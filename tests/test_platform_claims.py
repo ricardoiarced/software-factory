@@ -98,7 +98,7 @@ def _compatibility_claims() -> list[dict[str, str]]:
         {
             "harness": "codex",
             "harness_version": policy.version,
-            "install_channel": "github-asset",
+            "install_channel": policy.install_channel,
             "official_sha256": policy.sha256,
             "operating_system": policy.operating_system,
             "architecture": policy.architecture,

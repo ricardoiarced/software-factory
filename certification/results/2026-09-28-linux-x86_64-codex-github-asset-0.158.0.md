@@ -19,3 +19,11 @@ FACTORY_REAL_HOST_CERTIFICATION={"architecture":"x86_64","canonical_executable":
 ## Support decision
 
 The exact Codex 0.158.0 github-asset executable digest on this Linux x86_64 host is certified. The production Codex Compatibility Set replaces the stale 0.157.1 tuple wholesale with this tuple and pins its canonical path, device, and inode. This record does not certify the npm channel, Darwin arm64, or any other host identity.
+
+## Distribution verification
+
+The `0.1.2` source distribution and universal wheel built on this certifying Linux host. The wheel smoke test installed the built wheel into a clean virtual environment and verified the installed `factory --version`, `factory --help`, and malformed-command behavior: `1 passed`.
+
+```console
+UV_CACHE_DIR=/tmp/software-factory-uv-cache uv run --no-project --with build --with pytest --with platformdirs --with . python -m pytest tests/test_cli.py::test_built_wheel_installs_and_reports_distribution_version -q
+```

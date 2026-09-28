@@ -47,9 +47,9 @@ architecture, or Harness artifact to another.
 Exactly one Codex artifact has completed real-host certification: the
 official `0.158.0` x86_64-unknown-linux-musl standalone executable, certified
 on the tested Linux host recorded under `certification/results/`. The npm
-channel of the same release ran the complete gate on that host and was
-rejected — the npm layout's sandbox re-exec target falls outside the
-certified runtime read — and stays unsupported. The package
+channel of the prior `0.157.1` release was rejected because its sandbox
+re-exec target fell outside the certified runtime read. The `0.158.0` npm
+channel has no certification decision and remains unsupported. The package
 still installs and serves help, version, and `factory project` administration
 everywhere, and every Run that does not resolve to exactly this artifact on
 an identical host fails closed before a Codex process starts: a different

@@ -1335,7 +1335,31 @@ class _ClaudePolicy:
         return self._invocation(project_boundary)
 
 
-_CLAUDE_COMPATIBILITY_SET: tuple[_ClaudePolicy, ...] = ()
+_CLAUDE_COMPATIBILITY_SET: tuple[_ClaudePolicy, ...] = (
+    _ClaudePolicy(
+        version="2.1.283",
+        sha256="1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2",
+        operating_system="Linux",
+        architecture="x86_64",
+        install_channel="native-installer",
+        canonical_path=Path(
+            "/home/ricardoiarced/.local/share/claude/versions/2.1.283",
+        ),
+        filesystem_identity=(2096, 367099),
+    ),
+    _ClaudePolicy(
+        version="2.1.283",
+        sha256="1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2",
+        operating_system="Linux",
+        architecture="x86_64",
+        install_channel="npm",
+        canonical_path=Path(
+            "/home/ricardoiarced/.local/node-v24/lib/node_modules/"
+            "@anthropic-ai/claude-code/bin/claude.exe",
+        ),
+        filesystem_identity=(2096, 259808),
+    ),
+)
 
 
 def _artifact_identity(executable: Path) -> tuple[str, tuple[int, int]]:

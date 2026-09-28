@@ -24,13 +24,32 @@ architecture, or Harness artifact to another.
     "official_sha256": "3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970",
     "operating_system": "Linux",
     "architecture": "x86_64"
+  },
+  {
+    "harness": "claude",
+    "harness_version": "2.1.283",
+    "install_channel": "native-installer",
+    "official_sha256": "1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2",
+    "operating_system": "Linux",
+    "architecture": "x86_64"
+  },
+  {
+    "harness": "claude",
+    "harness_version": "2.1.283",
+    "install_channel": "npm",
+    "official_sha256": "1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2",
+    "operating_system": "Linux",
+    "architecture": "x86_64"
   }
 ]
 ```
 
 Exactly one Codex artifact has completed real-host certification: the
 official `0.157.1` x86_64-unknown-linux-musl standalone executable, certified
-on the tested Linux host recorded under `certification/results/`. The package
+on the tested Linux host recorded under `certification/results/`. The npm
+channel of the same release ran the complete gate on that host and was
+rejected — the npm layout's sandbox re-exec target falls outside the
+certified runtime read — and stays unsupported. The package
 still installs and serves help, version, and `factory project` administration
 everywhere, and every Run that does not resolve to exactly this artifact on
 an identical host fails closed before a Codex process starts: a different
@@ -39,14 +58,17 @@ with the matching diagnostic from the Codex Compatibility Set check, and a
 host whose kernel identity or sandbox behavior changed is refused by the
 Host Admission Probe.
 
-Selecting Claude Code with `--harness claude` always fails closed today: no
-Claude Code release has completed real-host certification, so the Claude
-Compatibility Set is empty and every selected Run is refused before the Run
-Request is submitted. Factory never falls back to another Harness.
+Two Claude Code tuples have completed real-host certification, both on the
+tested Linux host recorded under `certification/results/`: the
+`native-installer` and `npm` channels of release `2.1.283`, whose artifacts
+are the same upstream binary verified through each channel's official
+distribution surface. Every Run that does not resolve to exactly one of
+these tuples on an identical host fails closed before the Run Request is
+submitted, and Factory never falls back to another Harness.
 
 Certification decisions — certified or rejected — are recorded under
 `certification/results/`. A rejected tuple stays unsupported until a fresh
 real-host certification run establishes that exact artifact, operating
-system, and architecture and a new recorded decision adds it to the Codex
-Compatibility Set. A failed certification never blocks building and
-releasing the fail-closed package itself.
+system, and architecture and a new recorded decision adds it to that
+Harness's Compatibility Set. A failed certification never blocks building
+and releasing the fail-closed package itself.

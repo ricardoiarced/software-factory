@@ -237,16 +237,16 @@ def test_only_the_certified_linux_tuple_enters_the_production_compatibility_set(
 ):
     assert len(_codex._COMPATIBILITY_SET) == 1
     policy = _codex._COMPATIBILITY_SET[0]
-    assert policy.version == "0.157.1"
+    assert policy.version == "0.158.0"
     assert policy.sha256 == (
-        "3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970"
+        "167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9"
     )
     assert (policy.operating_system, policy.architecture) == ("Linux", "x86_64")
     assert policy.canonical_path == Path(
         "/home/ricardoiarced/.codex/packages/standalone/releases/"
-        "0.157.1-x86_64-unknown-linux-musl/bin/codex"
+        "0.158.0-x86_64-unknown-linux-musl/bin/codex"
     )
-    assert policy.filesystem_identity == (2096, 140479)
+    assert policy.filesystem_identity == (2096, 364055)
 
 
 def test_every_named_candidate_has_a_recorded_support_decision() -> None:

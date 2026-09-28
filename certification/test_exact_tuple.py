@@ -268,6 +268,12 @@ def _certify_codex(
     all of it on this host.
     """
 
+    if selection.version != _codex._Codex01580Policy.version:
+        raise RunAdmissionError(
+            f"selected Codex version {selection.version!r} has no production "
+            "certification policy"
+        )
+
     executable = _codex._resolve_executable()
     report["canonical_executable"] = str(executable)
     digest, filesystem_identity = _codex._artifact_identity(executable)
@@ -282,17 +288,7 @@ def _certify_codex(
             "manifest digest; the selection is not the certified candidate",
             executable=executable,
         )
-    policy_type = {
-        _codex._Codex01571Policy.version: _codex._Codex01571Policy,
-        _codex._Codex01580Policy.version: _codex._Codex01580Policy,
-    }.get(selection.version)
-    if policy_type is None:
-        raise RunAdmissionError(
-            f"selected Codex version {selection.version!r} has no production "
-            "certification policy",
-            executable=executable,
-        )
-    policy = policy_type(
+    policy = _codex._Codex01580Policy(
         sha256=selection.official_sha256,
         operating_system=selection.operating_system,
         architecture=selection.architecture,

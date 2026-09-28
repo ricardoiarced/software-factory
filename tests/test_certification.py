@@ -7,9 +7,37 @@ from pathlib import Path
 import pytest
 
 import _codex
-from certification._selection import SelectionError, load_committed_selection
+from _harness import RunAdmissionError
+from certification._selection import (
+    CertificationSelection,
+    SelectionError,
+    load_committed_selection,
+)
+from certification.test_exact_tuple import _certify_codex
 
 PROJECT = Path(__file__).resolve().parents[1]
+
+
+def test_codex_certification_refuses_a_manifest_for_an_uncertified_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selection = CertificationSelection(
+        harness="codex",
+        version="0.159.0",
+        install_channel="github-asset",
+        official_sha256="a" * 64,
+        official_source="https://github.com/openai/codex/releases/tag/rust-v0.159.0",
+        operating_system="Linux",
+        architecture="x86_64",
+        manifest=tmp_path / "candidate.json",
+        selection_commit="a" * 40,
+    )
+
+    with pytest.raises(
+        RunAdmissionError, match="has no production certification policy"
+    ):
+        _certify_codex({}, selection, tmp_path, monkeypatch)
 
 
 def make_candidate_repository(tmp_path: Path) -> Path:

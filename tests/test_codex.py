@@ -2430,6 +2430,37 @@ def test_npm_launcher_resolves_to_the_sibling_platform_binary(
     assert _codex._observed_install_channel(binary) == "npm"
 
 
+def test_npm_launcher_resolves_to_the_nested_platform_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "lib" / "node_modules" / "@openai" / "codex"
+    launcher = package_root / "bin" / "codex.js"
+    launcher.parent.mkdir(parents=True)
+    make_executable(launcher)
+    platform_package = package_root / "node_modules" / "@openai" / "codex-linux-x64"
+    platform_package.mkdir(parents=True)
+    (platform_package / "package.json").write_text("{}")
+    binary = platform_package / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
+    binary.parent.mkdir(parents=True)
+    make_executable(binary)
+    sibling_package = package_root.parent / "codex-linux-x64"
+    sibling_package.mkdir()
+    (sibling_package / "package.json").write_text("{}")
+    sibling_binary = (
+        sibling_package / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
+    )
+    sibling_binary.parent.mkdir(parents=True)
+    make_executable(sibling_binary)
+    path_directory = tmp_path / "bin"
+    path_directory.mkdir()
+    (path_directory / "codex").symlink_to(launcher)
+    monkeypatch.setenv("PATH", os.fspath(path_directory))
+
+    assert _codex._resolve_executable() == binary
+    assert _codex._observed_install_channel(binary) == "npm"
+
+
 def test_npm_launcher_refuses_a_missing_platform_binary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -668,16 +668,28 @@ class _Codex01580Policy(_Codex01571Policy):
     )
 
 
-_COMPATIBILITY_SET: tuple[_Codex01571Policy, ...] = (
-    _Codex01571Policy(
-        sha256="3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970",
+_COMPATIBILITY_SET: tuple[_Codex01580Policy, ...] = (
+    _Codex01580Policy(
+        sha256="167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9",
         operating_system="Linux",
         architecture="x86_64",
         canonical_path=Path(
             "/home/ricardoiarced/.codex/packages/standalone/releases/"
-            "0.157.1-x86_64-unknown-linux-musl/bin/codex"
+            "0.158.0-x86_64-unknown-linux-musl/bin/codex"
         ),
-        filesystem_identity=(2096, 140479),
+        filesystem_identity=(2096, 364055),
+    ),
+    _Codex01580Policy(
+        sha256="167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9",
+        operating_system="Linux",
+        architecture="x86_64",
+        canonical_path=Path(
+            "/home/ricardoiarced/.local/node-v24/lib/node_modules/@openai/codex/"
+            "node_modules/@openai/codex-linux-x64/vendor/"
+            "x86_64-unknown-linux-musl/bin/codex"
+        ),
+        filesystem_identity=(2096, 430566),
+        install_channel=_NPM_CHANNEL,
     ),
 )
 _VERSION_OUTPUT = re.compile(
@@ -698,10 +710,17 @@ def _resolve_executable() -> Path:
         )
     package, triple = layout
     package_root = executable.parent.parent
-    sibling = package_root.parent / package / "vendor" / triple / "bin" / "codex"
-    local = package_root / "vendor" / triple / "bin" / "codex"
-    platform_package = package_root.parent / package
-    binary = sibling if (platform_package / "package.json").is_file() else local
+    nested_package = package_root / "node_modules" / "@openai" / package
+    sibling_package = package_root.parent / package
+    platform_package = next(
+        (
+            candidate
+            for candidate in (nested_package, sibling_package)
+            if (candidate / "package.json").is_file()
+        ),
+        package_root,
+    )
+    binary = platform_package / "vendor" / triple / "bin" / "codex"
     try:
         return _resolve_candidate(binary, "Codex")
     except RunAdmissionError as error:
@@ -718,7 +737,19 @@ def _observed_install_channel(executable: Path) -> str:
     for package, triple in _NPM_PLATFORM_LAYOUT.values():
         sibling = ("node_modules", "@openai", package, "vendor", triple, "bin", "codex")
         local = ("node_modules", "@openai", "codex", "vendor", triple, "bin", "codex")
-        if parts[-7:] in (sibling, local):
+        nested = (
+            "node_modules",
+            "@openai",
+            "codex",
+            "node_modules",
+            "@openai",
+            package,
+            "vendor",
+            triple,
+            "bin",
+            "codex",
+        )
+        if parts[-7:] in (sibling, local) or parts[-10:] == nested:
             return _NPM_CHANNEL
     return _GITHUB_ASSET_CHANNEL
 

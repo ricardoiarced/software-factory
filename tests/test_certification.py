@@ -232,21 +232,29 @@ def test_certification_pins_official_source_to_the_artifact_family(
         load_committed_selection(tmp_path, candidate)
 
 
-def test_only_the_certified_linux_tuple_enters_the_production_compatibility_set() -> (
+def test_only_the_certified_linux_tuples_enter_the_production_compatibility_set() -> (
     None
 ):
-    assert len(_codex._COMPATIBILITY_SET) == 1
-    policy = _codex._COMPATIBILITY_SET[0]
-    assert policy.version == "0.157.1"
-    assert policy.sha256 == (
-        "3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970"
-    )
-    assert (policy.operating_system, policy.architecture) == ("Linux", "x86_64")
-    assert policy.canonical_path == Path(
+    github, npm = _codex._COMPATIBILITY_SET
+    for policy in (github, npm):
+        assert policy.version == "0.158.0"
+        assert policy.sha256 == (
+            "167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9"
+        )
+        assert (policy.operating_system, policy.architecture) == ("Linux", "x86_64")
+    assert github.install_channel == "github-asset"
+    assert github.canonical_path == Path(
         "/home/ricardoiarced/.codex/packages/standalone/releases/"
-        "0.157.1-x86_64-unknown-linux-musl/bin/codex"
+        "0.158.0-x86_64-unknown-linux-musl/bin/codex"
     )
-    assert policy.filesystem_identity == (2096, 140479)
+    assert github.filesystem_identity == (2096, 364055)
+    assert npm.install_channel == "npm"
+    assert npm.canonical_path == Path(
+        "/home/ricardoiarced/.local/node-v24/lib/node_modules/@openai/codex/"
+        "node_modules/@openai/codex-linux-x64/vendor/"
+        "x86_64-unknown-linux-musl/bin/codex"
+    )
+    assert npm.filesystem_identity == (2096, 430566)
 
 
 def test_every_named_candidate_has_a_recorded_support_decision() -> None:

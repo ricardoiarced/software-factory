@@ -160,7 +160,7 @@ plus the named evidence properties and production checks of its emitted report.
 
 | ID | Normative statement | Named tests | Certification |
 |---|---|---|---|
-| S10.1 | The PEP 621 distribution `software-factory` version `0.1.1` builds with `setuptools.build_meta`, requires Python `>=3.11` and `platformdirs>=4`, and serves the `factory = "factory:main"` console entry point. | `test_built_wheel_installs_and_reports_distribution_version` | |
+| S10.1 | The PEP 621 distribution `software-factory` version `0.1.2` builds with `setuptools.build_meta`, requires Python `>=3.11` and `platformdirs>=4`, and serves the `factory = "factory:main"` console entry point. | `test_built_wheel_installs_and_reports_distribution_version` | |
 | S10.2 | `factory.main` obtains the distribution version through `importlib.metadata`. | `test_built_wheel_installs_and_reports_distribution_version` | |
 | S10.3 | A pure-Python `py3-none-any` wheel and a source distribution are published, installable by the supported `pipx` and `uv tool` invocations; Git and Codex stay external executables. | `test_built_wheel_installs_and_reports_distribution_version` | |
 | S10.4 | The Project Registry lives outside the installation, so uninstall leaves it. | `test_project_add_creates_private_files_and_preserves_registry_mode`, `test_project_lock_persists_across_mutations` | |

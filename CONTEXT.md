@@ -77,6 +77,14 @@ _Avoid_: Cleanliness boolean, snapshot, execution-state proof
 The Checkout a Project selects for a Run when no explicit Checkout selector is supplied: the Project's stored default reference if valid, otherwise its sole Checkout. Ambiguity refuses rather than guesses, and convenience selection never changes the stored default.
 _Avoid_: Active checkout, implicit checkout
 
+**Shared Run Gate**:
+The ordered fail-closed validation stages that every Run executes before Harness admission — identity-store state, selection and scope, store-graph invariants, cross-client association scan, fresh Checkout and Repository proof, identity drift, and the Checkout Git Assessment — and that the Project Doctor reports as read-only observation using the same implementation, diagnostics, and precedence.
+_Avoid_: Doctor-only validation, separate doctor checker, advisory checks
+
+**Project Doctor**:
+The read-only `factory doctor project` inspection that reports, as observation, the state the next Run of one selected Project would meet: its identity inventory, shared-Repository topology, and the Shared Run Gate over one target Checkout, plus optional per-Harness admission observations under `--harness`. Doctor labels every reported fact with its provenance, never mutates identity state, never runs the Host Admission Probe or submits a Run Request, never speculates about checks the gate would not have reached, and never presents an observed check as proven.
+_Avoid_: Health check, repair command, admission proof, Harness doctor
+
 **Project Boundary**:
 The canonical directory passed to the selected Harness as its workspace root: always the selected Checkout's pinned, freshly verified Git worktree root. Registered Git worktree roots are the only Run-admissible boundaries; registration is the act that establishes one. Explicit `--checkout` selection requires an exact registered boundary and refuses an interior path rather than rewriting it; automatic discovery treats the invocation directory only as a starting point, finds the nearest enclosing Git worktree root, and stops there — registered or refused, never searching outward. Selection expands `~` and environment variables, rejects referenced variables that are unset or empty, makes relative paths absolute from the invocation directory, and resolves symlinks. Registrations store the resulting machine-local path, not an environment expression.
 _Avoid_: Project root, working directory, Run boundary

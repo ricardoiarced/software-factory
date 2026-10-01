@@ -89,6 +89,26 @@ _Avoid_: Health check, repair command, admission proof, Harness doctor
 The canonical directory passed to the selected Harness as its workspace root: always the selected Checkout's pinned, freshly verified Git worktree root. Registered Git worktree roots are the only Run-admissible boundaries; registration is the act that establishes one. Explicit `--checkout` selection requires an exact registered boundary and refuses an interior path rather than rewriting it; automatic discovery treats the invocation directory only as a starting point, finds the nearest enclosing Git worktree root, and stops there — registered or refused, never searching outward. Selection expands `~` and environment variables, rejects referenced variables that are unset or empty, makes relative paths absolute from the invocation directory, and resolves symlinks. Registrations store the resulting machine-local path, not an environment expression.
 _Avoid_: Project root, working directory, Run boundary
 
+**Validated Run Plan**:
+The immutable set of gated Run inputs a successful Shared Run Gate produces: resolved identity, validated Project Boundary and its gate-time proof, Harness identity, effective environment, argv, exact Instruction and Context bytes, and every admission and evidence verdict with provenance. The launcher consumes the plan as its sole source of gated inputs and verdicts and never re-derives them after validation; plan construction, launch, and outcome form one in-process chain.
+_Avoid_: admission snapshot, launch recipe
+
+**Two-Observation Fact**:
+A fact observed once while the Validated Run Plan is built and re-observed at the launch boundary, where any disagreement refuses as Changed During Admission. The re-observation answers only same-or-changed and never contributes new admitted state.
+_Avoid_: re-admission, double gate
+
+**Single-Observation Fact**:
+A fact authoritative exactly once per Run; its backing source is never consulted again to establish that fact for that Run.
+_Avoid_: cached evidence
+
+**Launch Boundary Recheck**:
+The final admission invariant inside the launcher, immediately before process creation: re-observe the Two-Observation Facts and compare them against the Validated Run Plan.
+_Avoid_: revalidation phase, second gate
+
+**Changed During Admission**:
+The frozen refusal family for a Two-Observation Fact disagreement or an impossible launch-boundary re-observation; it never falls back to the first observation or substitutes the newer value. Distinct from identity drift, which compares the identity store against fresh filesystem proof.
+_Avoid_: generic mismatch
+
 **Project Data Isolation**:
 The Run contract that permits model-generated shell commands to read and write within the selected Project Boundary while denying access to Project-exclusive data of other Projects and to anything outside the selected Project's Client boundary; a Repository explicitly bound to multiple Projects of the same Client is authorized shared data for those Projects, not sibling-private data. A small Codex runtime set may remain readable, and Codex host behavior is outside this command boundary.
 _Avoid_: Process isolation, unqualified strict isolation
@@ -126,7 +146,7 @@ The fail-closed checks that establish a Run can use a member of the selected Har
 _Avoid_: Compatibility mode
 
 **Host Admission Probe**:
-A cacheable synthetic sandbox check that proves the current host enforces the certified permission boundary required for Run Admission.
+A cacheable synthetic sandbox check that proves the current host enforces the certified permission boundary required for Run Admission. A cached success remains reusable until one of its declared cache-key identity inputs changes or the operator forces a fresh probe; probe age is recorded for audit and is never itself an invalidation condition.
 _Avoid_: Sandbox detection
 
 **Masked Denial**:

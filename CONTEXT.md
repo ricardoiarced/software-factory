@@ -102,7 +102,7 @@ A fact authoritative exactly once per Run; its backing source is never consulted
 _Avoid_: cached evidence
 
 **Launch Boundary Recheck**:
-The final admission invariant inside the launcher, immediately before process creation: re-observe the Two-Observation Facts and compare them against the Validated Run Plan.
+The final admission invariant inside the launcher: re-observe the Two-Observation Facts and compare them against the Validated Run Plan. The durable Launch Commit is the sole operation permitted between it and process creation.
 _Avoid_: revalidation phase, second gate
 
 **Changed During Admission**:
@@ -186,5 +186,17 @@ An explicit continuity claim that preserves an immutable Checkout or Repository 
 _Avoid_: Re-add, automatic repair, silent rebinding
 
 **Run**:
-One non-interactive execution started for an instruction in a project by the selected Harness.
+One admission attempt on the Run execution path: an invocation that enters the Shared Run Gate, ends in exactly one terminal outcome, and, when admitted, launches the selected Harness for one instruction. A refused preflight is a terminal Run outcome, not an absence of a Run.
 _Avoid_: Job, task, session
+
+**Run Record**:
+The durable, standalone audit artifact Factory writes for one Run on the Run execution path: identity snapshot, selection inputs, boundary and Git evidence, harness and probe evidence, input digests and launch bindings, validation outcomes, and observed outcome. Opened before the first Shared Run Gate stage, extended only by the Run orchestrator until finalized, then immutable. A refused preflight is a terminal recorded Run outcome. CLI usage errors that never enter the gate are not Runs and create no record, and read-only gate consumers such as the Project Doctor never mint one.
+_Avoid_: Run history, log, journal, event stream
+
+**Run ID**:
+The Factory-generated, cryptographically random, immutable `run_…` token allocated before the first Shared Run Gate stage of every invocation entering the Run path, in the same prefix discipline as the other identity IDs. Never derived from names, paths, Git state, or timestamps, never reused across retries, and carrying no ordering semantics.
+_Avoid_: attempt number, session ID, derived correlation ID
+
+**Launch Commit**:
+The crash-durable fact that admission completed and Factory irreversibly authorized process creation as its next action, written after the Launch Boundary Recheck and before spawn is permitted. A record carrying it without a durably recorded spawn outcome means the launch outcome is unknown; readers infer neither success nor failure.
+_Avoid_: launch timestamp, launched status, launch promise

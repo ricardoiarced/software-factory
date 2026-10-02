@@ -36,7 +36,7 @@ baseline to ratchet against — any regression fails outright (see
 
 | Tool | Pin | Mechanism |
 |---|---|---|
-| ruff | `0.16.9` | `[tool.ruff] required-version = "==0.16.9"` — ruff refuses to run off-spec, so every invocation (including `uv run --with ruff`) is bound. Upgrades are deliberate policy changes. The dev-group `ruff` entry stays unpinned on purpose: the config pin is the single source of truth; two pins would drift. |
+| ruff | `0.16.10` | `[tool.ruff] required-version = "==0.16.10"` — ruff refuses to run off-spec, so every invocation (including `uv run --with ruff`) is bound. Upgrades are deliberate policy changes. The dev-group `ruff` entry stays unpinned on purpose: the config pin is the single source of truth; two pins would drift. A fresh resolution past the pin fail-closes (ruff exits 2) until the pin is bumped — the 0.16.10 release broke CI exactly this way, and the fix is the bump. |
 | pyright | `1.1.414` | exact pin in the dev dependency group — pyright has no config-level version lock. |
 
 ## Lint selection
@@ -58,7 +58,7 @@ baseline to ratchet against — any regression fails outright (see
 - **Formatter: `ruff format`, default settings.** No `[tool.ruff.format]`
   section exists on purpose — transcribing the defaults would only invite
   drift, the same reasoning as the lint selection. Formatter behavior is
-  frozen by the same `required-version = "==0.16.9"` pin as the linter, so a
+  frozen by the same `required-version = "==0.16.10"` pin as the linter, so a
   version bump is a deliberate policy change on both sides.
 - **Scope: all tracked code** (`ruff format .`) — production modules,
   `tests/`, and `certification/`.

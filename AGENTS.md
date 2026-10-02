@@ -12,8 +12,8 @@ invocation — no persistent install needed. The conformance tools (lint,
 typecheck) run in project mode instead: their versions are governed solely by
 the pins in `pyproject.toml`. All commands run from the repo root.
 
-- Run tests (full, 515 tests): `uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`
-  - Without `--with build`, 513 pass and the two wheel-smoke tests fail (they package the project).
+- Run tests (full suite): `uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`
+  - Without `--with build`, the wheel-smoke test fails (it packages the project).
 - Run a single test: `uv run --no-project --with pytest --with platformdirs --with . -m pytest tests/test_cli.py -q` (append `::test_name` for one test)
 - Certification selection check (must report all skipped): `uv run --no-project --with pytest --with platformdirs --with . -m pytest certification -q -rs`
 - Run the CLI from source: `uv run --no-project --with platformdirs --with . factory --help`
@@ -48,6 +48,8 @@ the statement rows in `docs/traceability.md` and the tests they name.
 - Code should be self-explanatory — `#` comments are banned except pragmas (`# noqa`, `# type: ignore`); docstrings are fine.
 - Keep functions and modules small and focused; private helpers are `_`-prefixed.
 - A change is accepted only when the full deterministic suite passes (`uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`) and the Conformance check is green (`.github/workflows/conformance.yml`); real-host certification is maintainer-only and never implied by green tests.
+- Test economy: iterate with single test files or `-k` filters; a commit that touches no Python needs no pytest at all — `ruff format --check .` suffices. The full suite still gates acceptance per the rule above.
+- Wrap-ups state the landing: end every session summary with one line of `git status --porcelain` plus the current branch, so uncommitted or wrong-branch state is visible at wrap-up rather than discovered later.
 - Each convention's enforcement — linter rules, type-checker, CI checks, or review-only — is mapped in `docs/conventions-enforcement.md`.
 
 ## Do not modify

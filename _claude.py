@@ -1337,19 +1337,19 @@ class _ClaudePolicy:
 
 _CLAUDE_COMPATIBILITY_SET: tuple[_ClaudePolicy, ...] = (
     _ClaudePolicy(
-        version="2.1.283",
-        sha256="1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2",
+        version="2.1.287",
+        sha256="3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0",
         operating_system="Linux",
         architecture="x86_64",
         install_channel="native-installer",
         canonical_path=Path(
-            "/home/ricardoiarced/.local/share/claude/versions/2.1.283",
+            "/home/ricardoiarced/.local/share/claude/versions/2.1.287",
         ),
-        filesystem_identity=(2096, 367099),
+        filesystem_identity=(2096, 108258),
     ),
     _ClaudePolicy(
-        version="2.1.283",
-        sha256="1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2",
+        version="2.1.287",
+        sha256="3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0",
         operating_system="Linux",
         architecture="x86_64",
         install_channel="npm",
@@ -1357,7 +1357,7 @@ _CLAUDE_COMPATIBILITY_SET: tuple[_ClaudePolicy, ...] = (
             "/home/ricardoiarced/.local/node-v24/lib/node_modules/"
             "@anthropic-ai/claude-code/bin/claude.exe",
         ),
-        filesystem_identity=(2096, 259808),
+        filesystem_identity=(2096, 109968),
     ),
 )
 

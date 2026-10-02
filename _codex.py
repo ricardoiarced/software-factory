@@ -57,7 +57,7 @@ def _cache_directory() -> Path:
 
 
 @dataclass(frozen=True)
-class _Codex01580Policy:
+class _Codex01600Policy:
     """The complete Run Admission policy certified for one Codex release."""
 
     sha256: str
@@ -68,9 +68,9 @@ class _Codex01580Policy:
     install_channel: str = _GITHUB_ASSET_CHANNEL
     host_probe_timeout_seconds: float = 10
 
-    version: ClassVar[str] = "0.158.0"
+    version: ClassVar[str] = "0.160.0"
     _feature_inventory_sha256: ClassVar[str] = (
-        "5a04b7dbaefad3228c33429f7bdd8f488226864c1ec70ddcf9ebc1b3e647aed5"
+        "6aef61c26e6caff34cb888bf781a4b36e4e3813f9595b308a5226f6cb2e6063e"
     )
     _feature_output: ClassVar[re.Pattern[bytes]] = re.compile(
         rb"([a-z][a-z0-9_.]*) {2,}"
@@ -661,19 +661,19 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         return self._invocation(project_boundary, enclosing_git_root)
 
 
-_COMPATIBILITY_SET: tuple[_Codex01580Policy, ...] = (
-    _Codex01580Policy(
-        sha256="167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9",
+_COMPATIBILITY_SET: tuple[_Codex01600Policy, ...] = (
+    _Codex01600Policy(
+        sha256="12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
         operating_system="Linux",
         architecture="x86_64",
         canonical_path=Path(
             "/home/ricardoiarced/.codex/packages/standalone/releases/"
-            "0.158.0-x86_64-unknown-linux-musl/bin/codex"
+            "0.160.0-x86_64-unknown-linux-musl/bin/codex"
         ),
-        filesystem_identity=(2096, 364055),
+        filesystem_identity=(2096, 110018),
     ),
-    _Codex01580Policy(
-        sha256="167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9",
+    _Codex01600Policy(
+        sha256="12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
         operating_system="Linux",
         architecture="x86_64",
         canonical_path=Path(
@@ -681,7 +681,7 @@ _COMPATIBILITY_SET: tuple[_Codex01580Policy, ...] = (
             "node_modules/@openai/codex-linux-x64/vendor/"
             "x86_64-unknown-linux-musl/bin/codex"
         ),
-        filesystem_identity=(2096, 430566),
+        filesystem_identity=(2096, 110184),
         install_channel=_NPM_CHANNEL,
     ),
 )
@@ -768,7 +768,7 @@ def _artifact_identity(executable: Path) -> tuple[str, tuple[int, int]]:
     return digest, (metadata.st_dev, metadata.st_ino)
 
 
-def _match_compatibility(executable: Path, version: str) -> _Codex01580Policy:
+def _match_compatibility(executable: Path, version: str) -> _Codex01600Policy:
     """Return the sole policy whose complete immutable identity matches."""
 
     digest, filesystem_identity = _artifact_identity(executable)
@@ -825,7 +825,7 @@ def _match_compatibility(executable: Path, version: str) -> _Codex01580Policy:
     )
 
 
-def _changed_artifact_failure(policy: _Codex01580Policy) -> RunAdmissionError:
+def _changed_artifact_failure(policy: _Codex01600Policy) -> RunAdmissionError:
     executable = policy.canonical_path
     return RunAdmissionError(
         f"Codex executable {_quoted_absolute_path(executable)} changed "
@@ -834,7 +834,7 @@ def _changed_artifact_failure(policy: _Codex01580Policy) -> RunAdmissionError:
     )
 
 
-def _recheck_artifact(policy: _Codex01580Policy) -> None:
+def _recheck_artifact(policy: _Codex01600Policy) -> None:
     """Refuse a changed artifact without executing it as a new candidate."""
 
     executable = policy.canonical_path
@@ -860,7 +860,7 @@ def _recheck_artifact(policy: _Codex01580Policy) -> None:
         raise _changed_artifact_failure(policy)
 
 
-def _admit_run(project: Project) -> tuple[_Codex01580Policy, list[str]]:
+def _admit_run(project: Project) -> tuple[_Codex01600Policy, list[str]]:
     """Establish the complete production evidence and strict invocation.
 
     The order is fixed: local executable resolution and installed-version

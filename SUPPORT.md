@@ -19,33 +19,33 @@ architecture, or Harness artifact to another.
 [
   {
     "harness": "codex",
-    "harness_version": "0.158.0",
+    "harness_version": "0.160.0",
     "install_channel": "github-asset",
-    "official_sha256": "167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9",
+    "official_sha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
     "operating_system": "Linux",
     "architecture": "x86_64"
   },
   {
     "harness": "codex",
-    "harness_version": "0.158.0",
+    "harness_version": "0.160.0",
     "install_channel": "npm",
-    "official_sha256": "167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9",
+    "official_sha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
     "operating_system": "Linux",
     "architecture": "x86_64"
   },
   {
     "harness": "claude",
-    "harness_version": "2.1.283",
+    "harness_version": "2.1.287",
     "install_channel": "native-installer",
-    "official_sha256": "1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2",
+    "official_sha256": "3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0",
     "operating_system": "Linux",
     "architecture": "x86_64"
   },
   {
     "harness": "claude",
-    "harness_version": "2.1.283",
+    "harness_version": "2.1.287",
     "install_channel": "npm",
-    "official_sha256": "1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2",
+    "official_sha256": "3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0",
     "operating_system": "Linux",
     "architecture": "x86_64"
   }
@@ -53,7 +53,7 @@ architecture, or Harness artifact to another.
 ```
 
 Two Codex artifact families have completed real-host certification for
-`0.158.0` on the tested Linux host recorded under `certification/results/`:
+`0.160.0` on the tested Linux host recorded under `certification/results/`:
 the official GitHub asset and the npm vendored platform binary. Their
 executables have identical bytes, and each channel has its own exact
 Compatibility Set entry. The package
@@ -67,7 +67,7 @@ Host Admission Probe.
 
 Two Claude Code tuples have completed real-host certification, both on the
 tested Linux host recorded under `certification/results/`: the
-`native-installer` and `npm` channels of release `2.1.283`, whose artifacts
+`native-installer` and `npm` channels of release `2.1.287`, whose artifacts
 are the same upstream binary verified through each channel's official
 distribution surface. Every Run that does not resolve to exactly one of
 these tuples on an identical host fails closed before the Run Request is

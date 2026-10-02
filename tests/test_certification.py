@@ -265,24 +265,24 @@ def test_only_the_certified_linux_tuples_enter_the_production_compatibility_set(
 ):
     github, npm = _codex._COMPATIBILITY_SET
     for policy in (github, npm):
-        assert policy.version == "0.158.0"
+        assert policy.version == "0.160.0"
         assert policy.sha256 == (
-            "167c0148a849d2444f1b5a7fb5f8bb2de1de5ae13a2a504b833fc765980f5cd9"
+            "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad"
         )
         assert (policy.operating_system, policy.architecture) == ("Linux", "x86_64")
     assert github.install_channel == "github-asset"
     assert github.canonical_path == Path(
         "/home/ricardoiarced/.codex/packages/standalone/releases/"
-        "0.158.0-x86_64-unknown-linux-musl/bin/codex"
+        "0.160.0-x86_64-unknown-linux-musl/bin/codex"
     )
-    assert github.filesystem_identity == (2096, 364055)
+    assert github.filesystem_identity == (2096, 110018)
     assert npm.install_channel == "npm"
     assert npm.canonical_path == Path(
         "/home/ricardoiarced/.local/node-v24/lib/node_modules/@openai/codex/"
         "node_modules/@openai/codex-linux-x64/vendor/"
         "x86_64-unknown-linux-musl/bin/codex"
     )
-    assert npm.filesystem_identity == (2096, 430566)
+    assert npm.filesystem_identity == (2096, 110184)
 
 
 def test_every_named_candidate_has_a_recorded_support_decision() -> None:

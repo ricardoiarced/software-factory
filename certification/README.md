@@ -49,6 +49,11 @@ python -m pytest certification -q -s \
   --harness-candidate certification/candidates/<candidate>.json
 ```
 
+Run at most one real-host suite at a time — each run costs real inference
+spend and writes its evidence log, so before launching (especially when
+resuming work from a handoff document), confirm no other session is already
+running the same candidate.
+
 The Harness executable resolved through `PATH` is the candidate. The suite
 refuses uncommitted, modified, symlinked, misplaced, incomplete, malformed,
 or unrecognized-channel candidate manifests, and each certification test

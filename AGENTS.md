@@ -12,8 +12,8 @@ invocation — no persistent install needed. The conformance tools (lint,
 typecheck) run in project mode instead: their versions are governed solely by
 the pins in `pyproject.toml`. All commands run from the repo root.
 
-- Run tests (full, 515 tests): `uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`
-  - Without `--with build`, 513 pass and the two wheel-smoke tests fail (they package the project).
+- Run tests (full suite): `uv run --no-project --with build --with pytest --with platformdirs --with . -m pytest tests -q`
+  - Without `--with build`, the wheel-smoke test fails (it packages the project).
 - Run a single test: `uv run --no-project --with pytest --with platformdirs --with . -m pytest tests/test_cli.py -q` (append `::test_name` for one test)
 - Certification selection check (must report all skipped): `uv run --no-project --with pytest --with platformdirs --with . -m pytest certification -q -rs`
 - Run the CLI from source: `uv run --no-project --with platformdirs --with . factory --help`

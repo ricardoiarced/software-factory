@@ -9,7 +9,9 @@ Write a handoff document summarising the current conversation so a fresh agent c
 
 Include a "suggested skills" section in the document, naming which skills the next agent should call the Skill tool for.
 
-Do not duplicate content already captured in other artifacts (specs, plans, ADRs, issues, commits, diffs). Reference them by path or URL instead.
+Do not duplicate content already captured in other artifacts (specs, plans, ADRs, issues, commits, diffs, AGENTS.md, the session's memory files). Reference them by path or URL instead - and name AGENTS.md plus the active memory map file explicitly, so the next session reads them as its briefing instead of re-deriving state from GitHub.
+
+If continuing the work can launch long-running or paid runs, include a single-resumer warning: exactly one session may resume the handoff; any other session picking it up must stop before relaunching those runs.
 
 Redact any sensitive information, such as API keys, passwords, or personally identifiable information.
 

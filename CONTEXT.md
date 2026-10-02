@@ -161,6 +161,14 @@ _Avoid_: Version check, update check, cached release lookup
 Any channel through which organization-managed configuration can reach the Harness: the managed settings file, managed settings drop-ins, managed MCP configuration, remote managed settings, organization policy, and the server policy cache. Each surface is present (on disk), configured (the Harness reports it active), unavailable (the Harness reports the channel cannot deliver policy, with the reason attributed), or uninspected (inspection evidence is missing or unreadable). Run Admission refuses a Run on present, configured, and uninspected surfaces; an unavailable surface allows the Run with a recorded residual-risk notice.
 _Avoid_: Managed policy source, organization configuration
 
+**Effective Configuration**:
+The configuration inputs that can affect one certified launch: the launch inputs Factory authors (the inline Claude `--settings` document, Codex `-c` overrides and strict configuration), the gated managed inputs, and nothing else. A Run is admissible only when every effective configuration input is Factory-authored, independently gated, or proven absent; a source the certified invocation excludes is not effective configuration and carries no admission obligation merely because it exists on the host.
+_Avoid_: All settings, host configuration state, ambient validation
+
+**Ignored Ambient Configuration**:
+Configuration the selected Harness's certified invocation excludes from the Run — user, project, and local settings files under `--restricted`, a Codex `config.toml` under `--ignore-user-config`. It is host context, never a launch input: its presence, absence, or validity neither admits nor refuses a Run, and the Project Doctor reports it separately, explicitly identified as not a launch input.
+_Avoid_: Stale config, user settings state, broken configuration
+
 **Project Spec**:
 Optional guidance stored at `<Project Boundary>/.agent/spec.md` and prepended to each instruction sent from that project. Factory never inherits a Project Spec from above the selected boundary, and a symlinked spec is valid only when its resolved target remains inside the boundary.
 _Avoid_: Instructions file, context file

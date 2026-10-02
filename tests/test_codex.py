@@ -2407,18 +2407,30 @@ def test_identity_matches_an_exact_private_compatibility_fixture(
     assert _match_compatibility(executable, "0.158.0") == certify(executable)
 
 
+_NPM_PLATFORM_LAYOUT_CASES = [
+    pytest.param(system, machine, id=f"{system}-{machine}")
+    for system, machine in sorted(_codex._NPM_PLATFORM_LAYOUT)
+]
+
+
+@pytest.mark.parametrize(("system", "machine"), _NPM_PLATFORM_LAYOUT_CASES)
 def test_npm_launcher_resolves_to_the_sibling_platform_binary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    system: str,
+    machine: str,
 ) -> None:
+    package, triple = _codex._NPM_PLATFORM_LAYOUT[(system, machine)]
+    monkeypatch.setattr(platform, "system", lambda: system)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
     package_root = tmp_path / "lib" / "node_modules" / "@openai" / "codex"
     launcher = package_root / "bin" / "codex.js"
     launcher.parent.mkdir(parents=True)
     make_executable(launcher)
-    platform_package = package_root.parent / "codex-linux-x64"
+    platform_package = package_root.parent / package
     platform_package.mkdir()
     (platform_package / "package.json").write_text("{}")
-    binary = platform_package / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
+    binary = platform_package / "vendor" / triple / "bin" / "codex"
     binary.parent.mkdir(parents=True)
     make_executable(binary)
     path_directory = tmp_path / "bin"
@@ -2430,26 +2442,30 @@ def test_npm_launcher_resolves_to_the_sibling_platform_binary(
     assert _codex._observed_install_channel(binary) == "npm"
 
 
+@pytest.mark.parametrize(("system", "machine"), _NPM_PLATFORM_LAYOUT_CASES)
 def test_npm_launcher_resolves_to_the_nested_platform_binary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    system: str,
+    machine: str,
 ) -> None:
+    package, triple = _codex._NPM_PLATFORM_LAYOUT[(system, machine)]
+    monkeypatch.setattr(platform, "system", lambda: system)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
     package_root = tmp_path / "lib" / "node_modules" / "@openai" / "codex"
     launcher = package_root / "bin" / "codex.js"
     launcher.parent.mkdir(parents=True)
     make_executable(launcher)
-    platform_package = package_root / "node_modules" / "@openai" / "codex-linux-x64"
+    platform_package = package_root / "node_modules" / "@openai" / package
     platform_package.mkdir(parents=True)
     (platform_package / "package.json").write_text("{}")
-    binary = platform_package / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
+    binary = platform_package / "vendor" / triple / "bin" / "codex"
     binary.parent.mkdir(parents=True)
     make_executable(binary)
-    sibling_package = package_root.parent / "codex-linux-x64"
+    sibling_package = package_root.parent / package
     sibling_package.mkdir()
     (sibling_package / "package.json").write_text("{}")
-    sibling_binary = (
-        sibling_package / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
-    )
+    sibling_binary = sibling_package / "vendor" / triple / "bin" / "codex"
     sibling_binary.parent.mkdir(parents=True)
     make_executable(sibling_binary)
     path_directory = tmp_path / "bin"
@@ -2479,15 +2495,21 @@ def test_npm_launcher_refuses_a_missing_platform_binary(
         _codex._resolve_executable()
 
 
+@pytest.mark.parametrize(("system", "machine"), _NPM_PLATFORM_LAYOUT_CASES)
 def test_npm_launcher_uses_package_local_vendor_when_platform_package_is_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    system: str,
+    machine: str,
 ) -> None:
+    _, triple = _codex._NPM_PLATFORM_LAYOUT[(system, machine)]
+    monkeypatch.setattr(platform, "system", lambda: system)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
     package_root = tmp_path / "node_modules" / "@openai" / "codex"
     launcher = package_root / "bin" / "codex.js"
     launcher.parent.mkdir(parents=True)
     make_executable(launcher)
-    binary = package_root / "vendor" / "x86_64-unknown-linux-musl" / "bin" / "codex"
+    binary = package_root / "vendor" / triple / "bin" / "codex"
     binary.parent.mkdir(parents=True)
     make_executable(binary)
     path_directory = tmp_path / "bin"

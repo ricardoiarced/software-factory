@@ -17,7 +17,7 @@ the pins in `pyproject.toml`. All commands run from the repo root.
 - Run a single test: `uv run --no-project --with pytest --with platformdirs --with . -m pytest tests/test_cli.py -q` (append `::test_name` for one test)
 - Certification selection check (must report all skipped): `uv run --no-project --with pytest --with platformdirs --with . -m pytest certification -q -rs`
 - Run the CLI from source: `uv run --no-project --with platformdirs --with . factory --help`
-- Persistent env instead of ephemeral: `uv venv && uv pip install -e . pytest platformdirs build ruff pyright`, then plain `python -m pytest -q` / `ruff check .` / `pyright` (the deterministic-suite CI job does the equivalent `pip install platformdirs pytest build`; the Conformance job uses the project-mode `uv run` forms below)
+- Persistent env instead of ephemeral: `uv venv && uv pip install -e . pytest platformdirs build ruff pyright`, then plain `python -m pytest -q` / `ruff check .` / `pyright` (the deterministic-suite CI job does the equivalent `pip install platformdirs pytest build -e .` — the checkout is installed, since admission's Factory-version probe-cache key reads distribution metadata; the Conformance job uses the project-mode `uv run` forms below)
 - Build / package: `python -m build` — CI (`.github/workflows/release-verification.yml`) requires exactly one `py3-none-any.whl` and one `.tar.gz`
 - Lint: `uv run ruff check .`
 - Format: `uv run ruff format .` (CI enforces the `--check` form)

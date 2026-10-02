@@ -268,7 +268,7 @@ def _certify_codex(
     all of it on this host.
     """
 
-    if selection.version != _codex._Codex01580Policy.version:
+    if selection.version != _codex._Codex01600Policy.version:
         raise RunAdmissionError(
             f"selected Codex version {selection.version!r} has no production "
             "certification policy"
@@ -288,7 +288,7 @@ def _certify_codex(
             "manifest digest; the selection is not the certified candidate",
             executable=executable,
         )
-    policy = _codex._Codex01580Policy(
+    policy = _codex._Codex01600Policy(
         sha256=selection.official_sha256,
         operating_system=selection.operating_system,
         architecture=selection.architecture,

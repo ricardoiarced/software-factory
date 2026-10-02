@@ -7,9 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 import _identity as identity
+import pytest
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
@@ -111,7 +110,7 @@ def repository_record(
     return {"id": repository_id, "name": name, "common_dir": pin(path, dev, ino)}
 
 
-def checkout_record(
+def checkout_record(  # noqa: PLR0913
     checkout_id: str = CHECKOUT_ID,
     project_id: str = PROJECT_ID,
     repository_id: str = REPOSITORY_ID,
@@ -186,11 +185,13 @@ def test_identity_registration_assigns_prefixed_random_immutable_ids(
     assert isinstance(checkout["git_dir"]["st_ino"], int)  # type: ignore[index]
 
     before = [record["id"] for record in store["projects"]]  # type: ignore[union-attr]
-    assert invoke(
-        "project", "set-name", "acme/web", "Web Frontend", env=env
-    ).returncode == 0
+    assert (
+        invoke("project", "set-name", "acme/web", "Web Frontend", env=env).returncode
+        == 0
+    )
     assert [
-        record["id"] for record in read_store(tmp_path / "config")["projects"]  # type: ignore[union-attr]
+        record["id"]
+        for record in read_store(tmp_path / "config")["projects"]  # type: ignore[union-attr]
     ] == before
 
 
@@ -280,7 +281,7 @@ def test_identity_reader_refuses_dangling_references_and_inconsistent_pins(
         store_document(
             clients=[client_record()],
             projects=[project_record()],
-            repositories=[{**repository_record(), "common_dir": pin("/r", 1)}],
+            repositories=[{**repository_record(), "common_dir": pin("/r", 1, 2)}],
         ),
         store_document(
             clients=[client_record()],
@@ -383,12 +384,15 @@ def test_identity_store_serialization_is_deterministic(tmp_path: Path) -> None:
     assert invoke("project", "client", "register", "zeta", env=env).returncode == 0
     other = tmp_path / "other"
     git_repo(other)
-    assert invoke("project", "register", "zeta/site", str(other), env=env).returncode == 0
+    assert (
+        invoke("project", "register", "zeta/site", str(other), env=env).returncode == 0
+    )
     store = read_store(tmp_path / "config")
     raw = registry.read_text(encoding="utf-8")
     for namespace in ("clients", "projects", "repositories", "checkouts"):
         identifiers = [
-            record["id"] for record in store[namespace]  # type: ignore[union-attr]
+            record["id"]
+            for record in store[namespace]  # type: ignore[union-attr]
         ]
         assert identifiers == sorted(identifiers), namespace
     assert "café" in raw
@@ -467,7 +471,7 @@ def test_identity_git_inspection_ignores_repository_location_overrides(
 def test_project_register_creates_project_repository_and_checkout_atomically(
     tmp_path: Path,
 ) -> None:
-    env, repository = registered_project(tmp_path)
+    _env, repository = registered_project(tmp_path)
     store = read_store(tmp_path / "config")
     client_id = store["clients"][0]["id"]  # type: ignore[index]
     project_id = store["projects"][0]["id"]  # type: ignore[index]
@@ -483,10 +487,13 @@ def test_project_register_creates_project_repository_and_checkout_atomically(
     )
 
     assert result.returncode == 0
-    assert result.stdout == (
-        f'Registered project "acme/web" at "{repository}" '
-        f'as checkout "{checkout_id}" with repository "{repository_id}".\n'
-    ).encode()
+    assert (
+        result.stdout
+        == (
+            f'Registered project "acme/web" at "{repository}" '
+            f'as checkout "{checkout_id}" with repository "{repository_id}".\n'
+        ).encode()
+    )
     assert store["projects"][0] == {  # type: ignore[index]
         "id": project_id,
         "client_id": client_id,
@@ -513,15 +520,16 @@ def test_project_register_refuses_an_existing_project_and_an_unknown_client(
     )
     assert duplicate.returncode == 1
     assert duplicate.stdout == b""
-    assert duplicate.stderr == (
-        f'factory: error: Project "acme/web" already exists as "{project_id}".\n'
-    ).encode()
+    assert (
+        duplicate.stderr
+        == (
+            f'factory: error: Project "acme/web" already exists as "{project_id}".\n'
+        ).encode()
+    )
 
     unknown = invoke("project", "register", "missing/web", str(repository), env=env)
     assert unknown.returncode == 1
-    assert unknown.stderr == (
-        b'factory: error: Client "missing" is not registered.\n'
-    )
+    assert unknown.stderr == (b'factory: error: Client "missing" is not registered.\n')
     assert read_store(tmp_path / "config") == store
 
 
@@ -538,7 +546,10 @@ def test_repository_implicit_creation_reuses_a_full_identity_match(
         invoke("project", "register", "acme/main", str(repository), env=env).returncode
         == 0
     )
-    assert invoke("project", "register", "acme/linked", str(linked), env=env).returncode == 0
+    assert (
+        invoke("project", "register", "acme/linked", str(linked), env=env).returncode
+        == 0
+    )
 
     store = read_store(tmp_path / "config")
     assert len(store["repositories"]) == 1  # type: ignore[arg-type]
@@ -576,12 +587,15 @@ def test_repository_implicit_creation_refuses_a_partial_identity_match(
     moved_result = invoke("project", "register", "acme/moved", str(moved), env=env)
     assert moved_result.returncode == 1
     assert moved_result.stdout == b""
-    assert moved_result.stderr == (
-        f'factory: error: Repository "{repository_id}" is pinned at '
-        f'"{repository / ".git"}" but a component of the verified identity '
-        f'matches "{moved / ".git"}"; repair it with '
-        "'factory project repository re-register'.\n"
-    ).encode()
+    assert (
+        moved_result.stderr
+        == (
+            f'factory: error: Repository "{repository_id}" is pinned at '
+            f'"{repository / ".git"}" but a component of the verified identity '
+            f'matches "{moved / ".git"}"; repair it with '
+            "'factory project repository re-register'.\n"
+        ).encode()
+    )
 
 
 def test_checkout_register_binds_an_additional_checkout_of_the_project(
@@ -607,10 +621,13 @@ def test_checkout_register_binds_an_additional_checkout_of_the_project(
     assert result.returncode == 0, result.stderr
     updated = read_store(tmp_path / "config")
     new_checkout = updated["checkouts"][1]  # type: ignore[index]
-    assert result.stdout == (
-        f'Registered checkout "{new_checkout["id"]}" for project "acme/web" '
-        f'at "{linked}" with repository "{repository_id}".\n'
-    ).encode()
+    assert (
+        result.stdout
+        == (
+            f'Registered checkout "{new_checkout["id"]}" for project "acme/web" '
+            f'at "{linked}" with repository "{repository_id}".\n'
+        ).encode()
+    )
     assert new_checkout["project_id"] == project_id  # type: ignore[index]
     assert new_checkout["repository_id"] == repository_id  # type: ignore[index]
     assert updated["projects"][0]["default_checkout_id"] == default_id  # type: ignore[index]
@@ -620,7 +637,7 @@ def test_checkout_register_binds_an_additional_checkout_of_the_project(
 def test_checkout_register_refuses_a_new_repository_for_an_existing_project(
     tmp_path: Path,
 ) -> None:
-    env, repository = registered_project(tmp_path)
+    env, _repository = registered_project(tmp_path)
     unrelated = tmp_path / "unrelated"
     git_repo(unrelated)
 
@@ -630,11 +647,14 @@ def test_checkout_register_refuses_a_new_repository_for_an_existing_project(
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == (
-        b'factory: error: Project "acme/web" already exists and '
-        b'"' + str(unrelated).encode() + b'" belongs to a new Repository; '
-        b"registering additional Repositories for an existing Project "
-        b"is not supported in this release.\n"
+    assert (
+        result.stderr
+        == (
+            'factory: error: Project "acme/web" already exists and '
+            f'"{unrelated}" belongs to a new Repository; '
+            "registering additional Repositories for an existing Project "
+            "is not supported in this release.\n"
+        ).encode()
     )
     assert len(read_store(tmp_path / "config")["checkouts"]) == 1  # type: ignore[arg-type]
 
@@ -653,26 +673,34 @@ def test_checkout_register_refuses_duplicate_checkouts(tmp_path: Path) -> None:
         invoke("project", "register", "acme/web", str(repository), env=env).returncode
         == 0
     )
-    assert invoke("project", "register", "beta/other", str(other), env=env).returncode == 0
+    assert (
+        invoke("project", "register", "beta/other", str(other), env=env).returncode == 0
+    )
     checkout_id = read_store(tmp_path / "config")["checkouts"][0]["id"]  # type: ignore[index]
 
     same_project = invoke(
         "project", "checkout", "register", "acme/web", str(repository), env=env
     )
     assert same_project.returncode == 1
-    assert same_project.stderr == (
-        f'factory: error: Path "{repository}" is already registered as Checkout '
-        f'"{checkout_id}"; use explicit re-registration to repair.\n'
-    ).encode()
+    assert (
+        same_project.stderr
+        == (
+            f'factory: error: Path "{repository}" is already registered as Checkout '
+            f'"{checkout_id}"; use explicit re-registration to repair.\n'
+        ).encode()
+    )
 
     other_project = invoke(
         "project", "checkout", "register", "beta/other", str(repository), env=env
     )
     assert other_project.returncode == 1
-    assert other_project.stderr == (
-        f'factory: error: Path "{repository}" is already pinned by checkout '
-        f'"{checkout_id}".\n'
-    ).encode()
+    assert (
+        other_project.stderr
+        == (
+            f'factory: error: Path "{repository}" is already pinned by checkout '
+            f'"{checkout_id}".\n'
+        ).encode()
+    )
 
 
 def test_checkout_register_shares_a_repository_across_projects_of_one_client(
@@ -747,11 +775,14 @@ def test_checkout_register_refuses_cross_client_sharing(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == (
-        f'factory: error: Repository "{repository_id}" is owned by a Checkout '
-        b"in another Client; cross-client Repository sharing requires the "
-        b"isolation admission policy (#167).\n"
-    ).encode()
+    assert (
+        result.stderr
+        == (
+            f'factory: error: Repository "{repository_id}" is owned by a Checkout '
+            "in another Client; cross-client Repository sharing requires the "
+            "isolation admission policy (#167).\n"
+        ).encode()
+    )
 
 
 def test_checkout_register_refuses_a_mismatched_repository_identity(
@@ -788,12 +819,15 @@ def test_checkout_register_refuses_a_mismatched_repository_identity(
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == (
-        f'factory: error: Repository "{repository_id}" is pinned at '
-        f'"{repository_pin}" but the verified common directory of '
-        f'"{unrelated}" is "{unrelated / ".git"}"; re-register the repository '
-        b"first.\n"
-    ).encode()
+    assert (
+        result.stderr
+        == (
+            f'factory: error: Repository "{repository_id}" is pinned at '
+            f'"{repository_pin}" but the verified common directory of '
+            f'"{unrelated}" is "{unrelated / ".git"}"; re-register the repository '
+            "first.\n"
+        ).encode()
+    )
 
 
 def test_checkout_re_register_preserves_identity_and_reports_old_and_new(
@@ -814,15 +848,18 @@ def test_checkout_re_register_preserves_identity_and_reports_old_and_new(
     updated = read_store(tmp_path / "config")
     checkout = updated["checkouts"][0]  # type: ignore[index]
     git_dir_ino = os.stat(moved / ".git").st_ino
-    assert result.stdout == (
-        f'Re-registered checkout "{checkout_id}" in project "acme/web".\n'
-        f'Old boundary: "{repository}"\n'
-        f'New boundary: "{moved}"\n'
-        f'Old proof: worktree root "{repository}", Git dir "{repository / ".git"}", '
-        f'common dir "{repository / ".git"}"\n'
-        f'New proof: worktree root "{moved}", Git dir "{moved / ".git"}", '
-        f'common dir "{moved / ".git"}"\n'
-    ).encode()
+    assert (
+        result.stdout
+        == (
+            f'Re-registered checkout "{checkout_id}" in project "acme/web".\n'
+            f'Old boundary: "{repository}"\n'
+            f'New boundary: "{moved}"\n'
+            f'Old proof: worktree root "{repository}", Git dir "{repository / ".git"}", '
+            f'common dir "{repository / ".git"}"\n'
+            f'New proof: worktree root "{moved}", Git dir "{moved / ".git"}", '
+            f'common dir "{moved / ".git"}"\n'
+        ).encode()
+    )
     assert checkout["id"] == checkout_id  # type: ignore[index]
     assert checkout["project_id"] == project_id  # type: ignore[index]
     assert checkout["boundary"]["path"] == str(moved)  # type: ignore[index]
@@ -877,10 +914,13 @@ def test_checkout_re_register_refuses_collisions(
         "project", "checkout", "re-register", CHECKOUT_ID, "/other", env=env
     )
     assert path_collision.returncode == 1
-    assert path_collision.stderr == (
-        'factory: error: Path "/other" is already pinned by checkout '
-        '"chk_' + "e" * 32 + '".\n'
-    ).encode()
+    assert (
+        path_collision.stderr
+        == (
+            'factory: error: Path "/other" is already pinned by checkout '
+            '"chk_' + "e" * 32 + '".\n'
+        ).encode()
+    )
 
     proof = (
         pin("/fresh", 1, 9),
@@ -895,10 +935,13 @@ def test_checkout_re_register_refuses_collisions(
         "project", "checkout", "re-register", CHECKOUT_ID, "/fresh", env=env
     )
     assert identity_collision.returncode == 1
-    assert identity_collision.stderr == (
-        'factory: error: Git directory identity of "/fresh/.git" is already '
-        'pinned by checkout "chk_' + "e" * 32 + '".\n'
-    ).encode()
+    assert (
+        identity_collision.stderr
+        == (
+            'factory: error: Git directory identity of "/fresh/.git" is already '
+            'pinned by checkout "chk_' + "e" * 32 + '".\n'
+        ).encode()
+    )
     assert read_store(config)["checkouts"][0]["boundary"]["path"] == "/wt"  # type: ignore[index]
 
 
@@ -918,12 +961,15 @@ def test_checkout_re_register_refuses_an_inconsistent_repository(
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == (
-        f'factory: error: Checkout "{checkout_id}" pins repository '
-        f'"{repository_id}" at "{repository / ".git"}" but the verified common '
-        f'directory is "{other / ".git"}"; repair the repository with '
-        b"'factory project repository re-register' first.\n"
-    ).encode()
+    assert (
+        result.stderr
+        == (
+            f'factory: error: Checkout "{checkout_id}" pins repository '
+            f'"{repository_id}" at "{repository / ".git"}" but the verified common '
+            f'directory is "{other / ".git"}"; repair the repository with '
+            "'factory project repository re-register' first.\n"
+        ).encode()
+    )
     assert read_store(tmp_path / "config") == store
 
 
@@ -943,17 +989,17 @@ def test_repository_re_register_changes_only_the_pin_and_is_idempotent(
 
     assert result.returncode == 0, result.stderr
     updated = read_store(tmp_path / "config")
-    assert result.stdout == (
-        f'Re-registered repository "{repository_id}".\n'
-        f'Old pin: "{repository / ".git"}"\n'
-        f'New pin: "{moved / ".git"}"\n'
-    ).encode()
-    assert updated["repositories"][0]["common_dir"]["path"] == str(  # type: ignore[index]
-        moved / ".git"
+    assert (
+        result.stdout
+        == (
+            f'Re-registered repository "{repository_id}".\n'
+            f'Old pin: "{repository / ".git"}"\n'
+            f'New pin: "{moved / ".git"}"\n'
+        ).encode()
     )
-    assert updated["repositories"][0]["common_dir"]["st_ino"] == os.stat(  # type: ignore[index]
-        moved / ".git"
-    ).st_ino
+    new_pin = updated["repositories"][0]["common_dir"]  # type: ignore[index]
+    assert new_pin["path"] == str(moved / ".git")  # type: ignore[index]
+    assert new_pin["st_ino"] == os.stat(moved / ".git").st_ino  # type: ignore[index]
     assert updated["checkouts"][0] == checkout  # type: ignore[index]
 
     registry = store_path(tmp_path / "config")
@@ -962,9 +1008,12 @@ def test_repository_re_register_changes_only_the_pin_and_is_idempotent(
         "project", "repository", "re-register", repository_id, str(moved), env=env
     )
     assert repeat.returncode == 0
-    assert repeat.stdout == (
-        f'Repository "{repository_id}" is already pinned at "{moved / ".git"}".\n'
-    ).encode()
+    assert (
+        repeat.stdout
+        == (
+            f'Repository "{repository_id}" is already pinned at "{moved / ".git"}".\n'
+        ).encode()
+    )
     assert registry.stat().st_ino == before.st_ino
     assert registry.stat().st_mtime_ns == before.st_mtime_ns
 
@@ -1008,10 +1057,13 @@ def test_repository_re_register_refuses_a_pin_held_by_another_repository(
 
     assert result.returncode == 1
     assert result.stdout == b""
-    assert result.stderr == (
-        'factory: error: Common directory "/repo2" is already pinned by '
-        'repository "repo_' + "e" * 32 + '".\n'
-    ).encode()
+    assert (
+        result.stderr
+        == (
+            'factory: error: Common directory "/repo2" is already pinned by '
+            'repository "repo_' + "e" * 32 + '".\n'
+        ).encode()
+    )
 
 
 def test_checkout_remove_clears_the_default_without_replacement(
@@ -1028,7 +1080,9 @@ def test_checkout_remove_clears_the_default_without_replacement(
         == 0
     )
     assert (
-        invoke("project", "checkout", "register", "acme/web", str(linked), env=env).returncode
+        invoke(
+            "project", "checkout", "register", "acme/web", str(linked), env=env
+        ).returncode
         == 0
     )
     store = read_store(tmp_path / "config")
@@ -1038,10 +1092,13 @@ def test_checkout_remove_clears_the_default_without_replacement(
     result = invoke("project", "checkout", "remove", default_id, env=env)
 
     assert result.returncode == 0
-    assert result.stdout == (
-        f'Removed checkout "{default_id}" from project "acme/web".\n'
-        f'Cleared the default checkout of project "acme/web".\n'
-    ).encode()
+    assert (
+        result.stdout
+        == (
+            f'Removed checkout "{default_id}" from project "acme/web".\n'
+            f'Cleared the default checkout of project "acme/web".\n'
+        ).encode()
+    )
     updated = read_store(tmp_path / "config")
     assert updated["projects"][0]["default_checkout_id"] is None  # type: ignore[index]
     assert updated["projects"][0]["id"] == project_id  # type: ignore[index]
@@ -1058,23 +1115,26 @@ def test_checkout_remove_clears_the_default_without_replacement(
 def test_project_and_client_removal_refuse_while_owned_records_remain(
     tmp_path: Path,
 ) -> None:
-    env, repository = registered_project(tmp_path)
+    env, _repository = registered_project(tmp_path)
     store = read_store(tmp_path / "config")
     checkout_id = store["checkouts"][0]["id"]  # type: ignore[index]
 
     project_refusal = invoke("project", "remove", "acme/web", env=env)
     assert project_refusal.returncode == 1
-    assert project_refusal.stderr == (
-        f'factory: error: Project "acme/web" still owns checkout "{checkout_id}"; '
-        b"remove its checkouts first.\n"
-    ).encode()
+    assert (
+        project_refusal.stderr
+        == (
+            f'factory: error: Project "acme/web" still owns checkout "{checkout_id}"; '
+            "remove its checkouts first.\n"
+        ).encode()
+    )
 
     client_refusal = invoke("project", "client", "remove", "acme", env=env)
     assert client_refusal.returncode == 1
     assert client_refusal.stderr == (
         b'factory: error: Client "acme" still owns project "acme/web"; '
         b"remove its projects first.\n"
-    ).encode()
+    )
 
     assert invoke("project", "checkout", "remove", checkout_id, env=env).returncode == 0
     removed = invoke("project", "remove", "acme/web", env=env)
@@ -1132,17 +1192,23 @@ def test_keys_reuse_the_project_name_grammar_and_collisions_refuse(
 
     duplicate = invoke("project", "client", "register", "acme", env=env)
     assert duplicate.returncode == 1
-    assert duplicate.stderr == (
-        f'factory: error: Client "acme" already exists as "{client_id}".\n'
-    ).encode()
+    assert (
+        duplicate.stderr
+        == (
+            f'factory: error: Client "acme" already exists as "{client_id}".\n'
+        ).encode()
+    )
 
     duplicate_project = invoke(
         "project", "register", "acme/web", str(tmp_path), env=env
     )
     assert duplicate_project.returncode == 1
-    assert duplicate_project.stderr == (
-        f'factory: error: Project "acme/web" already exists as "{project_id}".\n'
-    ).encode()
+    assert (
+        duplicate_project.stderr
+        == (
+            f'factory: error: Project "acme/web" already exists as "{project_id}".\n'
+        ).encode()
+    )
 
 
 def test_set_key_and_set_name_validate_before_committing_and_clear_names(
@@ -1175,9 +1241,7 @@ def test_set_key_and_set_name_validate_before_committing_and_clear_names(
     assert cleared.stdout == b'Cleared the name of client "acme2".\n'
     assert read_store(tmp_path / "config")["clients"][0]["name"] is None  # type: ignore[index]
 
-    project_named = invoke(
-        "project", "set-name", "acme2/web", "Web Frontend", env=env
-    )
+    project_named = invoke("project", "set-name", "acme2/web", "Web Frontend", env=env)
     assert project_named.returncode == 0
     assert project_named.stdout == (
         b'Changed the name of project "acme2/web" to "Web Frontend".\n'
@@ -1208,9 +1272,8 @@ def test_project_selectors_resolve_canonically_and_refuse_ambiguity(
     ambiguous = invoke("project", "show", "web", env=env)
     assert ambiguous.returncode == 1
     assert ambiguous.stderr == (
-        b'factory: error: Project key "web" is ambiguous: '
-        b'"acme/web", "globex/web".\n'
-    ).encode()
+        b'factory: error: Project key "web" is ambiguous: "acme/web", "globex/web".\n'
+    )
 
     canonical = invoke("project", "show", "acme/web", env=env)
     assert canonical.returncode == 0
@@ -1219,19 +1282,17 @@ def test_project_selectors_resolve_canonically_and_refuse_ambiguity(
     assert missing_client.returncode == 1
     assert missing_client.stderr == (
         b'factory: error: Client "missing" is not registered.\n'
-    ).encode()
+    )
 
     not_found = invoke("project", "show", "acme/missing", env=env)
     assert not_found.returncode == 1
     assert not_found.stderr == (
         b'factory: error: Project "acme/missing" is not registered.\n'
-    ).encode()
+    )
 
     malformed = invoke("project", "show", "a/b/c", env=env)
     assert malformed.returncode == 1
-    assert malformed.stderr == (
-        b'factory: error: Invalid project selector "a/b/c".\n'
-    ).encode()
+    assert malformed.stderr == (b'factory: error: Invalid project selector "a/b/c".\n')
 
     by_name = invoke("project", "show", "Site", env=env)
     assert by_name.returncode == 1
@@ -1254,23 +1315,25 @@ def test_the_default_checkout_is_set_changed_and_cleared_explicitly(
         == 0
     )
     assert (
-        invoke("project", "checkout", "register", "acme/web", str(linked), env=env).returncode
+        invoke(
+            "project", "checkout", "register", "acme/web", str(linked), env=env
+        ).returncode
         == 0
     )
     store = read_store(tmp_path / "config")
     first = store["projects"][0]["default_checkout_id"]  # type: ignore[index]
     checkouts = sorted(
-        record["id"] for record in store["checkouts"]  # type: ignore[union-attr]
+        record["id"]
+        for record in store["checkouts"]  # type: ignore[union-attr]
     )
     second = checkouts[1] if checkouts[0] == first else checkouts[0]
 
-    changed = invoke(
-        "project", "set-default-checkout", "acme/web", str(link), env=env
-    )
+    changed = invoke("project", "set-default-checkout", "acme/web", str(link), env=env)
     assert changed.returncode == 0
-    assert changed.stdout == (
-        f'Set the default checkout of project "acme/web" to "{second}".\n'
-    ).encode()
+    assert (
+        changed.stdout
+        == (f'Set the default checkout of project "acme/web" to "{second}".\n').encode()
+    )
     assert (
         read_store(tmp_path / "config")["projects"][0]["default_checkout_id"]  # type: ignore[index]
         == second
@@ -1282,10 +1345,13 @@ def test_the_default_checkout_is_set_changed_and_cleared_explicitly(
         "project", "set-default-checkout", "acme/web", str(stranger), env=env
     )
     assert unowned.returncode == 1
-    assert unowned.stderr == (
-        f'factory: error: Path "{stranger}" is not a checkout of project '
-        b'"acme/web".\n'
-    ).encode()
+    assert (
+        unowned.stderr
+        == (
+            f'factory: error: Path "{stranger}" is not a checkout of project '
+            '"acme/web".\n'
+        ).encode()
+    )
 
 
 def test_project_migrate_carries_every_entry_into_the_legacy_section(
@@ -1342,9 +1408,7 @@ def test_project_migrate_refuses_and_short_circuits_each_edge_case(
     missing_config = tmp_path / "missing-config"
     absent = invoke("project", "migrate", env=config_env(missing_config))
     assert absent.returncode == 0
-    assert absent.stdout == (
-        b"Nothing to migrate; no Project Registry exists.\n"
-    )
+    assert absent.stdout == (b"Nothing to migrate; no Project Registry exists.\n")
     assert not missing_config.exists()
 
     empty = tmp_path / "empty"
@@ -1389,31 +1453,33 @@ def test_project_listing_and_show_distinguish_bound_and_legacy_entries(
         b'PROJECT\tSTATUS\n"acme/web"\tvalid\n'
         b'LEGACY\tSTATUS\tPATH\n"api"\trequires-re-registration\t"/api"\n'
         b'"old"\trequires-re-registration\t"/legacy"\n'
-    ).encode()
+    )
 
     shown = invoke("project", "show", "acme/web", env=env)
     assert shown.returncode == 0
-    assert shown.stdout == (
-        b'Project: "acme/web"\n'
-        b'Name: "web"\n'
-        b'Client: "acme"\n'
-        b'Default checkout: "chk_' + b"d" * 32 + b'"\n'
-        b'Checkout "chk_' + b"d" * 32 + b'" at "/wt"\n'
-        b'Repository "repo_' + b"c" * 32 + b'" at "/repo"\n'
-    ).encode()
+    assert (
+        shown.stdout
+        == (
+            'Project: "acme/web"\n'
+            'Name: "web"\n'
+            'Client: "acme"\n'
+            f'Default checkout: "{CHECKOUT_ID}"\n'
+            f'Checkout "{CHECKOUT_ID}" at "/wt"\n'
+            f'Repository "{REPOSITORY_ID}" at "/repo"\n'
+        ).encode()
+    )
 
     legacy = invoke("project", "show", "--legacy", "old", env=env)
     assert legacy.returncode == 0
     assert legacy.stdout == (
-        b'Legacy project: "old"\nPath: "/legacy"\n'
-        b"Status: requires-re-registration\n"
-    ).encode()
+        b'Legacy project: "old"\nPath: "/legacy"\nStatus: requires-re-registration\n'
+    )
 
     not_selectable = invoke("project", "show", "old", env=env)
     assert not_selectable.returncode == 1
     assert not_selectable.stderr == (
         b'factory: error: Project "old" is not registered.\n'
-    ).encode()
+    )
 
     removed = invoke("project", "remove", "--legacy", "api", env=env)
     assert removed.returncode == 0
@@ -1424,7 +1490,7 @@ def test_project_listing_and_show_distinguish_bound_and_legacy_entries(
     assert missing_legacy.returncode == 1
     assert missing_legacy.stderr == (
         b'factory: error: Legacy project "api" is not registered.\n'
-    ).encode()
+    )
 
 
 def test_from_legacy_consumes_the_entry_atomically_and_requires_path_equality(
@@ -1449,10 +1515,13 @@ def test_from_legacy_consumes_the_entry_atomically_and_requires_path_equality(
     )
     assert mismatch.returncode == 1
     assert mismatch.stdout == b""
-    assert mismatch.stderr == (
-        f'factory: error: Legacy project "api" records "{repository}" but the '
-        f'boundary to register is "{elsewhere}".\n'
-    ).encode()
+    assert (
+        mismatch.stderr
+        == (
+            f'factory: error: Legacy project "api" records "{repository}" but the '
+            f'boundary to register is "{elsewhere}".\n'
+        ).encode()
+    )
     assert read_store(config)["legacy"] == {"api": str(repository)}  # type: ignore[index]
 
     missing_client = invoke(
@@ -1480,12 +1549,17 @@ def test_from_legacy_consumes_the_entry_atomically_and_requires_path_equality(
     assert consumed.returncode == 0, consumed.stderr
     store = read_store(config)
     assert store["legacy"] == {}  # type: ignore[index]
-    assert consumed.stdout == (
-        f'Registered project "acme/web" at "{repository}" '
-        f'as checkout "{store["checkouts"][0]["id"]}" '
-        f'with repository "{store["repositories"][0]["id"]}", '
-        b'consuming legacy project "api".\n'
-    ).encode()
+    checkout_id = store["checkouts"][0]["id"]  # type: ignore[index]
+    repository_id = store["repositories"][0]["id"]  # type: ignore[index]
+    assert (
+        consumed.stdout
+        == (
+            f'Registered project "acme/web" at "{repository}" '
+            f'as checkout "{checkout_id}" '
+            f'with repository "{repository_id}", '
+            'consuming legacy project "api".\n'
+        ).encode()
+    )
 
 
 def test_legacy_claims_block_fresh_registration(tmp_path: Path) -> None:
@@ -1501,11 +1575,14 @@ def test_legacy_claims_block_fresh_registration(tmp_path: Path) -> None:
     claimed = invoke("project", "register", "acme/web", str(repository), env=env)
     assert claimed.returncode == 1
     assert claimed.stdout == b""
-    assert claimed.stderr == (
-        f'factory: error: "{repository}" is still claimed by legacy project '
-        b'"api"; re-register it with --from-legacy api, or remove the legacy '
-        b"entry first.\n"
-    ).encode()
+    assert (
+        claimed.stderr
+        == (
+            f'factory: error: "{repository}" is still claimed by legacy project '
+            '"api"; re-register it with --from-legacy api, or remove the legacy '
+            "entry first.\n"
+        ).encode()
+    )
 
     free = invoke("project", "register", "acme/web", str(elsewhere), env=env)
     assert free.returncode == 0
@@ -1541,9 +1618,7 @@ def test_pre_migration_administration_refuses_identity_operations(
             b"run 'factory project migrate' first.\n"
         ), arguments
 
-    assert registry.read_bytes() == json.dumps(
-        {"version": 1, "projects": {}}
-    ).encode()
+    assert registry.read_bytes() == json.dumps({"version": 1, "projects": {}}).encode()
 
 
 def test_project_add_is_removed_and_points_at_registration(tmp_path: Path) -> None:
@@ -1603,9 +1678,7 @@ def test_client_listing_reports_clients_with_name_fallback(tmp_path: Path) -> No
     )
     listed = invoke("project", "client", "list", env=env)
     assert listed.returncode == 0
-    assert listed.stdout == (
-        b'CLIENT\tNAME\n"acme"\t-\n"beta"\t"Beta"\n'
-    ).encode()
+    assert listed.stdout == (b'CLIENT\tNAME\n"acme"\t-\n"beta"\t"Beta"\n')
 
 
 def test_run_selection_keeps_the_version_one_registry_and_refuses_a_version_two_store(
@@ -1643,27 +1716,29 @@ def test_re_register_commands_report_unknown_identifiers(tmp_path: Path) -> None
     write_store(config, store_document())
     env = config_env(config)
 
-    checkout = invoke(
-        "project", "checkout", "re-register", CHECKOUT_ID, "/wt", env=env
-    )
+    checkout = invoke("project", "checkout", "re-register", CHECKOUT_ID, "/wt", env=env)
     assert checkout.returncode == 1
-    assert checkout.stderr == (
-        f'factory: error: Checkout "{CHECKOUT_ID}" is not registered.\n'
-    ).encode()
+    assert (
+        checkout.stderr
+        == (f'factory: error: Checkout "{CHECKOUT_ID}" is not registered.\n').encode()
+    )
 
     repository = invoke(
         "project", "repository", "re-register", REPOSITORY_ID, "/repo", env=env
     )
     assert repository.returncode == 1
-    assert repository.stderr == (
-        f'factory: error: Repository "{REPOSITORY_ID}" is not registered.\n'
-    ).encode()
+    assert (
+        repository.stderr
+        == (
+            f'factory: error: Repository "{REPOSITORY_ID}" is not registered.\n'
+        ).encode()
+    )
 
     malformed = invoke("project", "checkout", "remove", "chk_xyz", env=env)
     assert malformed.returncode == 1
     assert malformed.stderr == (
         b'factory: error: Checkout "chk_xyz" is not registered.\n'
-    ).encode()
+    )
 
 
 def test_identity_module_preserves_file_modes_across_mutations(

@@ -19,8 +19,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           check-latest: true
-      - name: Install the declared runtime dependency and the test tooling
-        run: python -m pip install platformdirs pytest build
+      - name: Install the checkout, its runtime dependency, and the test tooling
+        run: python -m pip install platformdirs pytest build -e .
       - name: Run the deterministic suite against the checkout
         run: python -m pytest -q
       - name: Keep real-host certification explicitly selected

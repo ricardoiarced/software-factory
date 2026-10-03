@@ -23,6 +23,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from _harness import factory_version
 from _identity import (
@@ -303,7 +304,38 @@ def _require_controls(
     )
 
 
+def _certified_runtimes(entries: Sequence[Any]) -> tuple[CertifiedRuntime, ...]:
+    """Map one declared Compatibility Set to its certified runtime identities.
+
+    Every entry is a certified policy dataclass carrying ``version``,
+    ``install_channel``, ``operating_system``, ``architecture``, and
+    ``sha256``; Codex and Claude declare those fields with different
+    variances, so the shared shape stays documented here rather than
+    forced into one protocol.
+    """
+
+    return tuple(
+        CertifiedRuntime(
+            version=entry.version,
+            channel=entry.install_channel,
+            operating_system=entry.operating_system,
+            architecture=entry.architecture,
+            sha256=entry.sha256,
+        )
+        for entry in entries
+    )
+
+
 def _codex_policy(boundary: Path) -> HarnessPolicy:
+    """Derive the Codex declaration from its first declared certified policy.
+
+    Every tuple of a Compatibility Set carries the identical certified
+    recipe for its release, so the declaration is derived once from the
+    first entry while the runtime stage records the whole declared set;
+    which exact artifact will run stays observed and refused by Run
+    Admission, and the plan seal binds it.
+    """
+
     from _codex import _CODEX_MANAGED_MARKERS, _COMPATIBILITY_SET
 
     if not _COMPATIBILITY_SET:
@@ -319,16 +351,7 @@ def _codex_policy(boundary: Path) -> HarnessPolicy:
     profile = configuration.get("permissions.factory-isolated")
     return HarnessPolicy(
         harness="codex",
-        runtimes=tuple(
-            CertifiedRuntime(
-                version=entry.version,
-                channel=entry.install_channel,
-                operating_system=entry.operating_system,
-                architecture=entry.architecture,
-                sha256=entry.sha256,
-            )
-            for entry in _COMPATIBILITY_SET
-        ),
+        runtimes=_certified_runtimes(_COMPATIBILITY_SET),
         instructions=_codex_instructions(configuration, flags),
         sandbox=_codex_sandbox(configuration, profile),
         network=_codex_network(profile),
@@ -508,6 +531,15 @@ def _codex_shell_policy(configuration: Mapping[str, str]) -> Mapping[str, str]:
 
 
 def _claude_policy(boundary: Path) -> HarnessPolicy:
+    """Derive the Claude Code declaration from its first declared policy.
+
+    Every tuple of the Compatibility Set carries the identical certified
+    recipe for its release, so the declaration is derived once from the
+    first entry while the runtime stage records the whole declared set;
+    which exact artifact will run stays observed and refused by Run
+    Admission, and the plan seal binds it.
+    """
+
     from _claude import _CLAUDE_COMPATIBILITY_SET, _ENVIRONMENT_PINS
 
     if not _CLAUDE_COMPATIBILITY_SET:
@@ -522,16 +554,7 @@ def _claude_policy(boundary: Path) -> HarnessPolicy:
     flags, flag_values = _flagged(policy._invocation(boundary))
     return HarnessPolicy(
         harness="claude",
-        runtimes=tuple(
-            CertifiedRuntime(
-                version=entry.version,
-                channel=entry.install_channel,
-                operating_system=entry.operating_system,
-                architecture=entry.architecture,
-                sha256=entry.sha256,
-            )
-            for entry in _CLAUDE_COMPATIBILITY_SET
-        ),
+        runtimes=_certified_runtimes(_CLAUDE_COMPATIBILITY_SET),
         instructions=_claude_instructions(flags, flag_values),
         sandbox=_claude_sandbox(settings, flag_values),
         network=_claude_network(settings, _ENVIRONMENT_PINS),
@@ -586,6 +609,7 @@ def _claude_instructions(
             for flag in ("-p", "--restricted", "--safe-mode", "--strict-mcp-config")
             if flag in flags
         ],
+        "project_spec": {"path": _PROJECT_SPEC_PATH, "scope": "boundary-only"},
         "settings_source": "inline",
     }
 

@@ -1094,6 +1094,10 @@ def test_the_instructions_stage_records_the_certified_instruction_controls(
     assert isinstance(instructions, dict)
     controls = instructions["controls"]
     assert isinstance(controls, dict)
+    assert controls["project_spec"] == {
+        "path": ".agent/spec.md",
+        "scope": "boundary-only",
+    }
     if harness == "codex":
         assert controls["discovered_guidance"] == {
             "project_doc_max_bytes": "0",
@@ -1106,10 +1110,6 @@ def test_the_instructions_stage_records_the_certified_instruction_controls(
             "--ignore-user-config",
             "--ignore-rules",
         ]
-        assert controls["project_spec"] == {
-            "path": ".agent/spec.md",
-            "scope": "boundary-only",
-        }
     else:
         assert controls["flags"] == [
             "-p",

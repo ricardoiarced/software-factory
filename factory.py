@@ -749,7 +749,7 @@ def _run_request(run: RunArguments, record: RunRecord) -> int:
         except OSError as error:
             _refuse_spool_failure(record, error)
         try:
-            run_gate(record, selection)
+            run_gate(record, selection, run.harness)
         except RunGateError as error:
             sys.stderr.write(f"factory: error: {error}\n")
             return 1

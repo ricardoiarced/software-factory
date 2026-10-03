@@ -28,13 +28,14 @@ the pins in `pyproject.toml`. All commands run from the repo root.
 - `factory.py` — CLI entry point (`factory:main`), orchestration, Run Requests
 - `_harness.py`, `_codex.py`, `_claude.py` — Runner protocol, per-harness admission and run
 - `_publisher.py` — live newest-stable publisher lookups; `_project*.py` — project registry/guidance
+- `_identity.py` — the version-two identity store: records, administration, and migration
 - Production surface is frozen to these modules (S2.1, `docs/traceability.md`)
 - `tests/` — deterministic suite; `certification/` — maintainer-only real-host suite (`certification/results/` holds records)
 - `docs/` — `traceability.md`, `adr/`, agent docs
 
 No `src/` layout: production is flat top-level modules, frozen by spec S2.1
 (`docs/traceability.md`) to `factory.py`, `_harness.py`, `_publisher.py`,
-`_codex.py`, `_claude.py`. New features extend these modules (or add a new
+`_codex.py`, `_claude.py`, `_identity.py`. New features extend these modules (or add a new
 `_<name>.py` listed in `pyproject.toml` `py-modules`), spec-first: add/extend
 the statement rows in `docs/traceability.md` and the tests they name.
 

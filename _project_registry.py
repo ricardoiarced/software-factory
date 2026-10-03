@@ -11,8 +11,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-
-from _project import Project
+from typing import TypeVar
 
 
 class RegistryError(Exception):
@@ -86,7 +85,21 @@ def _validated_projects(projects: object) -> dict[str, str]:
     return projects
 
 
-def _read_generation(directory: int) -> dict[str, str]:
+def _validate_v1_document(document: object) -> dict[str, str]:
+    """Return the version-one Project table only when the schema matches."""
+
+    if not isinstance(document, dict) or type(document.get("version")) is not int:
+        raise RegistryError("malformed Project Registry: invalid schema")
+    if document["version"] != 1:
+        raise RegistryError("malformed Project Registry: unsupported version")
+    if set(document) != {"version", "projects"}:
+        raise RegistryError("malformed Project Registry: invalid schema")
+    return _validated_projects(document["projects"])
+
+
+def _parse_registry_document(directory: int) -> object | None:
+    """Return the raw registry document, or None when the file is absent."""
+
     try:
         descriptor = os.open(
             _REGISTRY,
@@ -94,7 +107,7 @@ def _read_generation(directory: int) -> dict[str, str]:
             dir_fd=directory,
         )
     except FileNotFoundError:
-        return {}
+        return None
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise RegistryError(
@@ -111,7 +124,7 @@ def _read_generation(directory: int) -> dict[str, str]:
         raise RegistryError("malformed Project Registry: not a regular file")
     try:
         with os.fdopen(descriptor, "rb") as source:
-            document: object = json.loads(
+            return json.loads(
                 source.read().decode("utf-8", errors="strict"),
                 object_pairs_hook=_unique_json_object,
             )
@@ -121,11 +134,15 @@ def _read_generation(directory: int) -> dict[str, str]:
         ) from error
     except OSError as error:
         raise RegistryError(f"Project Registry cannot be read: {error}") from error
-    if not isinstance(document, dict) or set(document) != {"version", "projects"}:
-        raise RegistryError("malformed Project Registry: invalid schema")
-    if type(document["version"]) is not int or document["version"] != 1:
-        raise RegistryError("malformed Project Registry: unsupported version")
-    return _validated_projects(document["projects"])
+
+
+def _read_generation(directory: int) -> dict[str, str]:
+    """Return one strict version-one registry generation."""
+
+    document = _parse_registry_document(directory)
+    if document is None:
+        return {}
+    return _validate_v1_document(document)
 
 
 def read_projects() -> dict[str, str]:
@@ -199,8 +216,9 @@ def _temporary_file(directory: int) -> tuple[int, str]:
     )
 
 
-def _write_generation(directory: int, projects: dict[str, str]) -> None:
-    document = {"version": 1, "projects": dict(sorted(projects.items()))}
+def _write_document(directory: int, document: dict[str, object]) -> None:
+    """Replace the registry file with one durable JSON document."""
+
     payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode(
         "utf-8"
     )
@@ -243,15 +261,28 @@ def _write_generation(directory: int, projects: dict[str, str]) -> None:
                 pass
 
 
-_Mutation = Callable[[dict[str, str]], tuple[str, bool]]
+def _write_generation(directory: int, projects: dict[str, str]) -> None:
+    """Write one version-one registry generation durably."""
+
+    _write_document(
+        directory,
+        {"version": 1, "projects": dict(sorted(projects.items()))},
+    )
 
 
-def _mutate_registry(
+_Document = TypeVar("_Document")
+_Mutation = Callable[[_Document], tuple[str, bool]]
+
+
+def _mutate_store(
+    read: Callable[[int], _Document],
+    write: Callable[[int, _Document], None],
     mutation: _Mutation,
     *,
     create_directory: bool,
     missing_message: str | None,
 ) -> _RegistryUpdate:
+    """Run one mutation against the store under the exclusive registry lock."""
     try:
         directory = _open_config_directory(create=create_directory)
     except FileNotFoundError as error:
@@ -282,10 +313,10 @@ def _mutate_registry(
                 if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
                     raise RegistryError("Project Registry lock is not a regular file")
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-                projects = _read_generation(directory)
-                message, changed = mutation(projects)
+                document = read(directory)
+                message, changed = mutation(document)
                 if changed:
-                    _write_generation(directory, projects)
+                    write(directory, document)
                     committed = True
                 update = _RegistryUpdate(message, committed)
         finally:
@@ -316,49 +347,6 @@ def _report_update(update: _RegistryUpdate) -> None:
         raise
 
 
-def add_project(name: str, project: Project) -> None:
-    """Add or replace one registration through the durable mutation transaction."""
-
-    validate_project_name(name)
-    path = str(project.boundary)
-    if not os.path.isabs(path) or "\x00" in path:
-        raise RegistryError("Project Boundary is not an absolute valid path")
-    try:
-        path.encode("utf-8", errors="strict")
-    except UnicodeError as error:
-        raise RegistryError("Project Boundary cannot be encoded as UTF-8") from error
-
-    def add(projects: dict[str, str]) -> tuple[str, bool]:
-        old_path = projects.get(name)
-        if old_path == path:
-            message = (
-                f"Project {json.dumps(name, ensure_ascii=False)} is already registered "
-                f"at {json.dumps(path, ensure_ascii=False)}.\n"
-            )
-            return message, False
-        projects[name] = path
-        if old_path is None:
-            message = (
-                f"Added project {json.dumps(name, ensure_ascii=False)} "
-                f"at {json.dumps(path, ensure_ascii=False)}.\n"
-            )
-        else:
-            message = (
-                f"Updated project {json.dumps(name, ensure_ascii=False)} from "
-                f"{json.dumps(old_path, ensure_ascii=False)} to "
-                f"{json.dumps(path, ensure_ascii=False)}.\n"
-            )
-        return message, True
-
-    _report_update(
-        _mutate_registry(
-            add,
-            create_directory=True,
-            missing_message=None,
-        ),
-    )
-
-
 def remove_project(name: str) -> None:
     """Remove one registration through the durable mutation transaction."""
 
@@ -376,7 +364,9 @@ def remove_project(name: str) -> None:
         return message, True
 
     _report_update(
-        _mutate_registry(
+        _mutate_store(
+            _read_generation,
+            _write_generation,
             remove,
             create_directory=False,
             missing_message=missing,

@@ -170,8 +170,22 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
     """An uncertified release still installs and administers, but never runs."""
 
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
-    boundary = tmp_path / "boundary"
-    boundary.mkdir()
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=factory@example.com",
+            "-c",
+            "user.name=Factory",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
     home = tmp_path / "home"
     home.mkdir()
     git_binary = shutil.which("git")
@@ -188,22 +202,32 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
         ),
     }
 
-    added = installed_factory("project", "add", "api", str(boundary), env=environment)
+    registered = installed_factory(
+        "project", "client", "register", "acme", env=environment
+    )
+    assert registered.returncode == 0
+    assert registered.stdout.startswith(b'Registered client "acme" as "cli_')
+    assert registered.stdout.endswith(b".\n")
+    assert registered.stderr == b""
+
+    added = installed_factory(
+        "project", "register", "acme/api", str(tmp_path), env=environment
+    )
     assert added.returncode == 0
-    assert added.stdout == f'Added project "api" at "{boundary.resolve()}".\n'.encode()
+    assert added.stdout.startswith(
+        f'Registered project "acme/api" at "{tmp_path.resolve()}"'.encode()
+    )
+    assert added.stdout.endswith(b".\n")
     assert added.stderr == b""
 
     listed = installed_factory("project", "list", env=environment)
     assert listed.returncode == 0
-    assert (
-        listed.stdout
-        == (f'NAME\tSTATUS\tPATH\n"api"\tvalid\t"{boundary.resolve()}"\n').encode()
-    )
+    assert listed.stdout == b'PROJECT\tSTATUS\n"acme/api"\tvalid\n'
     assert listed.stderr == b""
 
     run = installed_factory(
-        "--project",
-        "api",
+        "--path",
+        str(tmp_path),
         "Diagnose this failure",
         env=environment,
     )

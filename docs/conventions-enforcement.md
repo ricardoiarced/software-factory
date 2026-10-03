@@ -68,7 +68,7 @@ baseline to ratchet against — any regression fails outright (see
 
 ## Type checking
 
-- **Scope: the eight production modules only** (`[tool.pyright] include`).
+- **Scope: the nine production modules only** (`[tool.pyright] include`).
   Excluding `tests/` + `certification/` is a declared decision, not an
   oversight: at `basic` those directories carry ~141 real errors with pytest
   resolved, 131 of them `reportArgumentType` dominated by `monkeypatch.setattr`

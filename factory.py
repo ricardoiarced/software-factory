@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, NoReturn
 
 from _harness import (
     DEFAULT_HARNESS,
@@ -689,6 +689,13 @@ def _admission_facts(error: RunAdmissionError) -> dict[str, str] | None:
     return {"executable": str(error.executable)}
 
 
+def _refuse_spool_failure(record: RunRecord, error: OSError) -> NoReturn:
+    """Refuse the composition stage for one failed Run Request spool."""
+
+    record.refuse("composition", f"Run Request spool failed: {error}")
+    raise RunInputError(f"Run Request spool failed: {error}") from error
+
+
 def _dispatch_run(run: RunArguments) -> int:
     """Open the Run Record, then compose, gate, and hand off the Run Request."""
     with run_record(sys.argv[1:], run.harness) as record:
@@ -711,14 +718,12 @@ def _run_request(run: RunArguments, record: RunRecord) -> int:
     try:
         spool = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
     except OSError as error:
-        record.refuse("composition", f"Run Request spool failed: {error}")
-        raise RunInputError(f"Run Request spool failed: {error}") from error
+        _refuse_spool_failure(record, error)
     with spool:
         try:
             context_bytes = _compose_run(run, project.boundary, invocation_dir, spool)
         except OSError as error:
-            record.refuse("composition", f"Run Request spool failed: {error}")
-            raise RunInputError(f"Run Request spool failed: {error}") from error
+            _refuse_spool_failure(record, error)
         except RunInputError as error:
             record.refuse("composition", str(error))
             raise
@@ -741,8 +746,7 @@ def _run_request(run: RunArguments, record: RunRecord) -> int:
         try:
             spool.seek(0)
         except OSError as error:
-            record.refuse("composition", f"Run Request spool failed: {error}")
-            raise RunInputError(f"Run Request spool failed: {error}") from error
+            _refuse_spool_failure(record, error)
         try:
             return select_harness(run.harness).run(project, spool)
         except RunAdmissionError as error:

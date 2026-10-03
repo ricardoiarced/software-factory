@@ -25,6 +25,7 @@ _RUNS_DIRECTORY = "runs"
 _RECORD_SCHEMA = "factory-run-v1"
 _ARGV_SCHEMA = "factory-argv-v1"
 _ID_ATTEMPTS = 5
+_TEMPORARY_ATTEMPTS = 100
 
 
 class RunRecordError(Exception):
@@ -83,7 +84,7 @@ def _serialize(document: dict[str, object]) -> bytes:
     return (json.dumps(document, ensure_ascii=True, indent=2) + "\n").encode("ascii")
 
 
-def _runs_directory() -> int:
+def _open_runs_directory() -> int:
     """Open the per-Run record directory, creating it durably when absent."""
 
     config = _open_config_directory(create=True)
@@ -111,7 +112,7 @@ def _runs_directory() -> int:
 
 
 def _temporary_record(runs: int) -> tuple[int, str]:
-    for _ in range(100):
+    for _ in range(_TEMPORARY_ATTEMPTS):
         name = f".run-{secrets.token_hex(8)}"
         try:
             descriptor = os.open(
@@ -226,9 +227,15 @@ class RunRecord:
         self._document = document
 
     def record_outcome(self, outcome: Mapping[str, object]) -> None:
-        """Record one post-launch outcome best-effort, never altering the Run."""
+        """Record one post-launch outcome best-effort, never altering the Run.
+
+        The first durably recorded outcome is final: a later outcome is
+        dropped, so the Run's outcome history is exactly one entry.
+        """
 
         if self._document["status"] != "launched":
+            return
+        if "outcome" in self._document:
             return
         document = {
             **self._document,
@@ -242,7 +249,7 @@ class RunRecord:
 
     def _store(self, document: dict[str, object]) -> None:
         try:
-            runs = _runs_directory()
+            runs = _open_runs_directory()
         except (OSError, RegistryError) as error:
             raise RunRecordError(f"Run Record store cannot be opened: {error}") from (
                 error
@@ -273,7 +280,7 @@ def _open_record(argv: Sequence[str], harness: str) -> RunRecord:
     """Mint one Run ID and create its crash-durable record file."""
 
     try:
-        runs = _runs_directory()
+        runs = _open_runs_directory()
     except (OSError, RegistryError) as error:
         raise RunRecordError(f"Run Record store cannot be opened: {error}") from error
     try:

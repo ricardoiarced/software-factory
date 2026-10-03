@@ -195,9 +195,10 @@ def test_usage_errors_and_help_create_no_run_record(tmp_path: Path) -> None:
         invoke(config, "--bogus", "Fix"),
         invoke(config, "-h"),
         invoke(config, "--help"),
+        invoke(config, "--version"),
         invoke(config, "project", "list"),
     ]
-    expected = [2, 2, 0, 0, 0]
+    expected = [2, 2, 0, 0, 0, 0]
     assert [case.returncode for case in cases] == expected
     assert not (config / "factory").exists()
 
@@ -576,6 +577,27 @@ def test_post_launch_outcomes_are_recorded_best_effort(
     assert document["status"] == "launched"
     assert document["outcome"]["kind"] == "signal"
     assert document["outcome"]["signal"] == int(signal.SIGUSR1)
+
+
+def test_only_the_first_post_launch_outcome_is_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored: list[dict[str, Any]] = []
+
+    def capture(self: _runrecord.RunRecord, document: dict[str, object]) -> None:
+        stored.append(document)
+
+    monkeypatch.setattr(_runrecord.RunRecord, "_store", capture)
+    record = _runrecord.RunRecord("run_" + "e" * 32, {"status": "launched"})
+    record.record_outcome({"kind": "exit", "status": 0})
+    record.record_outcome({"kind": "exit", "status": 7})
+    record.record_outcome({"kind": "signal", "signal": int(signal.SIGUSR1)})
+
+    assert len(stored) == 1
+    outcome = stored[0]["outcome"]
+    assert outcome["kind"] == "exit"
+    assert outcome["status"] == 0
+    datetime.fromisoformat(outcome["at"])
 
 
 def test_a_failed_outcome_recording_never_alters_the_run_result(

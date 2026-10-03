@@ -10,6 +10,16 @@ import _publisher
 
 
 @pytest.fixture(autouse=True)
+def run_state_stays_out_of_the_user_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep every test's Project Registry and Run Records in the test's own
+    configuration directory; tests that need specific store state set their
+    own ``XDG_CONFIG_HOME`` over this default."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+
+@pytest.fixture(autouse=True)
 def codex_executable_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Make tests that reach later Run Admission stages independent of the host."""
     executable_directory = tmp_path / "codex-bin"

@@ -349,7 +349,7 @@ def test_run_selection_requires_a_version_two_store(tmp_path: Path) -> None:
         assert absent.stderr == f"factory: error: {NO_STORE}\n".encode()
 
     registry = config / "factory" / "projects.json"
-    registry.parent.mkdir(parents=True)
+    registry.parent.mkdir(parents=True, exist_ok=True)
     registry.write_text('{"version": 1, "projects": {"api": "/"}}')
     for argv, cwd in modes:
         version_one = invoke(*argv, "Fix", env=env, cwd=cwd)

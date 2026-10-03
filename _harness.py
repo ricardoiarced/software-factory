@@ -15,6 +15,7 @@ from types import FrameType
 from typing import Any, BinaryIO, Protocol
 
 from _project import Project
+from _runrecord import commit_pending_launch, record_run_outcome
 
 
 def factory_version() -> str:
@@ -247,9 +248,12 @@ def launch(
     the host environment pass through unchanged except for the certified
     environment edits of the admitted launch plan; Factory shares the child's
     foreground process group, returns its ordinary exit status, and
-    re-exposes signal termination as the same signal.
+    re-exposes signal termination as the same signal. Process creation is
+    never attempted before the active Run Record holds a crash-durable
+    Launch Commit of the admitted launch plan.
     """
 
+    commit_pending_launch(prepared)
     environment = None
     if prepared.environment or prepared.unset_environment:
         environment = {**os.environ, **dict(prepared.environment)}
@@ -271,6 +275,9 @@ def launch(
             start_new_session=False,
         )
     except OSError as error:
+        record_run_outcome(
+            {"kind": "spawn-failure", "detail": error.strerror or str(error)}
+        )
         raise RunAdmissionError(
             f"{prepared.harness} executable "
             f"{_quoted_absolute_path(prepared.executable)} could not start: "
@@ -289,8 +296,10 @@ def launch(
             signal.signal(handled_signal, handler)
     if status < 0:
         termination_signal = -status
+        record_run_outcome({"kind": "signal", "signal": termination_signal})
         if termination_signal != signal.SIGKILL:
             signal.signal(termination_signal, signal.SIG_DFL)
             signal.pthread_sigmask(signal.SIG_UNBLOCK, {termination_signal})
         os.kill(os.getpid(), termination_signal)
+    record_run_outcome({"kind": "exit", "status": status})
     return status

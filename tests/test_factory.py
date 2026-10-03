@@ -1554,15 +1554,28 @@ def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) 
     """The silent harness fake refuses at the earliest local step; only the
     quoted executable path varies with the temporary directory.
     """
-    env = registered_run_root(tmp_path)
-    (tmp_path / ".agent").mkdir()
-    (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
+    root = tmp_path / "worktree"
+    env = registered_run_root(tmp_path, "worktree")
+    (root / ".agent").mkdir()
+    (root / ".agent" / "spec.md").write_text("Project Guidance")
+    git("add", "-A", cwd=root)
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "fixture",
+        "-q",
+        cwd=root,
+    )
 
     result = invoke(
         "--harness",
         "claude",
         "Fix",
-        cwd=tmp_path,
+        cwd=root,
         env=env,
     )
 
@@ -1592,15 +1605,28 @@ def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
     executable = fake_bin / harness
     executable.write_text(f"#!/bin/sh\nprintf '{version_output}'\n")
     executable.chmod(0o755)
-    env = registered_run_root(tmp_path)
-    (tmp_path / ".agent").mkdir()
-    (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
+    root = tmp_path / "worktree"
+    env = registered_run_root(tmp_path, "worktree")
+    (root / ".agent").mkdir()
+    (root / ".agent" / "spec.md").write_text("Project Guidance")
+    git("add", "-A", cwd=root)
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "fixture",
+        "-q",
+        cwd=root,
+    )
 
     result = invoke(
         "--harness",
         harness,
         "Fix",
-        cwd=tmp_path,
+        cwd=root,
         env={
             **env,
             "PATH": os.pathsep.join((str(fake_bin), os.environ["PATH"])),
@@ -1616,17 +1642,18 @@ def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
 
 
 def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
-    env = registered_run_root(tmp_path)
+    root = tmp_path / "worktree"
+    env = registered_run_root(tmp_path, "worktree")
     explicit = invoke(
         "--harness",
         "codex",
         "Fix",
-        cwd=tmp_path,
+        cwd=root,
         env=env,
     )
     omitted = invoke(
         "Fix",
-        cwd=tmp_path,
+        cwd=root,
         env=env,
     )
 

@@ -42,8 +42,12 @@ The canonical directory passed to Codex as its workspace root: exactly the verif
 _Avoid_: Project root, working directory, Run boundary
 
 **Project Data Isolation**:
-The Run contract that permits model-generated shell commands to read and write within the selected Project Boundary while denying access to parent and sibling project data. A small Codex runtime set may remain readable, and Codex host behavior is outside this command boundary.
+The Run contract that permits model-generated shell commands to read and write within the selected Project Boundary while denying access to other Projects' Project-exclusive data and to anything outside the selected Project's Client boundary. A Repository explicitly bound to several Projects of one Client is authorized shared data for those Projects, not a denial. A small Codex runtime set may remain readable, and Codex host behavior is outside this command boundary.
 _Avoid_: Process isolation, unqualified strict isolation
+
+**Shared Repository**:
+A Repository bound to Checkouts of more than one Project of the same Client through explicit selection. Its state is authorized shared data for those Projects only; a Git common directory is never partitioned by Client, so a Repository bound to Checkouts of more than one Client never admits a Run.
+_Avoid_: Cross-project repository, multi-tenant repository
 
 **Fail-Closed Isolation**:
 The Run admission policy that refuses execution when Project Data Isolation cannot be enforced as specified. Factory never falls back to a weaker isolation mode.

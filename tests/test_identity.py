@@ -820,9 +820,9 @@ def test_checkout_register_refuses_cross_client_sharing(tmp_path: Path) -> None:
     assert (
         result.stderr
         == (
-            f'factory: error: Repository "{repository_id}" is owned by a Checkout '
-            "in another Client; cross-client Repository sharing requires the "
-            "isolation admission policy (#167).\n"
+            f'factory: error: Repository "{repository_id}" is already bound to a '
+            "Checkout in another Client; a Git common directory shared across "
+            "Clients never admits Runs.\n"
         ).encode()
     )
 

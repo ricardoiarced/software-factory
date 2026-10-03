@@ -44,6 +44,7 @@ from _identity import (
 from _project import Project, ProjectSelectionError, expand_path
 from _project_guidance import ProjectGuidanceError, open_project_spec
 from _project_registry import RegistryCommitUncertain, RegistryError
+from _rungate import RunGateError, run_gate
 from _runrecord import RunRecord, RunRecordError, run_record
 
 ROOT_SYNOPSIS = """Usage:
@@ -748,6 +749,11 @@ def _run_request(run: RunArguments, record: RunRecord) -> int:
         except OSError as error:
             _refuse_spool_failure(record, error)
         try:
+            run_gate(record, selection)
+        except RunGateError as error:
+            sys.stderr.write(f"factory: error: {error}\n")
+            return 1
+        try:
             return select_harness(run.harness).run(project, spool)
         except RunAdmissionError as error:
             record.refuse("admission", str(error), facts=_admission_facts(error))
@@ -769,7 +775,10 @@ def _dispatch() -> int:
     except UnknownHarnessError as error:
         return _usage(UsageError(str(error)))
     except (RunInputError, RunAdmissionError, RegistryError, RunRecordError) as error:
-        sys.stderr.write(f"factory: error: {error}.\n")
+        message = str(error)
+        if not message.endswith("."):
+            message = f"{message}."
+        sys.stderr.write(f"factory: error: {message}\n")
         return 1
     except PackageNotFoundError:
         sys.stderr.write(

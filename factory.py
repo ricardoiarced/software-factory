@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, NoReturn
 
 from _harness import (
     DEFAULT_HARNESS,
@@ -19,6 +19,7 @@ from _harness import (
     select_harness,
 )
 from _identity import (
+    RunSelection,
     list_clients,
     list_projects,
     migrate,
@@ -43,6 +44,7 @@ from _identity import (
 from _project import Project, ProjectSelectionError, expand_path
 from _project_guidance import ProjectGuidanceError, open_project_spec
 from _project_registry import RegistryCommitUncertain, RegistryError
+from _runrecord import RunRecord, RunRecordError, run_record
 
 ROOT_SYNOPSIS = """Usage:
   factory [--harness codex|claude] [--project NAME] [--checkout PATH] [--file PATH]... [--force] [--] INSTRUCTION...
@@ -671,34 +673,69 @@ def _dispatch_project(invocation: ProjectInvocation) -> int:
     return 0
 
 
-def _select_run_project(run: RunArguments, invocation_dir: Path) -> Project:
+def _select_run_project(run: RunArguments, invocation_dir: Path) -> RunSelection:
     """Resolve the Run Request's registered Checkout, never falling back."""
     if run.checkout is not None:
-        selection = resolve_run_checkout(run.checkout, run.project, invocation_dir)
-    elif run.project is not None:
-        selection = resolve_run_project(run.project)
-    else:
-        selection = resolve_run_discovery(invocation_dir)
-    return Project(boundary=selection.boundary, enclosing_git_root=selection.boundary)
+        return resolve_run_checkout(run.checkout, run.project, invocation_dir)
+    if run.project is not None:
+        return resolve_run_project(run.project)
+    return resolve_run_discovery(invocation_dir)
+
+
+def _admission_facts(error: RunAdmissionError) -> dict[str, str] | None:
+    """Return the structured admission facts one admission failure carries."""
+    if error.executable is None:
+        return None
+    return {"executable": str(error.executable)}
+
+
+def _refuse_spool_failure(record: RunRecord, error: OSError) -> NoReturn:
+    """Refuse the composition stage for one failed Run Request spool."""
+
+    record.refuse("composition", f"Run Request spool failed: {error}")
+    raise RunInputError(f"Run Request spool failed: {error}") from error
 
 
 def _dispatch_run(run: RunArguments) -> int:
+    """Open the Run Record, then compose, gate, and hand off the Run Request."""
+    with run_record(sys.argv[1:], run.harness) as record:
+        return _run_request(run, record)
+
+
+def _run_request(run: RunArguments, record: RunRecord) -> int:
     """Compose the Context, gate its size, and hand the spool to the Harness."""
-    invocation_dir = Path.cwd()
-    project = _select_run_project(run, invocation_dir)
+    try:
+        invocation_dir = Path.cwd()
+        selection = _select_run_project(run, invocation_dir)
+    except (ProjectSelectionError, RegistryError) as error:
+        record.refuse("selection", str(error))
+        raise
+    project = Project(
+        boundary=selection.boundary,
+        enclosing_git_root=selection.boundary,
+    )
+    record.selected(selection)
     try:
         spool = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
     except OSError as error:
-        raise RunInputError(f"Run Request spool failed: {error}") from error
+        _refuse_spool_failure(record, error)
     with spool:
         try:
             context_bytes = _compose_run(run, project.boundary, invocation_dir, spool)
         except OSError as error:
-            raise RunInputError(f"Run Request spool failed: {error}") from error
-        threshold = _context_threshold()
+            _refuse_spool_failure(record, error)
+        except RunInputError as error:
+            record.refuse("composition", str(error))
+            raise
+        try:
+            threshold = _context_threshold()
+        except RunInputError as error:
+            record.refuse("composition", str(error))
+            raise
         if context_bytes > threshold:
             message = f"Context is {context_bytes} bytes; the warning threshold is {threshold} bytes."
             if not run.force:
+                record.refuse("context-gate", message)
                 sys.stderr.write(
                     f"factory: error: {message} Re-run with --force to continue.\n"
                 )
@@ -709,8 +746,12 @@ def _dispatch_run(run: RunArguments) -> int:
         try:
             spool.seek(0)
         except OSError as error:
-            raise RunInputError(f"Run Request spool failed: {error}") from error
-        return select_harness(run.harness).run(project, spool)
+            _refuse_spool_failure(record, error)
+        try:
+            return select_harness(run.harness).run(project, spool)
+        except RunAdmissionError as error:
+            record.refuse("admission", str(error), facts=_admission_facts(error))
+            raise
 
 
 def _dispatch() -> int:
@@ -727,7 +768,7 @@ def _dispatch() -> int:
         return 1
     except UnknownHarnessError as error:
         return _usage(UsageError(str(error)))
-    except (RunInputError, RunAdmissionError, RegistryError) as error:
+    except (RunInputError, RunAdmissionError, RegistryError, RunRecordError) as error:
         sys.stderr.write(f"factory: error: {error}.\n")
         return 1
     except PackageNotFoundError:

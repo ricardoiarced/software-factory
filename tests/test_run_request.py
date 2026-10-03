@@ -51,16 +51,65 @@ def git_init_commit(root: Path) -> None:
     )
 
 
+def commit_worktree(root: Path) -> None:
+    """Stage and commit every fixture file so the Checkout Git Assessment
+    observes a clean worktree."""
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+            "-q",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+
 def pin(path: Path) -> dict[str, object]:
     info = path.stat()
     return {"path": str(path), "st_dev": info.st_dev, "st_ino": info.st_ino}
+
+
+_PIN_NAMES = ("worktree_root", "git_dir", "common_dir")
+
+
+def git_proof_pins(root: Path) -> dict[str, dict[str, object]]:
+    """Pin the worktree root, Git directory, and common dir Git resolves."""
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "rev-parse",
+            "--show-toplevel",
+            "--absolute-git-dir",
+            "--git-common-dir",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    paths = []
+    for line in result.stdout.splitlines():
+        text = os.fsdecode(line)
+        resolved = Path(text) if os.path.isabs(text) else root / text
+        paths.append(resolved.resolve(strict=True))
+    return {name: pin(path) for name, path in zip(_PIN_NAMES, paths)}
 
 
 def register_checkout(
     monkeypatch: pytest.MonkeyPatch, root: Path, config: Path
 ) -> None:
     """Register one real Git worktree as the acme/web Checkout of a v2 store."""
-    git_dir = pin(root / ".git")
+    proof = git_proof_pins(root)
     document = {
         "version": 2,
         "clients": [{"id": CLIENT_ID, "key": "acme", "name": None}],
@@ -73,16 +122,18 @@ def register_checkout(
                 "default_checkout_id": CHECKOUT_ID,
             }
         ],
-        "repositories": [{"id": REPOSITORY_ID, "name": None, "common_dir": git_dir}],
+        "repositories": [
+            {"id": REPOSITORY_ID, "name": None, "common_dir": proof["common_dir"]}
+        ],
         "checkouts": [
             {
                 "id": CHECKOUT_ID,
                 "project_id": PROJECT_ID,
                 "repository_id": REPOSITORY_ID,
-                "boundary": pin(root),
-                "worktree_root": pin(root),
-                "git_dir": git_dir,
-                "common_dir": git_dir,
+                "boundary": proof["worktree_root"],
+                "worktree_root": proof["worktree_root"],
+                "git_dir": proof["git_dir"],
+                "common_dir": proof["common_dir"],
             }
         ],
         "legacy": {},
@@ -159,11 +210,13 @@ def test_factory_returns_ordinary_codex_status_without_annotating_output(
     capfdbinary: pytest.CaptureFixture[bytes],
     status: int,
 ) -> None:
-    git_init_commit(tmp_path)
-    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
+    root = tmp_path / "worktree"
+    root.mkdir()
+    git_init_commit(root)
+    register_checkout(monkeypatch, root, tmp_path / "config")
 
     def handoff(project: Project, spool: io.BufferedRandom) -> int:
-        assert project == Project(tmp_path, tmp_path)
+        assert project == Project(root, root)
         os.write(1, b"\xffcodex-stdout\n")
         os.write(2, b"\xfecodex-stderr\n")
         return status
@@ -171,9 +224,9 @@ def test_factory_returns_ordinary_codex_status_without_annotating_output(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
-    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(root), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root)
 
     assert factory.main() == status
     captured = capfdbinary.readouterr()
@@ -224,11 +277,11 @@ def test_registered_run_uses_exact_boundary_and_only_its_spec(
                     },
                 ],
                 "repositories": [
-                    {"id": REPOSITORY_ID, "name": None, "common_dir": git_dir},
+                    {"id": REPOSITORY_ID, "name": None, "common_dir": service_git_dir},
                     {
                         "id": "repo_" + "3" * 32,
                         "name": None,
-                        "common_dir": service_git_dir,
+                        "common_dir": git_dir,
                     },
                     {
                         "id": "repo_" + "5" * 32,
@@ -539,23 +592,26 @@ def test_explicit_run_hands_off_exact_request_bytes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    git_init_commit(tmp_path)
-    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
-    marker = tmp_path / ".agent"
+    root = tmp_path / "worktree"
+    root.mkdir()
+    git_init_commit(root)
+    register_checkout(monkeypatch, root, tmp_path / "config")
+    marker = root / ".agent"
     marker.mkdir()
     (marker / "spec.md").write_bytes(b"\xef\xbb\xbfGuide\r\n")
-    (tmp_path / "notes.txt").write_bytes(b"\xef\xbb\xbfFirst\n\n")
+    (root / "notes.txt").write_bytes(b"\xef\xbb\xbfFirst\n\n")
+    commit_worktree(root)
     requests: list[bytes] = []
 
     def handoff(project: Project, spool: io.BufferedRandom) -> int:
-        assert project == Project(tmp_path, tmp_path)
+        assert project == Project(root, root)
         requests.append(spool.read())
         return 7
 
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--checkout", str(tmp_path), "--file", "notes.txt", "Fix", "it"],
+        ["factory", "--checkout", str(root), "--file", "notes.txt", "Fix", "it"],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"stdin")))
     monkeypatch.setattr(
@@ -564,7 +620,7 @@ def test_explicit_run_hands_off_exact_request_bytes(
         lambda _name: _selected_harness(handoff),
         raising=False,
     )
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root)
 
     assert factory.main() == 7
     assert requests == [
@@ -680,8 +736,10 @@ def test_piped_and_redirected_standard_input_have_identical_context(
     payload: bytes,
     context: bytes,
 ) -> None:
-    git_init_commit(tmp_path)
-    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
+    root = tmp_path / "worktree"
+    root.mkdir()
+    git_init_commit(root)
+    register_checkout(monkeypatch, root, tmp_path / "config")
     redirected = tmp_path / "redirected"
     redirected.write_bytes(payload)
     script = """import sys
@@ -702,12 +760,12 @@ raise SystemExit(factory.main())
         script,
         str(Path(factory.__file__).parent),
         "--checkout",
-        str(tmp_path),
+        str(root),
         "Fix",
     ]
     piped = subprocess.run(
         command,
-        cwd=tmp_path,
+        cwd=root,
         check=True,
         input=payload,
         capture_output=True,
@@ -715,7 +773,7 @@ raise SystemExit(factory.main())
     with redirected.open("rb") as source:
         from_file = subprocess.run(
             command,
-            cwd=tmp_path,
+            cwd=root,
             check=True,
             stdin=source,
             capture_output=True,
@@ -994,17 +1052,20 @@ def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
 ) -> None:
 
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
-    git_init_commit(tmp_path)
-    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
-    (tmp_path / "context").write_bytes(b"\xef\xbb\xbfcaf\xc3\xa9")
+    root = tmp_path / "worktree"
+    root.mkdir()
+    git_init_commit(root)
+    register_checkout(monkeypatch, root, tmp_path / "config")
+    (root / "context").write_bytes(b"\xef\xbb\xbfcaf\xc3\xa9")
+    commit_worktree(root)
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "4")
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root)
 
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--checkout", str(tmp_path), "--file", "context", "Fix"],
+        ["factory", "--checkout", str(root), "--file", "context", "Fix"],
     )
     assert factory.main() == 1
     assert capsys.readouterr().err == (
@@ -1015,7 +1076,7 @@ def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--checkout", str(tmp_path), "--file", "context", "--force", "Fix"],
+        ["factory", "--checkout", str(root), "--file", "context", "--force", "Fix"],
     )
     assert factory.main() == 1
     assert capsys.readouterr().err == (
@@ -1030,15 +1091,18 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    git_init_commit(tmp_path)
-    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
-    (tmp_path / ".agent").mkdir()
-    (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
-    context = tmp_path / "context"
+    root = tmp_path / "worktree"
+    root.mkdir()
+    git_init_commit(root)
+    register_checkout(monkeypatch, root, tmp_path / "config")
+    (root / ".agent").mkdir()
+    (root / ".agent" / "spec.md").write_text("Project Guidance")
+    context = root / "context"
     context.write_bytes(b"\xef\xbb\xbf" + b"x" * 1_048_576)
+    commit_worktree(root)
     monkeypatch.delenv("FACTORY_CONTEXT_WARN_BYTES", raising=False)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root)
     received: list[bytes] = []
 
     def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
@@ -1048,7 +1112,7 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
-    arguments = ["factory", "--checkout", str(tmp_path), "--file", "context"]
+    arguments = ["factory", "--checkout", str(root), "--file", "context"]
     monkeypatch.setattr(sys, "argv", [*arguments, "Fix"])
     assert factory.main() == 17
     assert capsys.readouterr().err == ""
@@ -1063,6 +1127,7 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
     )
     assert len(received) == 1
 
+    commit_worktree(root)
     monkeypatch.setattr(sys, "argv", [*arguments, "--force", "Fix"])
     assert factory.main() == 17
     assert capsys.readouterr().err == (
@@ -1103,9 +1168,12 @@ def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
 ) -> None:
     threshold, payload, expected = override
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
-    git_init_commit(tmp_path)
-    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
-    (tmp_path / "context").write_bytes(payload)
+    root = tmp_path / "worktree"
+    root.mkdir()
+    git_init_commit(root)
+    register_checkout(monkeypatch, root, tmp_path / "config")
+    (root / "context").write_bytes(payload)
+    commit_worktree(root)
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", threshold)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.setattr(
@@ -1114,13 +1182,13 @@ def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
         [
             "factory",
             "--checkout",
-            str(tmp_path),
+            str(root),
             "--file",
             "context",
             "Fix",
         ],
     )
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root)
 
     assert factory.main() == 1
     assert capsys.readouterr().err == expected
@@ -1758,15 +1826,18 @@ def test_force_preserves_project_context_threshold_and_run_admission_failures(
     expected: str,
 ) -> None:
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
-    git_init_commit(tmp_path)
-    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
-    (tmp_path / "context").write_bytes(b"\xff")
+    root = tmp_path / "worktree"
+    root.mkdir()
+    git_init_commit(root)
+    register_checkout(monkeypatch, root, tmp_path / "config")
+    (root / "context").write_bytes(b"\xff")
+    commit_worktree(root)
     monkeypatch.setenv(
         "FACTORY_CONTEXT_WARN_BYTES", "invalid" if failure == "threshold" else "0"
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(tmp_path)
-    path = str(tmp_path / "missing") if failure == "project" else str(tmp_path)
+    monkeypatch.chdir(root)
+    path = str(tmp_path / "missing") if failure == "project" else str(root)
     file_args = ["--file", "context"] if failure == "context" else []
     diagnostics = []
 

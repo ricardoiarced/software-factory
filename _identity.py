@@ -1093,9 +1093,9 @@ def _repository_for_checkout(
             owner = _project_by_id(store, checkout.project_id)
             if owner.client_id != request.project.client_id:
                 raise IdentityError(
-                    f"Repository {_quoted(repository.id)} is owned by a Checkout "
-                    "in another Client; cross-client Repository sharing requires "
-                    "the isolation admission policy (#167)"
+                    f"Repository {_quoted(repository.id)} is already bound to a "
+                    "Checkout in another Client; a Git common directory shared "
+                    "across Clients never admits Runs."
                 )
         if repository.common_dir != fresh:
             raise IdentityError(
@@ -1135,14 +1135,15 @@ def _refuse_repository_sharing(
             return repository
         if owner.client_id != request.project.client_id:
             raise IdentityError(
-                f"Repository {_quoted(repository.id)} is owned by a Checkout "
-                "in another Client; cross-client Repository sharing requires "
-                "the isolation admission policy (#167)"
+                f"Repository {_quoted(repository.id)} is already bound to a "
+                "Checkout in another Client; a Git common directory shared "
+                "across Clients never admits Runs."
             )
         raise IdentityError(
-            f"Repository {_quoted(repository.id)} is already associated with "
-            f"project {_quoted(_selector(store, owner))}; pass --repository "
-            f"{repository.id} to share it explicitly"
+            f"{_quoted(request.supplied)} belongs to Repository "
+            f"{_quoted(repository.id)} already bound to Project "
+            f"{_quoted(_selector(store, owner))}; sharing a Repository across "
+            "Projects requires the explicit --repository REPO form."
         )
     return repository
 

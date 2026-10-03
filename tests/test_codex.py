@@ -44,8 +44,14 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
     return CodexRunner().run(project, run_request_spool)
 
 
-def register_run_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Commit tmp_path and register it as the acme/web Checkout of a v2 store."""
+def register_run_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worktree: Path | None = None,
+) -> None:
+    """Commit one worktree and register it as the acme/web Checkout of a v2
+    store whose configuration stays outside the worktree."""
+    root = worktree if worktree is not None else tmp_path
     subprocess.run(
         [
             "git",
@@ -59,18 +65,18 @@ def register_run_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
             "initial",
             "-q",
         ],
-        cwd=tmp_path,
+        cwd=root,
         check=True,
     )
     boundary = {
-        "path": str(tmp_path),
-        "st_dev": tmp_path.stat().st_dev,
-        "st_ino": tmp_path.stat().st_ino,
+        "path": str(root),
+        "st_dev": root.stat().st_dev,
+        "st_ino": root.stat().st_ino,
     }
     git_dir = {
-        "path": str(tmp_path / ".git"),
-        "st_dev": (tmp_path / ".git").stat().st_dev,
-        "st_ino": (tmp_path / ".git").stat().st_ino,
+        "path": str(root / ".git"),
+        "st_dev": (root / ".git").stat().st_dev,
+        "st_ino": (root / ".git").stat().st_ino,
     }
     config = tmp_path / "config"
     registry = config / "factory" / "projects.json"
@@ -2985,15 +2991,17 @@ def test_factory_reports_an_admission_failure_without_a_traceback(
 ) -> None:
     git = shutil.which("git")
     assert git is not None
-    subprocess.run([git, "init", "-q"], cwd=tmp_path, check=True)
-    register_run_checkout(tmp_path, monkeypatch)
+    root = tmp_path / "worktree"
+    root.mkdir()
+    subprocess.run([git, "init", "-q"], cwd=root, check=True)
+    register_run_checkout(tmp_path, monkeypatch, root)
     path_directory = tmp_path / "path"
     path_directory.mkdir()
     (path_directory / "git").symlink_to(Path(git).resolve())
     monkeypatch.setenv("PATH", os.fspath(path_directory))
-    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(root), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root)
 
     assert factory.main() == 1
     assert capsys.readouterr().err == (

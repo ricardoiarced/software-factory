@@ -51,6 +51,22 @@ class RunSelectionFacts(Protocol):
     def boundary(self) -> Path: ...
 
 
+class RunGateFacts(Protocol):
+    """The identity and Git evidence one passed Shared Run Gate carries."""
+
+    @property
+    def head(self) -> str: ...
+
+    @property
+    def object_format(self) -> str: ...
+
+    @property
+    def pins(self) -> Mapping[str, Mapping[str, object]]: ...
+
+    @property
+    def assessment(self) -> Mapping[str, object]: ...
+
+
 class LaunchAuthorization(Protocol):
     """The admitted launch plan a Launch Commit records as authorization."""
 
@@ -202,6 +218,29 @@ class RunRecord:
             self._document = document
         except (RunRecordError, OSError, RegistryError):
             pass
+
+    def gated(self, facts: RunGateFacts) -> None:
+        """Durably record the Shared Run Gate's identity and Git evidence.
+
+        The gate stages run before admission, so their evidence commits
+        strictly: a store that cannot record it refuses the Run rather than
+        admitting a stage that landed unrecorded.
+        """
+
+        if self._document["status"] != "open":
+            raise RunRecordError(
+                f"Run Record {self._identifier} is not open for gate evidence"
+            )
+        gate: dict[str, object] = {
+            "at": _timestamp(),
+            "head": facts.head,
+            "object_format": facts.object_format,
+            "proof": {name: dict(facts.pins[name]) for name in sorted(facts.pins)},
+            "git": facts.assessment,
+        }
+        document = {**self._document, "gate": gate}
+        self._store(document)
+        self._document = document
 
     def commit_launch(self, authorization: LaunchAuthorization) -> None:
         """Write the crash-durable Launch Commit; a failure refuses the launch."""

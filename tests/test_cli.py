@@ -174,7 +174,9 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
 ) -> None:
     """An uncertified release still installs and administers, but never runs."""
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    root = tmp_path / "worktree"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
     subprocess.run(
         [
             "git",
@@ -187,7 +189,7 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
             "-m",
             "initial",
         ],
-        cwd=tmp_path,
+        cwd=root,
         check=True,
         capture_output=True,
     )
@@ -216,11 +218,11 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
     assert registered.stderr == b""
 
     added = installed_factory(
-        "project", "register", "acme/api", str(tmp_path), env=environment
+        "project", "register", "acme/api", str(root), env=environment
     )
     assert added.returncode == 0
     assert added.stdout.startswith(
-        f'Registered project "acme/api" at "{tmp_path.resolve()}"'.encode()
+        f'Registered project "acme/api" at "{root.resolve()}"'.encode()
     )
     assert added.stdout.endswith(b".\n")
     assert added.stderr == b""
@@ -232,7 +234,7 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
 
     run = installed_factory(
         "--checkout",
-        str(tmp_path),
+        str(root),
         "Diagnose this failure",
         env=environment,
     )

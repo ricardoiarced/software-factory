@@ -113,6 +113,18 @@ _Avoid_: Alias, shortcut
 The local collection of project names and the canonical project paths they resolve to. Paths are validated when registered and before each Run; a stale registration remains recorded so the user can inspect, replace, or remove it.
 _Avoid_: Project list, catalog
 
+**Default Checkout**:
+The Checkout record a Project designates as its selection default: the first Checkout is set at registration, `project set-default-checkout` changes it, and removing the referenced Checkout clears it without selecting a replacement. Convenience selection never writes this field.
+_Avoid_: Active checkout, current checkout
+
+**Legacy Registration**:
+A version-one Project Registry entry carried verbatim into the identity store's legacy section by `project migrate`. It records a name and a path, assigns no identity, is inspected and removed only through the explicit `--legacy` namespace, never resolves as a selectable Project, and its surviving claim blocks fresh registration of the same canonical path until it is consumed with `--from-legacy` or removed.
+_Avoid_: Old project, migrated project
+
+**Re-registration**:
+The explicit continuity claim that repairs one immutable Checkout or Repository record by ID: Factory freshly verifies the supplied path, replaces only that record's Git pin after self-excluded uniqueness checks, preserves the record's identity and relationships, and reports the old and new proof. It never runs implicitly and never mints a replacement record.
+_Avoid_: Re-add, silent repair, duplicate registration
+
 **Run**:
 One non-interactive execution started for an instruction in a project by the selected Harness.
 _Avoid_: Job, task, session

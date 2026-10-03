@@ -88,10 +88,12 @@ def _validated_projects(projects: object) -> dict[str, str]:
 def _validate_v1_document(document: object) -> dict[str, str]:
     """Return the version-one Project table only when the schema matches."""
 
-    if not isinstance(document, dict) or set(document) != {"version", "projects"}:
+    if not isinstance(document, dict) or type(document.get("version")) is not int:
         raise RegistryError("malformed Project Registry: invalid schema")
-    if type(document["version"]) is not int or document["version"] != 1:
+    if document["version"] != 1:
         raise RegistryError("malformed Project Registry: unsupported version")
+    if set(document) != {"version", "projects"}:
+        raise RegistryError("malformed Project Registry: invalid schema")
     return _validated_projects(document["projects"])
 
 

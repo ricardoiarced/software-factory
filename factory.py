@@ -18,23 +18,39 @@ from _harness import (
     UnknownHarnessError,
     select_harness,
 )
+from _identity import (
+    _registered_project,
+    list_clients,
+    list_projects,
+    migrate,
+    re_register_checkout,
+    re_register_repository,
+    register_checkout,
+    register_client,
+    register_project,
+    remove_client,
+    remove_project_entry,
+    remove_stored_checkout,
+    set_client_key,
+    set_client_name,
+    set_default_checkout,
+    set_project_key,
+    set_project_name,
+    show_project,
+)
 from _project import (
-    GitInspectionError,
     Project,
     ProjectSelectionError,
     StaleProjectError,
     discover_project,
     expand_path,
-    inspect_registered_project,
     select_explicit_project,
 )
 from _project_guidance import ProjectGuidanceError, open_project_spec
 from _project_registry import (
     RegistryCommitUncertain,
     RegistryError,
-    add_project,
     read_projects,
-    remove_project,
     validate_project_name,
 )
 
@@ -88,34 +104,61 @@ Examples:
   git diff | factory Review this patch
   factory --path ./services/api Update dependencies
   factory -- project list
-  factory project add api ~/work/api
   factory project show api
   factory project remove api
 """
 )
 
 PROJECT_SYNOPSIS = """Usage:
-  factory project add [--] NAME PATH
+  factory project register [--name NAME] [--from-legacy NAME] [--] SELECTOR PATH
   factory project list
-  factory project show [--] NAME
-  factory project remove [--] NAME
+  factory project show [--legacy] [--] SELECTOR
+  factory project remove [--legacy] [--] NAME
+  factory project migrate
+  factory project set-default-checkout [--] SELECTOR PATH
+  factory project set-key [--] SELECTOR NEW_KEY
+  factory project set-name [--] SELECTOR [NAME]
+  factory project client register [--name NAME] [--] KEY
+  factory project client list
+  factory project client set-key [--] KEY NEW_KEY
+  factory project client set-name [--] KEY [NAME]
+  factory project client remove [--] KEY
+  factory project checkout register [--repository ID] [--] SELECTOR PATH
+  factory project checkout re-register [--] CHECKOUT_ID PATH
+  factory project checkout remove [--] CHECKOUT_ID
+  factory project repository re-register [--] REPOSITORY_ID PATH
   factory project (-h | --help)
 """
 
 PROJECT_HELP = (
     PROJECT_SYNOPSIS
     + """
-Manage names in the local Project Registry. Project Names are case-sensitive.
-An added path must identify a directory inside a non-bare Git worktree.
+Manage the local Project Registry. Project Names are case-sensitive. A
+registered path must identify a directory inside a non-bare Git worktree with
+a readable commit HEAD.
 
-Commands:
-  add NAME PATH  Register or update a Project Boundary.
-  list           List registered Projects and their current status.
-  show NAME      Show one Project and its current status.
-  remove NAME    Remove one registered Project.
+Client commands manage the Clients that own Projects. register creates a
+Client under a globally unique key; set-key and set-name repair one later.
 
-Use -- before NAME when the name resembles an option. Only exact lowercase
-project as the first argument enters this namespace.
+Project commands manage the Projects themselves. register records one Project
+under an existing Client together with its first Repository and Checkout.
+show, set-key, set-name, and set-default-checkout repair one registered
+Project; remove removes one only after its Checkouts are gone.
+
+Checkout commands register additional worktrees of one Project, re-register a
+moved worktree in place, or remove one. repository re-register re-pins a
+retained Repository common directory from fresh evidence.
+
+migrate converts a version-one registry into the version-two identity store.
+Administration refuses a version-one registry with a migrate-first error, and
+list, show, and remove keep serving version-one registries until then. The
+--legacy form of show and remove addresses pre-migration entries after the
+migration; register --from-legacy consumes one legacy entry when it registers
+the same path as a real Project.
+
+Value options accept --option VALUE or --option=VALUE and may appear once
+each; --legacy is a flag. Use -- before a value that resembles an option.
+Only exact lowercase project as the first argument enters this namespace.
 """
 )
 
@@ -393,45 +436,143 @@ def _parse_run(args: list[str]) -> RunArguments:
     return RunArguments(instruction, harness, selector, tuple(files), seen_force)
 
 
-def _parse_project(args: list[str]) -> tuple[str, list[str]]:
-    if not args:
+@dataclass(frozen=True)
+class ProjectInvocation:
+    """One parsed Project administration command line."""
+
+    route: str
+    values: tuple[str, ...]
+    options: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _RouteSpec:
+    """The grammar of one Project administration route."""
+
+    minimum: int
+    maximum: int
+    valued: tuple[str, ...] = ()
+    flags: tuple[str, ...] = ()
+
+
+_PROJECT_ROUTES: dict[tuple[str, ...], _RouteSpec] = {
+    ("register",): _RouteSpec(2, 2, valued=("--name", "--from-legacy")),
+    ("list",): _RouteSpec(0, 0),
+    ("show",): _RouteSpec(1, 1, flags=("--legacy",)),
+    ("remove",): _RouteSpec(1, 1, flags=("--legacy",)),
+    ("migrate",): _RouteSpec(0, 0),
+    ("set-default-checkout",): _RouteSpec(2, 2),
+    ("set-key",): _RouteSpec(2, 2),
+    ("set-name",): _RouteSpec(1, 2),
+    ("client", "register"): _RouteSpec(1, 1, valued=("--name",)),
+    ("client", "list"): _RouteSpec(0, 0),
+    ("client", "set-key"): _RouteSpec(2, 2),
+    ("client", "set-name"): _RouteSpec(1, 2),
+    ("client", "remove"): _RouteSpec(1, 1),
+    ("checkout", "register"): _RouteSpec(2, 2, valued=("--repository",)),
+    ("checkout", "re-register"): _RouteSpec(2, 2),
+    ("checkout", "remove"): _RouteSpec(1, 1),
+    ("repository", "re-register"): _RouteSpec(2, 2),
+}
+
+
+def _match_project_route(
+    arguments: list[str],
+) -> tuple[tuple[str, ...], _RouteSpec] | None:
+    """Return the longest route prefix matching the command line."""
+    for width in (2, 1):
+        route = tuple(arguments[:width])
+        if route in _PROJECT_ROUTES:
+            return route, _PROJECT_ROUTES[route]
+    return None
+
+
+def _project_option(
+    arguments: list[str], position: int, argument: str
+) -> tuple[str, int]:
+    """Return one valued Project option's value and the position past it."""
+    try:
+        _, value, position = _option_value(arguments, position, argument)
+    except UsageError as error:
+        raise UsageError(str(error), project=True) from error
+    return value, position
+
+
+def _record_project_option(
+    spec: _RouteSpec,
+    options: dict[str, str],
+    arguments: list[str],
+    position: int,
+    argument: str,
+) -> int:
+    """Record one Project option and return the position past its value."""
+    option = argument.partition("=")[0]
+    if option not in spec.valued and (option not in spec.flags or option != argument):
+        raise UsageError(f"unknown Project option {_quoted(argument)}", project=True)
+    if option in options:
+        raise UsageError(f"{option} may appear only once", project=True)
+    if option in spec.valued:
+        value, position = _project_option(arguments, position, argument)
+        options[option] = value
+    else:
+        options[option] = ""
+    return position
+
+
+def _parse_project_options(
+    spec: _RouteSpec, arguments: list[str]
+) -> tuple[list[str], dict[str, str]]:
+    """Split one command tail into positional values and accepted options."""
+    values: list[str] = []
+    options: dict[str, str] = {}
+    positionals_only = False
+    position = 0
+    while position < len(arguments):
+        argument = arguments[position]
+        if positionals_only or not argument.startswith("-") or argument == "-":
+            values.append(argument)
+        elif argument in ("-h", "--help", "--version"):
+            raise UsageError(f"{argument} must be used alone", project=True)
+        elif argument == "--":
+            positionals_only = True
+        elif argument.startswith("--"):
+            position = _record_project_option(
+                spec, options, arguments, position, argument
+            )
+        else:
+            values.append(argument)
+        position += 1
+    return values, options
+
+
+def _parse_project(arguments: list[str]) -> ProjectInvocation:
+    """Parse one Project administration command line against the route table."""
+    if not arguments:
         raise UsageError("a Project command is required", project=True)
-    command, *values = args
-    arities = {"add": 2, "list": 0, "show": 1, "remove": 1}
-    if command not in arities:
-        raise UsageError(f"unknown Project command {_quoted(command)}", project=True)
-    if values[:1] == ["--"] and command != "list":
-        values = values[1:]
-    elif any(value.startswith("-") for value in values):
-        raise UsageError("Project options are not accepted here", project=True)
-    if len(values) != arities[command]:
+    if arguments[0] == "add":
         raise UsageError(
-            f"project {command} expects {arities[command]} argument(s)", project=True
+            "project add was removed; "
+            "use 'factory project register' to register Projects",
+            project=True,
         )
-    return command, values
-
-
-def _add_project(name: str, supplied_path: str) -> None:
-    validate_project_name(name)
-    project = select_explicit_project(supplied_path, Path.cwd())
-    add_project(name, project)
-
-
-def _registered_project(path: str) -> Project:
-    try:
-        return inspect_registered_project(path)
-    except (OSError, RuntimeError) as error:
-        raise RegistryError(f"Project validation failed: {error}") from error
-    except GitInspectionError as error:
-        raise RegistryError(str(error)) from error
-
-
-def _project_status(path: str) -> str:
-    try:
-        _registered_project(path)
-    except StaleProjectError as error:
-        return str(error)
-    return "valid"
+    matched = _match_project_route(arguments)
+    if matched is None:
+        raise UsageError(
+            f"unknown Project command {_quoted(arguments[0])}", project=True
+        )
+    route, spec = matched
+    values, options = _parse_project_options(spec, list(arguments[len(route) :]))
+    if not spec.minimum <= len(values) <= spec.maximum:
+        expected = (
+            str(spec.minimum)
+            if spec.minimum == spec.maximum
+            else f"{spec.minimum} or {spec.maximum}"
+        )
+        raise UsageError(
+            f"project {' '.join(route)} expects {expected} argument(s)",
+            project=True,
+        )
+    return ProjectInvocation(" ".join(route), tuple(values), options)
 
 
 def _select_registered_project(name: str) -> Project:
@@ -444,35 +585,6 @@ def _select_registered_project(name: str) -> Project:
         return _registered_project(path)
     except StaleProjectError as error:
         raise RegistryError(f"Project {_quoted(name)} is {error}") from error
-
-
-def _list_projects() -> None:
-    projects = read_projects()
-    if not projects:
-        output = "No projects registered.\n"
-    else:
-        lines = ["NAME\tSTATUS\tPATH"]
-        for name in sorted(projects):
-            path = projects[name]
-            lines.append(
-                f"{json.dumps(name, ensure_ascii=False)}\t{_project_status(path)}\t"
-                f"{json.dumps(path, ensure_ascii=False)}"
-            )
-        output = "\n".join(lines) + "\n"
-    sys.stdout.write(output)
-
-
-def _show_project(name: str) -> None:
-    projects = read_projects()
-    if name not in projects:
-        raise RegistryError(f"Project {_quoted(name)} is not registered")
-    path = projects[name]
-    status = _project_status(path)
-    sys.stdout.write(
-        f"Name: {json.dumps(name, ensure_ascii=False)}\n"
-        f"Path: {json.dumps(path, ensure_ascii=False)}\n"
-        f"Status: {status}\n"
-    )
 
 
 def _usage(error: UsageError) -> int:
@@ -496,27 +608,81 @@ def _route(arguments: list[str]) -> int:
         sys.stdout.write(f"factory {version('software-factory')}\n")
         return 0
     if arguments[:1] == ["project"]:
-        command, values = _parse_project(arguments[1:])
-        return _dispatch_project(command, values)
+        return _dispatch_project(_parse_project(arguments[1:]))
     return _dispatch_run(_parse_run(arguments))
 
 
-def _dispatch_project(command: str, values: list[str]) -> int:
+def _dispatch_client(invocation: ProjectInvocation) -> int:
+    """Run one Client administration command to completion."""
+    values = invocation.values
+    if invocation.route == "client register":
+        register_client(values[0], invocation.options.get("--name"))
+        return 0
+    if invocation.route == "client list":
+        list_clients()
+        return 0
+    if invocation.route == "client set-key":
+        set_client_key(values[0], values[1])
+        return 0
+    if invocation.route == "client set-name":
+        set_client_name(values[0], values[1] if len(values) > 1 else None)
+        return 0
+    remove_client(values[0])
+    return 0
+
+
+def _dispatch_shape(invocation: ProjectInvocation) -> int:
+    """Run one Checkout or Repository administration command to completion."""
+    values = invocation.values
+    if invocation.route == "checkout register":
+        register_checkout(values[0], values[1], invocation.options.get("--repository"))
+        return 0
+    if invocation.route == "checkout re-register":
+        re_register_checkout(values[0], values[1])
+        return 0
+    if invocation.route == "checkout remove":
+        remove_stored_checkout(values[0])
+        return 0
+    re_register_repository(values[0], values[1])
+    return 0
+
+
+def _dispatch_project(invocation: ProjectInvocation) -> int:
     """Run one Project administration command to completion."""
-    if command == "list":
-        _list_projects()
+    route = invocation.route
+    if route.startswith("client "):
+        return _dispatch_client(invocation)
+    if route.startswith(("checkout ", "repository ")):
+        return _dispatch_shape(invocation)
+    values = invocation.values
+    if route == "register":
+        register_project(
+            values[0],
+            values[1],
+            invocation.options.get("--name"),
+            invocation.options.get("--from-legacy"),
+        )
         return 0
-    if command == "show":
-        _show_project(values[0])
+    if route == "list":
+        list_projects()
         return 0
-    if command == "add":
-        _add_project(values[0], values[1])
+    if route == "show":
+        show_project(values[0], legacy="--legacy" in invocation.options)
         return 0
-    if command == "remove":
-        remove_project(values[0])
+    if route == "remove":
+        remove_project_entry(values[0], legacy="--legacy" in invocation.options)
         return 0
-    sys.stderr.write("factory: error: Project administration is not yet available.\n")
-    return 1
+    if route == "migrate":
+        migrate()
+        return 0
+    if route == "set-default-checkout":
+        set_default_checkout(values[0], values[1])
+        return 0
+    if route == "set-key":
+        set_project_key(values[0], values[1])
+        return 0
+    set_project_name(values[0], values[1] if len(values) > 1 else None)
+    return 0
 
 
 def _select_run_project(run: RunArguments, invocation_dir: Path) -> Project:

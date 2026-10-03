@@ -4,25 +4,24 @@ import json
 import os
 import re
 import secrets
-import stat
 import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 
 from _project import (
     GitInspectionError,
+    Project,
+    ProjectSelectionError,
     StaleProjectError,
     expand_path,
     inspect_registered_project,
 )
 from _project_registry import (
-    RegistryCommitUncertain,
-    RegistryError,
     _PROJECT_NAME,
-    _RegistryUpdate,
+    RegistryError,
     _mutate_store,
     _open_config_directory,
     _parse_registry_document,
@@ -120,7 +119,12 @@ class _CheckoutRequest:
     supplied: str
 
 
-_ID_PREFIXES = {"clients": "cli_", "projects": "prj_", "repositories": "repo_", "checkouts": "chk_"}
+_ID_PREFIXES = {
+    "clients": "cli_",
+    "projects": "prj_",
+    "repositories": "repo_",
+    "checkouts": "chk_",
+}
 _ID = re.compile(r"(?:cli|prj|repo|chk)_[0-9a-f]{32}\Z")
 _STORE_KEYS = {"version", "clients", "projects", "repositories", "checkouts", "legacy"}
 _MIGRATE_FIRST = "projects registry schema v1; run 'factory project migrate' first"
@@ -142,7 +146,9 @@ def _malformed(detail: str) -> IdentityError:
 
 
 def _empty_store() -> IdentityStore:
-    return IdentityStore(clients=[], projects=[], repositories=[], checkouts=[], legacy={})
+    return IdentityStore(
+        clients=[], projects=[], repositories=[], checkouts=[], legacy={}
+    )
 
 
 def _fresh_id(store: IdentityStore, namespace: str) -> str:
@@ -150,7 +156,12 @@ def _fresh_id(store: IdentityStore, namespace: str) -> str:
 
     taken = {
         record.id
-        for records in (store.clients, store.projects, store.repositories, store.checkouts)
+        for records in (
+            store.clients,
+            store.projects,
+            store.repositories,
+            store.checkouts,
+        )
         for record in records
     }
     while (identifier := _ID_PREFIXES[namespace] + secrets.token_hex(16)) in taken:
@@ -186,7 +197,9 @@ def _read_optional_name(value: object) -> str | None:
 
 
 def _read_identifier(value: object, namespace: str) -> str:
-    if type(value) is not str or not re.fullmatch(_ID_PREFIXES[namespace] + r"[0-9a-f]{32}", value):
+    if type(value) is not str or not re.fullmatch(
+        _ID_PREFIXES[namespace] + r"[0-9a-f]{32}", value
+    ):
         raise _malformed(f"invalid {namespace} identifier")
     return value
 
@@ -231,7 +244,9 @@ def _read_clients(document: dict[str, object]) -> list[Client]:
 def _read_projects_section(document: dict[str, object]) -> list[ProjectRecord]:
     projects = []
     for entry in _read_section(document, "projects"):
-        record = _read_record(entry, {"id", "client_id", "key", "name", "default_checkout_id"})
+        record = _read_record(
+            entry, {"id", "client_id", "key", "name", "default_checkout_id"}
+        )
         default = record["default_checkout_id"]
         if default is not None and type(default) is not str:
             raise _malformed("invalid Project default checkout reference")
@@ -266,7 +281,15 @@ def _read_checkouts(document: dict[str, object]) -> list[Checkout]:
     for entry in _read_section(document, "checkouts"):
         record = _read_record(
             entry,
-            {"id", "project_id", "repository_id", "boundary", "worktree_root", "git_dir", "common_dir"},
+            {
+                "id",
+                "project_id",
+                "repository_id",
+                "boundary",
+                "worktree_root",
+                "git_dir",
+                "common_dir",
+            },
         )
         checkouts.append(
             Checkout(
@@ -288,7 +311,11 @@ def _read_legacy(document: dict[str, object]) -> dict[str, str]:
         raise _malformed("invalid legacy section")
     legacy: dict[str, str] = {}
     for name, path in entries.items():
-        if type(name) is not str or not _PROJECT_NAME.fullmatch(name) or _ID.fullmatch(name):
+        if (
+            type(name) is not str
+            or not _PROJECT_NAME.fullmatch(name)
+            or _ID.fullmatch(name)
+        ):
             raise _malformed("invalid legacy Project Name")
         if type(path) is not str or not os.path.isabs(path) or "\x00" in path:
             raise _malformed("invalid legacy path")
@@ -298,9 +325,7 @@ def _read_legacy(document: dict[str, object]) -> dict[str, str]:
     return legacy
 
 
-def _validate_references(store: IdentityStore) -> None:
-    """Refuse dangling references, duplicate records, and inconsistent pins."""
-
+def _validate_unique_identifiers(store: IdentityStore) -> None:
     sections = (
         ("clients", store.clients),
         ("projects", store.projects),
@@ -311,10 +336,17 @@ def _validate_references(store: IdentityStore) -> None:
         identifiers = [record.id for record in records]
         if len(set(identifiers)) != len(identifiers):
             raise _malformed(f"duplicate {namespace} identifier")
+    client_keys = [client.key for client in store.clients]
+    if len(set(client_keys)) != len(client_keys):
+        raise _malformed("duplicate Client key")
+
+
+def _validate_project_references(
+    store: IdentityStore,
+    checkout_ids: set[str],
+    checkout_owners: dict[str, str],
+) -> None:
     client_ids = {client.id for client in store.clients}
-    checkout_ids = {checkout.id for checkout in store.checkouts}
-    repository_pins = {repository.id: repository.common_dir for repository in store.repositories}
-    checkout_owners = {checkout.id: checkout.project_id for checkout in store.checkouts}
     project_keys: set[tuple[str, str]] = set()
     for project in store.projects:
         if project.client_id not in client_ids:
@@ -328,18 +360,31 @@ def _validate_references(store: IdentityStore) -> None:
                 raise _malformed("unknown Project default checkout reference")
             if checkout_owners[default] != project.id:
                 raise _malformed("inconsistent Project default checkout reference")
-    client_keys = [client.key for client in store.clients]
-    if len(set(client_keys)) != len(client_keys):
-        raise _malformed("duplicate Client key")
+
+
+def _validate_checkout_references(
+    store: IdentityStore, repository_pins: dict[str, Pin]
+) -> None:
+    project_ids = {project.id for project in store.projects}
     for checkout in store.checkouts:
-        if checkout.project_id not in {project.id for project in store.projects}:
+        if checkout.project_id not in project_ids:
             raise _malformed("unknown Checkout project reference")
         if checkout.repository_id not in repository_pins:
             raise _malformed("unknown Checkout repository reference")
         if checkout.boundary.path != checkout.worktree_root.path:
             raise _malformed("inconsistent Checkout boundary pin")
-        if checkout.common_dir != repository_pins[checkout.repository_id]:
-            raise _malformed("inconsistent Checkout repository pin")
+
+
+def _validate_references(store: IdentityStore) -> None:
+    """Refuse dangling references, duplicate records, and inconsistent pins."""
+
+    _validate_unique_identifiers(store)
+    checkout_owners = {checkout.id: checkout.project_id for checkout in store.checkouts}
+    repository_pins = {
+        repository.id: repository.common_dir for repository in store.repositories
+    }
+    _validate_project_references(store, set(checkout_owners), checkout_owners)
+    _validate_checkout_references(store, repository_pins)
 
 
 def _validate_store(document: object) -> IdentityStore:
@@ -547,20 +592,20 @@ def _resolved_pin(path: Path, label: str) -> Pin:
     try:
         info = os.stat(path)
     except OSError as error:
-        raise IdentityError(
-            f"Git inspection failed for {label}: {error}"
-        ) from error
+        raise IdentityError(f"Git inspection failed for {label}: {error}") from error
     return Pin(str(path), info.st_dev, info.st_ino)
 
 
 def _resolve_proof_paths(
-    lines: list[bytes], label: str
+    lines: list[bytes], boundary: Path, label: str
 ) -> tuple[Path, Path, Path]:
     try:
         root = Path(os.fsdecode(lines[2])).resolve(strict=True)
         git_dir = Path(os.fsdecode(lines[3])).resolve(strict=True)
         common_text = os.fsdecode(lines[4])
-        common = Path(common_text) if os.path.isabs(common_text) else root / common_text
+        common = (
+            Path(common_text) if os.path.isabs(common_text) else boundary / common_text
+        )
         return root, git_dir, common.resolve(strict=True)
     except (OSError, RuntimeError) as error:
         raise IdentityError(
@@ -568,7 +613,7 @@ def _resolve_proof_paths(
         ) from error
 
 
-def _git_proof(boundary: Path, supplied: str) -> tuple[Path, Pin, Pin, Pin, str]:
+def _git_proof(boundary: Path, supplied: str) -> tuple[Pin, Pin, Pin, str]:
     """Inspect one directory and return its root, pins, and commit."""
 
     label = f"path {_quoted(supplied)}"
@@ -577,12 +622,10 @@ def _git_proof(boundary: Path, supplied: str) -> tuple[Path, Pin, Pin, Pin, str]
         _refuse_git_failure(result, label)
     lines = result.stdout.splitlines()
     if len(lines) != len(_GIT_PROOF_FLAGS):
-        raise IdentityError(
-            f"Git inspection failed for {label}: invalid Git output"
-        )
+        raise IdentityError(f"Git inspection failed for {label}: invalid Git output")
     if lines[0] != b"true" or lines[1] != b"false":
         raise IdentityError(f"{label} is not inside a non-bare Git worktree")
-    root, git_dir, common = _resolve_proof_paths(lines, label)
+    root, git_dir, common = _resolve_proof_paths(lines, boundary, label)
     if not boundary.is_relative_to(root):
         raise IdentityError(
             f"Git inspection failed for {label}: worktree does not contain path"
@@ -601,7 +644,6 @@ def _git_proof(boundary: Path, supplied: str) -> tuple[Path, Pin, Pin, Pin, str]
             "registration requires a recorded source commit"
         )
     return (
-        root,
         _resolved_pin(root, label),
         _resolved_pin(git_dir, label),
         _resolved_pin(common, label),
@@ -631,8 +673,7 @@ def verify_checkout_proof(
         ) from error
     if not boundary.is_dir():
         raise IdentityError(f"path {_quoted(supplied)} is not a directory")
-    root, root_pin, git_dir_pin, common_pin, head = _git_proof(boundary, supplied)
-    del root
+    root_pin, git_dir_pin, common_pin, head = _git_proof(boundary, supplied)
     return str(boundary), CheckoutProof(root_pin, git_dir_pin, common_pin, head)
 
 
@@ -856,12 +897,15 @@ def list_clients() -> None:
         return
     lines = ["CLIENT\tNAME"]
     for client in sorted(store.clients, key=lambda record: record.key):
-        display = "-" if client.name is None else _quoted(client.name)
+        display = _quoted(client.name if client.name is not None else client.key)
         lines.append(f"{_quoted(client.key)}\t{display}")
     sys.stdout.write("\n".join(lines) + "\n")
 
 
-def _replace_record[T](records: list[T], current: T, updated: T) -> None:
+_T = TypeVar("_T")
+
+
+def _replace_record(records: list[_T], current: _T, updated: _T) -> None:
     records[records.index(current)] = updated
 
 
@@ -885,7 +929,6 @@ def register_client(key: str, name: str | None) -> None:
 
 def _check_registration(
     store: IdentityStore,
-    selector: str,
     client_key: str,
     key: str,
     boundary: str,
@@ -893,6 +936,7 @@ def _check_registration(
 ) -> tuple[Client, str | None]:
     """Validate one registration against the store; return client and legacy."""
 
+    selector = f"{client_key}/{key}"
     consume: str | None = None
     if from_legacy is not None:
         stored = store.legacy.get(from_legacy)
@@ -1001,12 +1045,12 @@ def register_project(
     canonical = f"{client_key}/{key}"
     tentative = _tentative_boundary(supplied_path)
     pre = _read_store_for_inspection()
-    _check_registration(pre, canonical, client_key, key, tentative or supplied_path, from_legacy)
+    _check_registration(pre, client_key, key, tentative or supplied_path, from_legacy)
     boundary, proof = verify_checkout_proof(supplied_path, Path.cwd())
 
     def mutation(store: IdentityStore) -> tuple[str, bool]:
         client, consume = _check_registration(
-            store, canonical, client_key, key, boundary, from_legacy
+            store, client_key, key, boundary, from_legacy
         )
         repository = _implicit_repository(store, proof.common_dir)
         _refuse_checkout_collisions(store, boundary, proof.git_dir, None)
@@ -1023,13 +1067,13 @@ def register_project(
             _fresh_id(store, "projects"), client.id, key, name, checkout.id
         )
         checkout = replace(checkout, project_id=project.id)
+        if repository not in store.repositories:
+            store.repositories.append(repository)
         store.projects.append(project)
         store.checkouts.append(checkout)
         if consume is not None:
             del store.legacy[consume]
-        tail = (
-            f", consuming legacy project {_quoted(consume)}" if consume else ""
-        )
+        tail = f", consuming legacy project {_quoted(consume)}" if consume else ""
         message = (
             f"Registered project {_quoted(canonical)} at {_quoted(boundary)} "
             f"as checkout {_quoted(checkout.id)} with repository "
@@ -1122,8 +1166,16 @@ def register_checkout(
     def mutation(store: IdentityStore) -> tuple[str, bool]:
         project = _resolve_project(store, selector)
         request = _CheckoutRequest(project, selector, boundary, supplied_path)
-        repository = _repository_for_checkout(store, proof.common_dir, request, repository_id)
-        _refuse_checkout_collisions(store, boundary, proof.git_dir, project.id)
+        if repository_id is not None:
+            repository = _repository_for_checkout(
+                store, proof.common_dir, request, repository_id
+            )
+            _refuse_checkout_collisions(store, boundary, proof.git_dir, project.id)
+        else:
+            _refuse_checkout_collisions(store, boundary, proof.git_dir, project.id)
+            repository = _repository_for_checkout(
+                store, proof.common_dir, request, None
+            )
         checkout = Checkout(
             _fresh_id(store, "checkouts"),
             project.id,
@@ -1153,17 +1205,19 @@ def _proof_report(root: Pin, git_dir: Pin, common: Pin) -> str:
 
 def _consistent_repository(
     store: IdentityStore, checkout: Checkout, proof: CheckoutProof
-) -> Repository:
+) -> None:
+    """Refuse a re-registration whose common directory left the repository pin."""
+
     repository = _repository(store, checkout.repository_id)
     if _pin_identity(repository.common_dir) != _pin_identity(proof.common_dir):
         raise IdentityError(
             f"Checkout {_quoted(checkout.id)} pins repository "
-            f"{_quoted(repository.id)} at {_quoted(repository.common_dir.path)} "
+            f"{_quoted(checkout.repository_id)} at "
+            f"{_quoted(repository.common_dir.path)} "
             f"but the verified common directory is {_quoted(proof.common_dir.path)}; "
             "repair the repository with "
             "'factory project repository re-register' first"
         )
-    return repository
 
 
 def re_register_checkout(checkout_id: str, supplied_path: str) -> None:
@@ -1179,7 +1233,7 @@ def re_register_checkout(checkout_id: str, supplied_path: str) -> None:
         checkout = _checkout(store, checkout_id)
         if checkout is None:
             raise IdentityError(f"Checkout {_quoted(checkout_id)} is not registered")
-        repository = _consistent_repository(store, checkout, proof)
+        _consistent_repository(store, checkout, proof)
         project = _project_by_id(store, checkout.project_id)
         _refuse_checkout_collisions(
             store, boundary, proof.git_dir, None, exclude=checkout.id
@@ -1202,7 +1256,6 @@ def re_register_checkout(checkout_id: str, supplied_path: str) -> None:
             f"Old proof: {_proof_report(checkout.worktree_root, checkout.git_dir, checkout.common_dir)}\n"
             f"New proof: {_proof_report(updated.worktree_root, updated.git_dir, updated.common_dir)}\n"
         )
-        del repository
         return message, True
 
     _mutate_identity(
@@ -1235,7 +1288,9 @@ def re_register_repository(repository_id: str, supplied_path: str) -> None:
         for other in store.repositories:
             if other.id == repository.id:
                 continue
-            if other.common_dir == fresh or _pin_identity(other.common_dir) == _pin_identity(fresh):
+            if other.common_dir == fresh or _pin_identity(
+                other.common_dir
+            ) == _pin_identity(fresh):
                 raise IdentityError(
                     f"Common directory {_quoted(fresh.path)} is already pinned "
                     f"by repository {_quoted(other.id)}"
@@ -1267,8 +1322,10 @@ def remove_stored_checkout(checkout_id: str) -> None:
         selector = _selector(store, project)
         store.checkouts.remove(checkout)
         lines = [
-            f"Removed checkout {_quoted(checkout.id)} from project "
-            f"{_quoted(selector)}.\n"
+            (
+                f"Removed checkout {_quoted(checkout.id)} from project "
+                f"{_quoted(selector)}.\n"
+            )
         ]
         for record in store.projects:
             if record.default_checkout_id == checkout.id:
@@ -1338,9 +1395,7 @@ def remove_legacy_project(name: str) -> None:
         if name not in store.legacy:
             raise IdentityError(f"Legacy project {_quoted(name)} is not registered")
         path = store.legacy.pop(name)
-        message = (
-            f"Removed legacy project {_quoted(name)} from {_quoted(path)}.\n"
-        )
+        message = f"Removed legacy project {_quoted(name)} from {_quoted(path)}.\n"
         return message, True
 
     _mutate_identity(
@@ -1363,10 +1418,6 @@ def remove_project_entry(name: str, *, legacy: bool) -> None:
     remove_project(name)
 
 
-def _set_key(records: list[Client] | list[ProjectRecord], identity: str, new_key: str) -> None:
-    raise NotImplementedError
-
-
 def set_client_key(key: str, new_key: str) -> None:
     """Change one Client key after validating grammar and uniqueness."""
 
@@ -1380,9 +1431,7 @@ def set_client_key(key: str, new_key: str) -> None:
                 f"Key {_quoted(new_key)} already belongs to client {_quoted(other.id)}"
             )
         _replace_record(store.clients, client, replace(client, key=new_key))
-        message = (
-            f"Changed the key of client {_quoted(key)} to {_quoted(new_key)}.\n"
-        )
+        message = f"Changed the key of client {_quoted(key)} to {_quoted(new_key)}.\n"
         return message, True
 
     _mutate_identity(
@@ -1401,9 +1450,7 @@ def set_client_name(key: str, name: str | None) -> None:
         if name is None:
             message = f"Cleared the name of client {_quoted(key)}.\n"
         else:
-            message = (
-                f"Changed the name of client {_quoted(key)} to {_quoted(name)}.\n"
-            )
+            message = f"Changed the name of client {_quoted(key)} to {_quoted(name)}.\n"
         return message, True
 
     _mutate_identity(
@@ -1421,19 +1468,14 @@ def set_project_key(selector: str, new_key: str) -> None:
     def mutation(store: IdentityStore) -> tuple[str, bool]:
         project = _resolve_project(store, selector)
         for other in store.projects:
-            if (
-                other.id != project.id
-                and other.client_id == project.client_id
-                and other.key == new_key
-            ):
+            if other.client_id == project.client_id and other.key == new_key:
                 raise IdentityError(
                     f"Key {_quoted(new_key)} already belongs to project "
                     f"{_quoted(other.id)}"
                 )
         _replace_record(store.projects, project, replace(project, key=new_key))
         message = (
-            f"Changed the key of project {_quoted(selector)} to "
-            f"{_quoted(new_key)}.\n"
+            f"Changed the key of project {_quoted(selector)} to {_quoted(new_key)}.\n"
         )
         return message, True
 
@@ -1454,8 +1496,7 @@ def set_project_name(selector: str, name: str | None) -> None:
             message = f"Cleared the name of project {_quoted(selector)}.\n"
         else:
             message = (
-                f"Changed the name of project {_quoted(selector)} to "
-                f"{_quoted(name)}.\n"
+                f"Changed the name of project {_quoted(selector)} to {_quoted(name)}.\n"
             )
         return message, True
 
@@ -1530,10 +1571,7 @@ def migrate() -> None:
         return
     except OSError as error:
         raise RegistryError(f"Project Registry cannot be read: {error}") from error
-    try:
-        _parse_registry_document(directory)
-    finally:
-        os.close(directory)
+    os.close(directory)
 
     def read_migration(file_descriptor: int) -> object | None:
         return _parse_registry_document(file_descriptor)
@@ -1572,5 +1610,3 @@ def migrate() -> None:
             missing_message=None,
         )
     )
-
-

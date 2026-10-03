@@ -3,12 +3,15 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-import _identity as identity
 import pytest
+
+import _identity as identity
+import factory
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
@@ -272,16 +275,11 @@ def test_identity_reader_refuses_dangling_references_and_inconsistent_pins(
             projects=[project_record()],
             repositories=[repository_record()],
             checkouts=[
-                checkout_record(
-                    boundary="/elsewhere",
-                    git_dir="/elsewhere/.git",
-                )
+                {
+                    **checkout_record(boundary="/elsewhere", git_dir="/elsewhere/.git"),
+                    "worktree_root": pin("/wt", 1, 3),
+                }
             ],
-        ),
-        store_document(
-            clients=[client_record()],
-            projects=[project_record()],
-            repositories=[{**repository_record(), "common_dir": pin("/r", 1, 2)}],
         ),
         store_document(
             clients=[client_record()],
@@ -307,9 +305,7 @@ def test_identity_store_serialization_is_deterministic(tmp_path: Path) -> None:
     git_repo(café)
     env = config_env(tmp_path / "config")
     assert invoke("project", "client", "register", "acme", env=env).returncode == 0
-    assert (
-        invoke("project", "register", "acme/café", str(café), env=env).returncode == 0
-    )
+    assert invoke("project", "register", "acme/web", str(café), env=env).returncode == 0
     registry = store_path(tmp_path / "config")
     store = read_store(tmp_path / "config")
     client_id = store["clients"][0]["id"]  # type: ignore[index]
@@ -345,7 +341,7 @@ def test_identity_store_serialization_is_deterministic(tmp_path: Path) -> None:
         "    {\n"
         f'      "id": "{project_id}",\n'
         f'      "client_id": "{client_id}",\n'
-        '      "key": "café",\n'
+        '      "key": "web",\n'
         '      "name": null,\n'
         f'      "default_checkout_id": "{checkout_id}"\n'
         "    }\n"
@@ -408,6 +404,7 @@ def test_identity_registration_verifies_the_complete_git_proof(
     config = tmp_path / "config"
     env = config_env(config)
     assert invoke("project", "client", "register", "acme", env=env).returncode == 0
+    before = read_store(config)
 
     subdirectory = repository / "service"
     subdirectory.mkdir()
@@ -430,7 +427,7 @@ def test_identity_registration_verifies_the_complete_git_proof(
         assert result.returncode == 1, supplied
         assert result.stdout == b""
         assert expected in result.stderr, supplied
-    assert not config.exists()
+    assert read_store(config) == before
 
     registered = invoke("project", "register", "acme/web", str(repository), env=env)
     assert registered.returncode == 0
@@ -471,22 +468,19 @@ def test_identity_git_inspection_ignores_repository_location_overrides(
 def test_project_register_creates_project_repository_and_checkout_atomically(
     tmp_path: Path,
 ) -> None:
-    _env, repository = registered_project(tmp_path)
+    repository = tmp_path / "repo"
+    git_repo(repository)
+    env = config_env(tmp_path / "config")
+    assert invoke("project", "client", "register", "acme", env=env).returncode == 0
+
+    result = invoke("project", "register", "acme/web", str(repository), env=env)
+
+    assert result.returncode == 0, result.stderr
     store = read_store(tmp_path / "config")
     client_id = store["clients"][0]["id"]  # type: ignore[index]
     project_id = store["projects"][0]["id"]  # type: ignore[index]
     repository_id = store["repositories"][0]["id"]  # type: ignore[index]
     checkout_id = store["checkouts"][0]["id"]  # type: ignore[index]
-
-    result = invoke(
-        "project",
-        "register",
-        "acme/web",
-        str(repository),
-        env=config_env(tmp_path / "fresh"),
-    )
-
-    assert result.returncode == 0
     assert (
         result.stdout
         == (
@@ -531,6 +525,28 @@ def test_project_register_refuses_an_existing_project_and_an_unknown_client(
     assert unknown.returncode == 1
     assert unknown.stderr == (b'factory: error: Client "missing" is not registered.\n')
     assert read_store(tmp_path / "config") == store
+
+
+def test_project_register_refuses_a_worktree_pinned_by_another_checkout(
+    tmp_path: Path,
+) -> None:
+    env, repository = registered_project(tmp_path)
+    store = read_store(tmp_path / "config")
+    checkout_id = store["checkouts"][0]["id"]  # type: ignore[index]
+    assert invoke("project", "client", "register", "beta", env=env).returncode == 0
+
+    result = invoke("project", "register", "beta/other", str(repository), env=env)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert (
+        result.stderr
+        == (
+            f'factory: error: Path "{repository}" is already pinned by '
+            f'checkout "{checkout_id}".\n'
+        ).encode()
+    )
+    assert len(read_store(tmp_path / "config")["checkouts"]) == 1  # type: ignore[arg-type]
 
 
 def test_repository_implicit_creation_reuses_a_full_identity_match(
@@ -615,12 +631,17 @@ def test_checkout_register_binds_an_additional_checkout_of_the_project(
     project_id = store["projects"][0]["id"]  # type: ignore[index]
     default_id = store["projects"][0]["default_checkout_id"]  # type: ignore[index]
     repository_id = store["repositories"][0]["id"]  # type: ignore[index]
+    before = {record["id"] for record in store["checkouts"]}  # type: ignore[union-attr]
 
     result = invoke("project", "checkout", "register", "acme/web", str(linked), env=env)
 
     assert result.returncode == 0, result.stderr
     updated = read_store(tmp_path / "config")
-    new_checkout = updated["checkouts"][1]  # type: ignore[index]
+    new_checkout = next(
+        record
+        for record in updated["checkouts"]  # type: ignore[union-attr]
+        if record["id"] not in before  # type: ignore[index]
+    )
     assert (
         result.stdout
         == (
@@ -676,7 +697,12 @@ def test_checkout_register_refuses_duplicate_checkouts(tmp_path: Path) -> None:
     assert (
         invoke("project", "register", "beta/other", str(other), env=env).returncode == 0
     )
-    checkout_id = read_store(tmp_path / "config")["checkouts"][0]["id"]  # type: ignore[index]
+    store = read_store(tmp_path / "config")
+    checkout_id = next(  # type: ignore[index]
+        checkout["id"]  # type: ignore[index]
+        for checkout in store["checkouts"]  # type: ignore[union-attr,index]
+        if checkout["boundary"]["path"] == str(repository)  # type: ignore[index]
+    )
 
     same_project = invoke(
         "project", "checkout", "register", "acme/web", str(repository), env=env
@@ -723,7 +749,12 @@ def test_checkout_register_shares_a_repository_across_projects_of_one_client(
         == 0
     )
     store = read_store(tmp_path / "config")
-    repository_id = store["checkouts"][0]["repository_id"]  # type: ignore[index]
+    repository_id = next(  # type: ignore[index]
+        checkout["repository_id"]  # type: ignore[index]
+        for checkout in store["checkouts"]  # type: ignore[union-attr,index]
+        if checkout["boundary"]["path"] == str(repository)  # type: ignore[index]
+    )
+    before = {record["id"] for record in store["checkouts"]}  # type: ignore[union-attr]
 
     result = invoke(
         "project",
@@ -738,8 +769,16 @@ def test_checkout_register_shares_a_repository_across_projects_of_one_client(
 
     assert result.returncode == 0, result.stderr
     updated = read_store(tmp_path / "config")
-    shared = updated["checkouts"][-1]  # type: ignore[index]
-    assert shared["project_id"] == updated["projects"][1]["id"]  # type: ignore[index]
+    shared = next(
+        record
+        for record in updated["checkouts"]  # type: ignore[union-attr]
+        if record["id"] not in before  # type: ignore[index]
+    )
+    owners = {
+        project["id"]: project["key"]
+        for project in updated["projects"]  # type: ignore[union-attr]
+    }
+    assert owners[shared["project_id"]] == "site"  # type: ignore[index]
     assert shared["repository_id"] == repository_id  # type: ignore[index]
     assert len(updated["repositories"]) == 2  # type: ignore[arg-type]
 
@@ -760,7 +799,11 @@ def test_checkout_register_refuses_cross_client_sharing(tmp_path: Path) -> None:
         invoke("project", "register", "beta/other", str(unrelated), env=env).returncode
         == 0
     )
-    repository_id = read_store(tmp_path / "config")["checkouts"][0]["repository_id"]  # type: ignore[index]
+    repository_id = next(
+        record
+        for record in read_store(tmp_path / "config")["checkouts"]  # type: ignore[union-attr]
+        if record["boundary"]["path"] == str(repository)  # type: ignore[index]
+    )["repository_id"]  # type: ignore[index]
 
     result = invoke(
         "project",
@@ -803,8 +846,17 @@ def test_checkout_register_refuses_a_mismatched_repository_identity(
         == 0
     )
     store = read_store(tmp_path / "config")
-    repository_id = store["checkouts"][0]["repository_id"]  # type: ignore[index]
-    repository_pin = store["repositories"][0]["common_dir"]["path"]  # type: ignore[index]
+    web_checkout = next(
+        record
+        for record in store["checkouts"]  # type: ignore[union-attr]
+        if record["boundary"]["path"] == str(repository)  # type: ignore[index]
+    )
+    repository_id = web_checkout["repository_id"]  # type: ignore[index]
+    repository_pin = next(
+        record
+        for record in store["repositories"]  # type: ignore[union-attr]
+        if record["id"] == repository_id  # type: ignore[index]
+    )["common_dir"]["path"]  # type: ignore[index]
 
     result = invoke(
         "project",
@@ -865,6 +917,7 @@ def test_checkout_re_register_preserves_identity_and_reports_old_and_new(
     assert checkout["boundary"]["path"] == str(moved)  # type: ignore[index]
     assert checkout["git_dir"]["st_ino"] == git_dir_ino  # type: ignore[index]
 
+    moved.rename(repository)
     moved_back = invoke(
         "project", "checkout", "re-register", checkout_id, str(repository), env=env
     )
@@ -878,6 +931,7 @@ def test_checkout_re_register_preserves_identity_and_reports_old_and_new(
 def test_checkout_re_register_refuses_collisions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     config = tmp_path / "config"
     write_store(
@@ -898,49 +952,48 @@ def test_checkout_re_register_refuses_collisions(
             ],
         ),
     )
-    env = config_env(config)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     proof = (
-        pin("/other", 1, 9),
+        "/other",
         identity.CheckoutProof(
-            worktree_root=pin("/other", 1, 9),
-            git_dir=pin("/other/.git", 1, 9),
-            common_dir=pin("/repo", 1, 2),
+            worktree_root=identity.Pin("/other", 1, 9),
+            git_dir=identity.Pin("/other/.git", 1, 9),
+            common_dir=identity.Pin("/repo", 1, 2),
             head="0" * 40,
         ),
     )
     monkeypatch.setattr(identity, "verify_checkout_proof", lambda *_: proof)
 
-    path_collision = invoke(
-        "project", "checkout", "re-register", CHECKOUT_ID, "/other", env=env
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["factory", "project", "checkout", "re-register", CHECKOUT_ID, "/other"],
     )
-    assert path_collision.returncode == 1
-    assert (
-        path_collision.stderr
-        == (
-            'factory: error: Path "/other" is already pinned by checkout '
-            '"chk_' + "e" * 32 + '".\n'
-        ).encode()
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        'factory: error: Path "/other" is already pinned by checkout '
+        '"chk_' + "e" * 32 + '".\n'
     )
 
     proof = (
-        pin("/fresh", 1, 9),
+        "/fresh",
         identity.CheckoutProof(
-            worktree_root=pin("/fresh", 1, 9),
-            git_dir=pin("/fresh/.git", 1, 6),
-            common_dir=pin("/repo", 1, 2),
+            worktree_root=identity.Pin("/fresh", 1, 9),
+            git_dir=identity.Pin("/fresh/.git", 1, 6),
+            common_dir=identity.Pin("/repo", 1, 2),
             head="0" * 40,
         ),
     )
-    identity_collision = invoke(
-        "project", "checkout", "re-register", CHECKOUT_ID, "/fresh", env=env
+    monkeypatch.setattr(identity, "verify_checkout_proof", lambda *_: proof)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["factory", "project", "checkout", "re-register", CHECKOUT_ID, "/fresh"],
     )
-    assert identity_collision.returncode == 1
-    assert (
-        identity_collision.stderr
-        == (
-            'factory: error: Git directory identity of "/fresh/.git" is already '
-            'pinned by checkout "chk_' + "e" * 32 + '".\n'
-        ).encode()
+    assert factory.main() == 1
+    assert capsys.readouterr().err == (
+        'factory: error: Git directory identity of "/fresh/.git" is already '
+        'pinned by checkout "chk_' + "e" * 32 + '".\n'
     )
     assert read_store(config)["checkouts"][0]["boundary"]["path"] == "/wt"  # type: ignore[index]
 
@@ -971,6 +1024,44 @@ def test_checkout_re_register_refuses_an_inconsistent_repository(
         ).encode()
     )
     assert read_store(tmp_path / "config") == store
+
+
+def test_checkout_re_register_follows_a_repaired_repository_record(
+    tmp_path: Path,
+) -> None:
+    env, _repository = registered_project(tmp_path)
+    store = read_store(tmp_path / "config")
+    checkout_id = store["checkouts"][0]["id"]  # type: ignore[index]
+    repository_id = store["repositories"][0]["id"]  # type: ignore[index]
+    moved = tmp_path / "moved"
+    git_repo(moved)
+
+    stale = invoke(
+        "project", "checkout", "re-register", checkout_id, str(moved), env=env
+    )
+    assert stale.returncode == 1
+    assert b"repair the repository with" in stale.stderr
+    assert read_store(tmp_path / "config") == store
+
+    repaired = invoke(
+        "project", "repository", "re-register", repository_id, str(moved), env=env
+    )
+    assert repaired.returncode == 0, repaired.stderr
+    assert read_store(tmp_path / "config")["repositories"][0]["common_dir"][  # type: ignore[index]
+        "path"
+    ] == str(moved / ".git")
+
+    result = invoke(
+        "project", "checkout", "re-register", checkout_id, str(moved), env=env
+    )
+    assert result.returncode == 0, result.stderr
+    updated = read_store(tmp_path / "config")
+    assert updated["checkouts"][0]["boundary"]["path"] == str(moved)  # type: ignore[index]
+    assert updated["checkouts"][0]["repository_id"] == repository_id  # type: ignore[index]
+    assert updated["checkouts"][0]["common_dir"]["path"] == str(  # type: ignore[index]
+        moved / ".git"
+    )
+    assert updated["projects"][0]["default_checkout_id"] == checkout_id  # type: ignore[index]
 
 
 def test_repository_re_register_changes_only_the_pin_and_is_idempotent(
@@ -1021,6 +1112,7 @@ def test_repository_re_register_changes_only_the_pin_and_is_idempotent(
 def test_repository_re_register_refuses_a_pin_held_by_another_repository(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     config = tmp_path / "config"
     write_store(
@@ -1039,30 +1131,30 @@ def test_repository_re_register_refuses_a_pin_held_by_another_repository(
             checkouts=[checkout_record()],
         ),
     )
-    env = config_env(config)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     proof = (
-        pin("/wt", 1, 3),
+        "/wt",
         identity.CheckoutProof(
-            worktree_root=pin("/wt", 1, 3),
-            git_dir=pin("/wt/.git", 1, 4),
-            common_dir=pin("/repo2", 1, 7),
+            worktree_root=identity.Pin("/wt", 1, 3),
+            git_dir=identity.Pin("/wt/.git", 1, 4),
+            common_dir=identity.Pin("/repo2", 1, 7),
             head="0" * 40,
         ),
     )
     monkeypatch.setattr(identity, "verify_checkout_proof", lambda *_: proof)
 
-    result = invoke(
-        "project", "repository", "re-register", REPOSITORY_ID, "/wt", env=env
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["factory", "project", "repository", "re-register", REPOSITORY_ID, "/wt"],
     )
+    assert factory.main() == 1
 
-    assert result.returncode == 1
-    assert result.stdout == b""
-    assert (
-        result.stderr
-        == (
-            'factory: error: Common directory "/repo2" is already pinned by '
-            'repository "repo_' + "e" * 32 + '".\n'
-        ).encode()
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == (
+        'factory: error: Common directory "/repo2" is already pinned by '
+        'repository "repo_' + "e" * 32 + '".\n'
     )
 
 
@@ -1261,10 +1353,12 @@ def test_set_key_and_set_name_validate_before_committing_and_clear_names(
 def test_project_selectors_resolve_canonically_and_refuse_ambiguity(
     tmp_path: Path,
 ) -> None:
-    env, repository = registered_project(tmp_path)
+    env, _repository = registered_project(tmp_path)
+    globex = tmp_path / "repo-globex"
+    git_repo(globex)
     assert invoke("project", "client", "register", "globex", env=env).returncode == 0
     assert (
-        invoke("project", "register", "globex/web", str(repository), env=env).returncode
+        invoke("project", "register", "globex/web", str(globex), env=env).returncode
         == 0
     )
     assert invoke("project", "set-name", "acme/web", "Site", env=env).returncode == 0
@@ -1678,7 +1772,7 @@ def test_client_listing_reports_clients_with_name_fallback(tmp_path: Path) -> No
     )
     listed = invoke("project", "client", "list", env=env)
     assert listed.returncode == 0
-    assert listed.stdout == (b'CLIENT\tNAME\n"acme"\t-\n"beta"\t"Beta"\n')
+    assert listed.stdout == (b'CLIENT\tNAME\n"acme"\t"acme"\n"beta"\t"Beta"\n')
 
 
 def test_run_selection_keeps_the_version_one_registry_and_refuses_a_version_two_store(
@@ -1695,10 +1789,15 @@ def test_run_selection_keeps_the_version_one_registry_and_refuses_a_version_two_
         json.dumps({"version": 1, "projects": {"api": str(repository)}})
     )
     env = config_env(config)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    os.symlink(shutil.which("git") or "git", empty_bin / "git")
 
-    version_one = invoke("--project", "api", "Fix", env=env)
+    version_one = invoke("--project", "api", "Fix", env={**env, "PATH": str(empty_bin)})
     assert version_one.returncode == 1
-    assert b"unrecognized version" in version_one.stderr
+    assert version_one.stdout == b""
+    assert b'executable "codex" was not found on PATH' in version_one.stderr
+    assert b"Project Registry" not in version_one.stderr
 
     registry.write_text(
         json.dumps(

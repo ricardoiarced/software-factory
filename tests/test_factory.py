@@ -48,97 +48,15 @@ def show_registry(tmp_path: Path, document: str) -> tuple[Path, Path]:
     return config, registry
 
 
-def test_project_add_registers_canonical_boundary_with_exact_output(
-    tmp_path: Path,
-) -> None:
-    git("init", "-q", cwd=tmp_path)
-    boundary = tmp_path / "café"
-    boundary.mkdir()
-    alias = tmp_path / "alias"
-    alias.symlink_to(boundary, target_is_directory=True)
-    config = tmp_path / "config"
-
-    result = invoke(
-        "project",
-        "add",
-        "Api",
-        "alias",
-        cwd=tmp_path,
-        env={"XDG_CONFIG_HOME": str(config)},
-    )
-
-    assert result.returncode == 0
-    assert result.stdout == f'Added project "Api" at "{boundary}".\n'.encode()
-    assert result.stderr == b""
-    assert (config / "factory" / "projects.json").read_bytes() == (
-        '{\n  "version": 1,\n  "projects": {\n    "Api": "'
-        + str(boundary)
-        + '"\n  }\n}\n'
-    ).encode()
-
-
-def test_project_add_identical_mapping_does_not_rewrite_registry(
-    tmp_path: Path,
-) -> None:
-    git("init", "-q", cwd=tmp_path)
-    boundary = tmp_path / "project"
-    boundary.mkdir()
-    config = tmp_path / "config"
-    env = {"XDG_CONFIG_HOME": str(config)}
-    first = invoke("project", "add", "api", str(boundary), env=env)
-    registry = config / "factory" / "projects.json"
-    before = registry.stat()
-
-    second = invoke("project", "add", "api", str(boundary), env=env)
-
-    assert first.returncode == second.returncode == 0
-    assert (
-        second.stdout
-        == f'Project "api" is already registered at "{boundary}".\n'.encode()
-    )
-    assert second.stderr == b""
-    assert registry.stat().st_ino == before.st_ino
-    assert registry.stat().st_mtime_ns == before.st_mtime_ns
-
-
-def test_project_add_replaces_mapping_and_sorts_names(tmp_path: Path) -> None:
-    git("init", "-q", cwd=tmp_path)
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    first.mkdir()
-    second.mkdir()
-    config = tmp_path / "config"
-    env = {"XDG_CONFIG_HOME": str(config)}
-    assert invoke("project", "add", "z", str(first), env=env).returncode == 0
-    assert invoke("project", "add", "A", str(first), env=env).returncode == 0
-
-    replaced = invoke("project", "add", "A", str(second), env=env)
-
-    assert replaced.returncode == 0
-    assert (
-        replaced.stdout
-        == f'Updated project "A" from "{first}" to "{second}".\n'.encode()
-    )
-    assert replaced.stderr == b""
-    assert (config / "factory" / "projects.json").read_bytes() == (
-        '{\n  "version": 1,\n  "projects": {\n    "A": "'
-        + str(second)
-        + '",\n    "z": "'
-        + str(first)
-        + '"\n  }\n}\n'
-    ).encode()
-
-
 @pytest.mark.parametrize("name", ["", ".a", "a-", "a b", "é", "a/b", "a" * 65])
-def test_project_add_rejects_invalid_project_name_without_writing(
+def test_client_register_rejects_invalid_project_name_without_writing(
     tmp_path: Path,
     name: str,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
 
     result = invoke(
-        "project", "add", name, str(tmp_path), env={"XDG_CONFIG_HOME": str(config)}
+        "project", "client", "register", name, env={"XDG_CONFIG_HOME": str(config)}
     )
 
     assert result.returncode == 1
@@ -147,17 +65,14 @@ def test_project_add_rejects_invalid_project_name_without_writing(
     assert not config.exists()
 
 
-def test_project_add_rejects_malformed_registry_without_replacing_it(
+def test_client_register_rejects_malformed_registry_without_replacing_it(
     tmp_path: Path,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
-    config, registry = show_registry(
-        tmp_path, '{"version":1,"projects":{"bad name":"/tmp"}}'
-    )
+    config, registry = show_registry(tmp_path, '{"version":2,"clients":[]}')
     before = registry.read_bytes()
 
     result = invoke(
-        "project", "add", "api", str(tmp_path), env={"XDG_CONFIG_HOME": str(config)}
+        "project", "client", "register", "api", env={"XDG_CONFIG_HOME": str(config)}
     )
 
     assert result.returncode == 1
@@ -166,13 +81,12 @@ def test_project_add_rejects_malformed_registry_without_replacing_it(
     assert registry.read_bytes() == before
 
 
-def test_project_add_creates_private_files_and_preserves_registry_mode(
+def test_client_register_creates_private_files_and_preserves_registry_mode(
     tmp_path: Path,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
     env = {"XDG_CONFIG_HOME": str(config)}
-    first = invoke("project", "add", "api", str(tmp_path), env=env)
+    first = invoke("project", "client", "register", "acme", env=env)
     directory = config / "factory"
     registry = directory / "projects.json"
     lock = directory / "projects.lock"
@@ -187,32 +101,33 @@ def test_project_add_creates_private_files_and_preserves_registry_mode(
         0o600,
     ]
     registry.chmod(0o640)
-    second = invoke("project", "add", "Api", str(tmp_path), env=env)
+    second = invoke("project", "client", "register", "beta", env=env)
     assert second.returncode == 0
     assert registry.stat().st_mode & 0o777 == 0o640
 
 
 def test_project_lock_persists_across_mutations(tmp_path: Path) -> None:
-    git("init", "-q", cwd=tmp_path)
-    config = tmp_path / "config"
+    config, _registry = show_registry(
+        tmp_path,
+        json.dumps({"version": 1, "projects": {"api": str(tmp_path)}}),
+    )
     env = {"XDG_CONFIG_HOME": str(config)}
-    assert invoke("project", "add", "api", str(tmp_path), env=env).returncode == 0
+    assert invoke("project", "migrate", env=env).returncode == 0
     lock = config / "factory" / "projects.lock"
     first = lock.stat()
 
-    assert invoke("project", "remove", "api", env=env).returncode == 0
-    assert invoke("project", "add", "api", str(tmp_path), env=env).returncode == 0
+    assert invoke("project", "remove", "--legacy", "api", env=env).returncode == 0
+    assert invoke("project", "migrate", env=env).returncode == 0
 
     last = lock.stat()
     assert (last.st_dev, last.st_ino) == (first.st_dev, first.st_ino)
     assert lock.stat().st_mode & 0o777 == 0o600
 
 
-def test_project_add_syncs_new_configuration_directory_entries(
+def test_client_register_syncs_new_configuration_directory_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
     actual_fsync = os.fsync
     synced: list[tuple[int, int]] = []
@@ -226,7 +141,7 @@ def test_project_add_syncs_new_configuration_directory_entries(
     monkeypatch.setattr(project_registry.os, "fsync", record_sync)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(
-        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+        sys, "argv", ["factory", "project", "client", "register", "api"]
     )
 
     assert factory.main() == 0
@@ -235,16 +150,15 @@ def test_project_add_syncs_new_configuration_directory_entries(
         assert (info.st_dev, info.st_ino) in synced
 
 
-def test_project_add_parent_sync_failure_stops_before_registry_replacement(
+def test_client_register_parent_sync_failure_stops_before_registry_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(
-        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+        sys, "argv", ["factory", "project", "client", "register", "api"]
     )
     parent = tmp_path.stat()
     actual_fsync = os.fsync
@@ -264,8 +178,7 @@ def test_project_add_parent_sync_failure_stops_before_registry_replacement(
     assert not (config / "factory" / "projects.json").exists()
 
 
-def test_project_add_concurrent_writers_keep_every_mapping(tmp_path: Path) -> None:
-    git("init", "-q", cwd=tmp_path)
+def test_client_register_concurrent_writers_keep_every_client(tmp_path: Path) -> None:
     config = tmp_path / "config"
     env = {**os.environ, "XDG_CONFIG_HOME": str(config)}
     writers = [
@@ -274,9 +187,9 @@ def test_project_add_concurrent_writers_keep_every_mapping(tmp_path: Path) -> No
                 sys.executable,
                 str(FACTORY),
                 "project",
-                "add",
+                "client",
+                "register",
                 f"p{index}",
-                str(tmp_path),
             ],
             env=env,
             stdout=subprocess.PIPE,
@@ -288,22 +201,22 @@ def test_project_add_concurrent_writers_keep_every_mapping(tmp_path: Path) -> No
     for writer in writers:
         stdout, stderr = writer.communicate(timeout=10)
         assert writer.returncode == 0, stderr
-        assert stdout.startswith(b"Added project")
+        assert stdout.startswith(b"Registered client")
     registry = config / "factory" / "projects.json"
-    assert json.loads(registry.read_text())["projects"] == {
-        f"p{index}": str(tmp_path) for index in range(8)
+    document = json.loads(registry.read_text())
+    assert {client["key"] for client in document["clients"]} == {
+        f"p{index}" for index in range(8)
     }
 
 
-def test_project_add_recovers_from_transient_lock_creation_race(
+def test_client_register_recovers_from_transient_lock_creation_race(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     config = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     monkeypatch.setattr(
-        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+        sys, "argv", ["factory", "project", "client", "register", "api"]
     )
     actual_open = os.open
     lock_open_attempts = 0
@@ -322,14 +235,13 @@ def test_project_add_recovers_from_transient_lock_creation_race(
 
     assert factory.main() == 0
     assert lock_open_attempts == 2
-    registry = config / "factory" / "projects.json"
-    assert json.loads(registry.read_text())["projects"] == {"api": str(tmp_path)}
+    document = json.loads((config / "factory" / "projects.json").read_text())
+    assert [client["key"] for client in document["clients"]] == ["api"]
 
 
-def test_concurrent_add_and_remove_keep_complete_registry_generations(
+def test_concurrent_legacy_removal_and_client_registration_keep_generations(
     tmp_path: Path,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     original = {f"old{index}": str(tmp_path) for index in range(8)}
     config, registry = show_registry(
         tmp_path,
@@ -341,8 +253,9 @@ def test_concurrent_add_and_remove_keep_complete_registry_generations(
         ),
     )
     env = {**os.environ, "XDG_CONFIG_HOME": str(config)}
-    commands = [("remove", f"old{index}") for index in range(8)] + [
-        ("add", f"new{index}", str(tmp_path)) for index in range(8)
+    assert invoke("project", "migrate", env=env).returncode == 0
+    commands = [("remove", "--legacy", f"old{index}") for index in range(8)] + [
+        ("client", "register", f"new{index}") for index in range(8)
     ]
     writers = [
         subprocess.Popen(
@@ -357,9 +270,15 @@ def test_concurrent_add_and_remove_keep_complete_registry_generations(
     deadline = time.monotonic() + 20
     while True:
         document = json.loads(registry.read_bytes())
-        assert document["version"] == 1
-        assert set(document) == {"version", "projects"}
-        assert all(path == str(tmp_path) for path in document["projects"].values())
+        assert document["version"] == 2
+        assert set(document) == {
+            "version",
+            "clients",
+            "projects",
+            "repositories",
+            "checkouts",
+            "legacy",
+        }
         if all(writer.poll() is not None for writer in writers):
             break
         assert time.monotonic() < deadline, "concurrent registry writers did not finish"
@@ -368,19 +287,18 @@ def test_concurrent_add_and_remove_keep_complete_registry_generations(
     for writer in writers:
         _, stderr = writer.communicate(timeout=10)
         assert writer.returncode == 0, stderr
-    assert json.loads(registry.read_bytes())["projects"] == {
-        f"new{index}": str(tmp_path) for index in range(8)
+    final = json.loads(registry.read_bytes())
+    assert final["legacy"] == {}
+    assert {client["key"] for client in final["clients"]} == {
+        f"new{index}" for index in range(8)
     }
 
 
-@pytest.mark.parametrize("command", ["add", "remove"])
 def test_project_mutation_rereads_strict_registry_after_acquiring_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    command: str,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     config, registry = show_registry(
         tmp_path,
         json.dumps(
@@ -391,15 +309,12 @@ def test_project_mutation_rereads_strict_registry_after_acquiring_lock(
         ),
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    args = ["factory", "project", command, "old"]
-    if command == "add":
-        args.append(str(tmp_path))
-    monkeypatch.setattr(sys, "argv", args)
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "remove", "old"])
     actual_flock = fcntl.flock
 
     def change_registry_at_lock(descriptor: int, operation: int) -> None:
         actual_flock(descriptor, operation)
-        registry.write_text('{"version":2,"projects":{}}')
+        registry.write_text('{"version":3,"projects":{}}')
 
     monkeypatch.setattr(project_registry.fcntl, "flock", change_registry_at_lock)
 
@@ -407,17 +322,14 @@ def test_project_mutation_rereads_strict_registry_after_acquiring_lock(
     output = capsys.readouterr()
     assert output.out == ""
     assert "malformed Project Registry: unsupported version" in output.err
-    assert registry.read_text() == '{"version":2,"projects":{}}'
+    assert registry.read_text() == '{"version":3,"projects":{}}'
 
 
-@pytest.mark.parametrize("command", ["add", "remove"])
 @pytest.mark.parametrize("kind", ["symlink", "directory"])
 def test_project_mutation_refuses_nonregular_registry_state(
     tmp_path: Path,
-    command: str,
     kind: str,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     config, registry = show_registry(
         tmp_path,
         json.dumps(
@@ -434,17 +346,8 @@ def test_project_mutation_refuses_nonregular_registry_state(
         registry.symlink_to(target)
     else:
         registry.mkdir()
-    args = (
-        ("project", command, "old", str(tmp_path))
-        if command == "add"
-        else (
-            "project",
-            command,
-            "old",
-        )
-    )
 
-    result = invoke(*args, env={"XDG_CONFIG_HOME": str(config)})
+    result = invoke("project", "remove", "old", env={"XDG_CONFIG_HOME": str(config)})
 
     assert result.returncode == 1
     assert result.stdout == b""
@@ -455,18 +358,17 @@ def test_project_mutation_refuses_nonregular_registry_state(
         assert registry.is_dir()
 
 
-def test_project_add_replace_failure_keeps_previous_generation(
+def test_project_migrate_replace_failure_keeps_previous_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
-    config, registry = show_registry(tmp_path, '{"version":1,"projects":{}}')
+    config, registry = show_registry(
+        tmp_path, json.dumps({"version": 1, "projects": {"api": str(tmp_path)}})
+    )
     before = registry.read_bytes()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(
-        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
-    )
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "migrate"])
 
     def fail_replace(*_: object, **__: object) -> None:
         raise OSError("replace failed")
@@ -482,19 +384,18 @@ def test_project_add_replace_failure_keeps_previous_generation(
 
 
 @pytest.mark.parametrize("failure", ["temporary creation", "write", "file sync"])
-def test_project_add_pre_replace_failure_keeps_previous_generation(
+def test_project_migrate_pre_replace_failure_keeps_previous_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     failure: str,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
-    config, registry = show_registry(tmp_path, '{"version":1,"projects":{}}')
+    config, registry = show_registry(
+        tmp_path, json.dumps({"version": 1, "projects": {"api": str(tmp_path)}})
+    )
     before = registry.read_bytes()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(
-        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
-    )
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "migrate"])
 
     if failure == "temporary creation":
         actual_open = os.open
@@ -556,18 +457,16 @@ def test_project_add_pre_replace_failure_keeps_previous_generation(
     assert list(registry.parent.glob(".projects-*")) == []
 
 
-def test_project_add_directory_sync_failure_warns_update_may_have_committed(
+def test_project_migrate_directory_sync_failure_warns_update_may_have_committed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
-    config = tmp_path / "config"
-    registry = config / "factory" / "projects.json"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setattr(
-        sys, "argv", ["factory", "project", "add", "api", str(tmp_path)]
+    config, registry = show_registry(
+        tmp_path, json.dumps({"version": 1, "projects": {"api": str(tmp_path)}})
     )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr(sys, "argv", ["factory", "project", "migrate"])
     actual_fsync = os.fsync
 
     def fail_directory_sync(descriptor: int) -> None:
@@ -583,9 +482,9 @@ def test_project_add_directory_sync_failure_warns_update_may_have_committed(
     assert result == 1
     assert output.out == ""
     assert "factory: warning: Project Registry update may have committed" in output.err
-    assert json.loads((config / "factory" / "projects.json").read_text())[
-        "projects"
-    ] == {"api": str(tmp_path)}
+    migrated = json.loads((config / "factory" / "projects.json").read_text())
+    assert migrated["version"] == 2
+    assert migrated["legacy"] == {"api": str(tmp_path)}
 
 
 def test_project_remove_preserves_other_registration_and_inspection(
@@ -1361,12 +1260,21 @@ def test_explicit_project_help_is_stable_stdout() -> None:
     assert wide.stderr == narrow.stderr == b""
     assert wide.stdout.startswith(
         b"Usage:\n"
-        b"  factory project add [--] NAME PATH\n"
+        b"  factory project register [--name NAME] [--from-legacy NAME] "
+        b"[--] SELECTOR PATH\n"
         b"  factory project list\n"
-        b"  factory project show [--] NAME\n"
-        b"  factory project remove [--] NAME\n"
+        b"  factory project show [--legacy] [--] SELECTOR\n"
     )
-    for detail in (b"Project Registry", b"add", b"list", b"show", b"remove"):
+    for detail in (
+        b"Project Registry",
+        b"migrate",
+        b"--legacy",
+        b"client register",
+        b"checkout re-register",
+        b"repository re-register",
+        b"set-default-checkout",
+        b"Only exact lowercase",
+    ):
         assert detail in wide.stdout
 
 
@@ -1413,7 +1321,7 @@ def test_malformed_commands_have_relevant_usage_and_no_traceback(
     assert result.stdout == b""
     assert result.stderr.startswith(b"factory: error: ")
     assert (
-        b"factory project add [--] NAME PATH"
+        b"factory project register [--name NAME] [--from-legacy NAME] "
         if args[:1] == ("project",)
         else b"factory [--harness codex|claude] [--project NAME | --path PATH]"
     ) in result.stderr
@@ -1428,7 +1336,7 @@ def test_malformed_commands_have_relevant_usage_and_no_traceback(
         ("--", "project", "list"),
         ("--project=api", "Fix"),
         ("--file=-log", "Fix"),
-        ("project", "add", "--", "api", "/some/path"),
+        ("project", "show", "no-such-project"),
     ],
 )
 def test_valid_grammar_reaches_operational_stage(args: tuple[str, ...]) -> None:

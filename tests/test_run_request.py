@@ -24,6 +24,75 @@ def _selected_harness(
     return SimpleNamespace(run=handoff)
 
 
+CLIENT_ID = "cli_" + "a" * 32
+PROJECT_ID = "prj_" + "b" * 32
+REPOSITORY_ID = "repo_" + "c" * 32
+CHECKOUT_ID = "chk_" + "d" * 32
+
+
+def git_init_commit(root: Path) -> None:
+    """Create one non-bare Git repository with a readable commit HEAD."""
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+            "-q",
+        ],
+        cwd=root,
+        check=True,
+    )
+
+
+def pin(path: Path) -> dict[str, object]:
+    info = path.stat()
+    return {"path": str(path), "st_dev": info.st_dev, "st_ino": info.st_ino}
+
+
+def register_checkout(
+    monkeypatch: pytest.MonkeyPatch, root: Path, config: Path
+) -> None:
+    """Register one real Git worktree as the acme/web Checkout of a v2 store."""
+    git_dir = pin(root / ".git")
+    document = {
+        "version": 2,
+        "clients": [{"id": CLIENT_ID, "key": "acme", "name": None}],
+        "projects": [
+            {
+                "id": PROJECT_ID,
+                "client_id": CLIENT_ID,
+                "key": "web",
+                "name": None,
+                "default_checkout_id": CHECKOUT_ID,
+            }
+        ],
+        "repositories": [{"id": REPOSITORY_ID, "name": None, "common_dir": git_dir}],
+        "checkouts": [
+            {
+                "id": CHECKOUT_ID,
+                "project_id": PROJECT_ID,
+                "repository_id": REPOSITORY_ID,
+                "boundary": pin(root),
+                "worktree_root": pin(root),
+                "git_dir": git_dir,
+                "common_dir": git_dir,
+            }
+        ],
+        "legacy": {},
+    }
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(json.dumps(document))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+
 def run_arguments_for_selection(
     selection: str,
     tmp_path: Path,
@@ -32,26 +101,16 @@ def run_arguments_for_selection(
     *,
     explicit_path: Path | None = None,
 ) -> list[str]:
+    git_init_commit(project)
+    register_checkout(monkeypatch, project, tmp_path / "config")
     if selection == "explicit":
         return [
             "factory",
-            "--path",
+            "--checkout",
             str(project if explicit_path is None else explicit_path),
         ]
     if selection == "registered":
-        config = tmp_path / "config"
-        registry = config / "factory" / "projects.json"
-        registry.parent.mkdir(parents=True)
-        registry.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "projects": {"api": str(project)},
-                }
-            )
-        )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-        return ["factory", "--project", "api"]
+        return ["factory", "--project", "acme/web"]
     return ["factory"]
 
 
@@ -100,7 +159,8 @@ def test_factory_returns_ordinary_codex_status_without_annotating_output(
     capfdbinary: pytest.CaptureFixture[bytes],
     status: int,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
 
     def handoff(project: Project, spool: io.BufferedRandom) -> int:
         assert project == Project(tmp_path, tmp_path)
@@ -111,7 +171,7 @@ def test_factory_returns_ordinary_codex_status_without_annotating_output(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
@@ -127,25 +187,76 @@ def test_registered_run_uses_exact_boundary_and_only_its_spec(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    (project / ".agent").mkdir()
-    (project / ".agent" / "spec.md").write_text("parent guidance")
+    git_init_commit(project)
     service = project / "service"
-    (service / ".agent").mkdir(parents=True)
+    service.mkdir()
+    git_init_commit(service)
+    (service / ".agent").mkdir()
     (service / ".agent" / "spec.md").write_text("service guidance")
     other = project / "other"
     other.mkdir()
+    git_init_commit(other)
     config = tmp_path / "config"
     registry = config / "factory" / "projects.json"
     registry.parent.mkdir(parents=True)
+    git_dir = pin(project / ".git")
+    service_git_dir = pin(service / ".git")
+    other_git_dir = pin(other / ".git")
     registry.write_text(
         json.dumps(
             {
-                "version": 1,
-                "projects": {
-                    "Api": str(service),
-                    "api": str(other),
-                },
+                "version": 2,
+                "clients": [{"id": CLIENT_ID, "key": "acme", "name": None}],
+                "projects": [
+                    {
+                        "id": PROJECT_ID,
+                        "client_id": CLIENT_ID,
+                        "key": "web",
+                        "name": None,
+                        "default_checkout_id": CHECKOUT_ID,
+                    },
+                    {
+                        "id": "prj_" + "2" * 32,
+                        "client_id": CLIENT_ID,
+                        "key": "docs",
+                        "name": None,
+                        "default_checkout_id": "chk_" + "4" * 32,
+                    },
+                ],
+                "repositories": [
+                    {"id": REPOSITORY_ID, "name": None, "common_dir": git_dir},
+                    {
+                        "id": "repo_" + "3" * 32,
+                        "name": None,
+                        "common_dir": service_git_dir,
+                    },
+                    {
+                        "id": "repo_" + "5" * 32,
+                        "name": None,
+                        "common_dir": other_git_dir,
+                    },
+                ],
+                "checkouts": [
+                    {
+                        "id": CHECKOUT_ID,
+                        "project_id": PROJECT_ID,
+                        "repository_id": REPOSITORY_ID,
+                        "boundary": pin(service),
+                        "worktree_root": pin(service),
+                        "git_dir": service_git_dir,
+                        "common_dir": service_git_dir,
+                    },
+                    {
+                        "id": "chk_" + "4" * 32,
+                        "project_id": "prj_" + "2" * 32,
+                        "repository_id": "repo_" + "5" * 32,
+                        "boundary": pin(other),
+                        "worktree_root": pin(other),
+                        "git_dir": other_git_dir,
+                        "common_dir": other_git_dir,
+                    },
+                ],
+                "legacy": {},
             }
         )
     )
@@ -161,20 +272,20 @@ def test_registered_run_uses_exact_boundary_and_only_its_spec(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
     monkeypatch.chdir(project)
-    for name in ("Api", "api"):
+    for name in ("acme/web", "acme/docs"):
         monkeypatch.setattr(sys, "argv", ["factory", "--project", name, "Fix"])
         monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
         assert factory.main() == 0
 
     assert received == [
         (
-            Project(service, project),
+            Project(service, service),
             (
                 b"# Project Guidance\n\nservice guidance\n\n"
                 b"# Run Request\n\n## Instruction\n\nFix"
             ),
         ),
-        (Project(other, project), b"# Run Request\n\n## Instruction\n\nFix"),
+        (Project(other, other), b"# Run Request\n\n## Instruction\n\nFix"),
     ]
     assert registry.read_bytes() == before
     assert not (registry.parent / "projects.lock").exists()
@@ -187,13 +298,43 @@ def test_registered_run_revalidates_stale_boundary_without_discovery(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    service = project / "service"
-    service.mkdir()
+    git_init_commit(project)
     config = tmp_path / "config"
     registry = config / "factory" / "projects.json"
     registry.parent.mkdir(parents=True)
-    registry.write_text(json.dumps({"version": 1, "projects": {"api": str(service)}}))
+    git_dir = pin(project / ".git")
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "clients": [{"id": CLIENT_ID, "key": "acme", "name": None}],
+                "projects": [
+                    {
+                        "id": PROJECT_ID,
+                        "client_id": CLIENT_ID,
+                        "key": "web",
+                        "name": None,
+                        "default_checkout_id": CHECKOUT_ID,
+                    }
+                ],
+                "repositories": [
+                    {"id": REPOSITORY_ID, "name": None, "common_dir": git_dir}
+                ],
+                "checkouts": [
+                    {
+                        "id": CHECKOUT_ID,
+                        "project_id": PROJECT_ID,
+                        "repository_id": REPOSITORY_ID,
+                        "boundary": pin(project),
+                        "worktree_root": pin(project),
+                        "git_dir": git_dir,
+                        "common_dir": git_dir,
+                    }
+                ],
+                "legacy": {},
+            }
+        )
+    )
     before = registry.read_bytes()
     projects: list[Project] = []
 
@@ -205,16 +346,19 @@ def test_registered_run_revalidates_stale_boundary_without_discovery(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
-    monkeypatch.setattr(sys, "argv", ["factory", "--project=api", "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--project=acme/web", "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(project)
 
     assert factory.main() == 0
-    service.rename(project / "moved")
+    project.rename(tmp_path / "moved")
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     assert factory.main() == 1
-    assert projects == [Project(service, project)]
-    assert 'Project "api" is stale: path does not exist' in capsys.readouterr().err
+    assert projects == [Project(project, project)]
+    assert (
+        f'Checkout "{CHECKOUT_ID}" is stale: path does not exist'
+        in capsys.readouterr().err
+    )
     assert registry.read_bytes() == before
     assert not (registry.parent / "projects.lock").exists()
 
@@ -228,25 +372,55 @@ def test_registered_run_rejects_invalid_selection_before_admission(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    service = project / "service"
-    service.mkdir()
+    git_init_commit(project)
     alias = project / "alias"
-    alias.symlink_to(service, target_is_directory=True)
+    alias.symlink_to(project, target_is_directory=True)
     config = tmp_path / "config"
     registry = config / "factory" / "projects.json"
     registry.parent.mkdir(parents=True)
+    boundary_path = str(project) if kind != "symlink" else str(alias)
+    boundary = {"path": boundary_path, "st_dev": 1, "st_ino": 2}
+    git_dir = {"path": str(project / ".git"), "st_dev": 1, "st_ino": 3}
     registry.write_text(
-        '{"version":1,"projects":{"api":"/one","api":"/two"}}'
+        '{"version": 2}'
         if kind == "malformed"
-        else json.dumps({"version": 1, "projects": {"Api": str(alias)}})
+        else json.dumps(
+            {
+                "version": 2,
+                "clients": [{"id": CLIENT_ID, "key": "acme", "name": None}],
+                "projects": [
+                    {
+                        "id": PROJECT_ID,
+                        "client_id": CLIENT_ID,
+                        "key": "web",
+                        "name": None,
+                        "default_checkout_id": CHECKOUT_ID,
+                    }
+                ],
+                "repositories": [
+                    {"id": REPOSITORY_ID, "name": None, "common_dir": git_dir}
+                ],
+                "checkouts": [
+                    {
+                        "id": CHECKOUT_ID,
+                        "project_id": PROJECT_ID,
+                        "repository_id": REPOSITORY_ID,
+                        "boundary": boundary,
+                        "worktree_root": boundary,
+                        "git_dir": git_dir,
+                        "common_dir": git_dir,
+                    }
+                ],
+                "legacy": {},
+            }
+        )
     )
     before = registry.read_bytes()
     name = {
         "unknown": "api",
         "invalid-name": "bad name",
-        "malformed": "Api",
-        "symlink": "Api",
+        "malformed": "acme/web",
+        "symlink": "acme/web",
     }[kind]
 
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
@@ -276,7 +450,8 @@ def test_run_without_selector_uses_containing_worktree_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     nested = tmp_path / "service" / "src"
     nested.mkdir(parents=True)
     projects: list[Project] = []
@@ -296,210 +471,6 @@ def test_run_without_selector_uses_containing_worktree_root(
     assert projects == [Project(tmp_path, tmp_path)]
 
 
-def test_discovery_selects_nearest_marker_without_ancestor_spec(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".agent").mkdir()
-    (tmp_path / ".agent" / "spec.md").write_text("ancestor guidance")
-    service = tmp_path / "service"
-    (service / ".agent").mkdir(parents=True)
-    invocation = service / "src"
-    invocation.mkdir()
-    received: list[tuple[Project, bytes]] = []
-
-    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
-        received.append((selected, spool.read()))
-        return 0
-
-    monkeypatch.setattr(
-        factory, "select_harness", lambda _name: _selected_harness(handoff)
-    )
-    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(invocation)
-
-    assert factory.main() == 0
-    assert received == [
-        (
-            Project(service, tmp_path),
-            b"# Run Request\n\n## Instruction\n\nFix",
-        )
-    ]
-
-
-@pytest.mark.parametrize("kind", ["file", "dangling", "escaping"])
-def test_discovery_refuses_malformed_marker_instead_of_using_parent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    kind: str,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    (project / ".agent").mkdir()
-    service = project / "service"
-    service.mkdir()
-    marker = service / ".agent"
-    if kind == "file":
-        marker.write_text("not a directory")
-    elif kind == "dangling":
-        marker.symlink_to("missing", target_is_directory=True)
-    else:
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        marker.symlink_to(outside, target_is_directory=True)
-    received: list[Path] = []
-
-    def handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        received.append(boundary)
-        return 0
-
-    monkeypatch.setattr(
-        factory, "select_harness", lambda _name: _selected_harness(handoff)
-    )
-    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(service)
-
-    assert factory.main() == 1
-    assert received == []
-    assert "Project Marker" in capsys.readouterr().err
-
-
-def test_discovery_refuses_inaccessible_marker_instead_of_using_parent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".agent").mkdir()
-    service = tmp_path / "service"
-    service.mkdir()
-    marker = service / ".agent"
-    marker.mkdir()
-    original_lstat = Path.lstat
-
-    def inaccessible_lstat(path: Path) -> object:
-        if path == marker:
-            raise PermissionError("access denied")
-        return original_lstat(path)
-
-    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        pytest.fail("Codex must not run after an inaccessible Project Marker")
-
-    monkeypatch.setattr(Path, "lstat", inaccessible_lstat)
-    monkeypatch.setattr(
-        factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff)
-    )
-    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(service)
-
-    assert factory.main() == 1
-    assert "Project Marker" in capsys.readouterr().err
-
-
-def test_discovery_accepts_contained_symlinked_marker_and_its_spec(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    service = tmp_path / "service"
-    guidance = service / "guidance"
-    guidance.mkdir(parents=True)
-    (guidance / "spec.md").write_text("service guidance")
-    (service / ".agent").symlink_to(guidance, target_is_directory=True)
-    invocation = service / "src"
-    invocation.mkdir()
-    received: list[tuple[Project, bytes]] = []
-
-    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
-        received.append((selected, spool.read()))
-        return 0
-
-    monkeypatch.setattr(
-        factory, "select_harness", lambda _name: _selected_harness(handoff)
-    )
-    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(invocation)
-
-    assert factory.main() == 0
-    assert received == [
-        (
-            Project(service, tmp_path),
-            (
-                b"# Project Guidance\n\nservice guidance\n\n"
-                b"# Run Request\n\n## Instruction\n\nFix"
-            ),
-        )
-    ]
-
-
-def test_explicit_path_refuses_escaping_project_marker(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (project / ".agent").symlink_to(outside, target_is_directory=True)
-
-    def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
-        pytest.fail("Codex must not run with an escaping Project Marker")
-
-    monkeypatch.setattr(
-        factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff)
-    )
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(project), "Fix"])
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(project)
-
-    assert factory.main() == 1
-    assert "Project Spec marker is not a contained directory" in capsys.readouterr().err
-
-
-def test_discovery_stays_inside_nested_repository(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    outer = tmp_path / "outer"
-    inner = outer / "inner"
-    inner.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
-    subprocess.run(["git", "init", "-q"], cwd=inner, check=True)
-    (outer / ".agent").mkdir()
-    (outer / ".agent" / "spec.md").write_text("outer guidance")
-    nested = inner / "service"
-    nested.mkdir()
-    received: list[tuple[Project, bytes]] = []
-
-    def handoff(selected: Project, spool: io.BufferedRandom) -> int:
-        received.append((selected, spool.read()))
-        return 0
-
-    monkeypatch.setattr(
-        factory, "select_harness", lambda _name: _selected_harness(handoff)
-    )
-    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(nested)
-
-    assert factory.main() == 0
-    assert received == [
-        (
-            Project(inner, inner),
-            b"# Run Request\n\n## Instruction\n\nFix",
-        )
-    ]
-
-
 @pytest.mark.parametrize("kind", ["linked", "submodule"])
 def test_discovery_uses_linked_worktree_or_submodule_root(
     tmp_path: Path,
@@ -508,23 +479,7 @@ def test_discovery_uses_linked_worktree_or_submodule_root(
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial",
-            "-q",
-        ],
-        cwd=source,
-        check=True,
-    )
+    git_init_commit(source)
     if kind == "linked":
         root = tmp_path / "linked"
         subprocess.run(
@@ -559,6 +514,7 @@ def test_discovery_uses_linked_worktree_or_submodule_root(
             check=True,
         )
         root = parent / "module"
+    register_checkout(monkeypatch, root, tmp_path / "config")
     nested = root / "service"
     nested.mkdir()
     projects: list[Project] = []
@@ -583,9 +539,8 @@ def test_explicit_run_hands_off_exact_request_bytes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import subprocess
-
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     marker = tmp_path / ".agent"
     marker.mkdir()
     (marker / "spec.md").write_bytes(b"\xef\xbb\xbfGuide\r\n")
@@ -600,7 +555,7 @@ def test_explicit_run_hands_off_exact_request_bytes(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--path", str(tmp_path), "--file", "notes.txt", "Fix", "it"],
+        ["factory", "--checkout", str(tmp_path), "--file", "notes.txt", "Fix", "it"],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"stdin")))
     monkeypatch.setattr(
@@ -628,7 +583,8 @@ def test_standard_input_inspection_failure_refuses_before_run_admission(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
 
     class UnreadableStandardInput:
         def isatty(self) -> bool:
@@ -643,7 +599,7 @@ def test_standard_input_inspection_failure_refuses_before_run_admission(
         factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff)
     )
     monkeypatch.setattr(sys, "stdin", UnreadableStandardInput())
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
 
     assert factory.main() == 1
@@ -657,7 +613,8 @@ def test_closed_standard_input_refuses_before_run_admission(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     closed_input = io.TextIOWrapper(io.BytesIO(b"data"))
     closed_input.close()
 
@@ -668,7 +625,7 @@ def test_closed_standard_input_refuses_before_run_admission(
         factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff)
     )
     monkeypatch.setattr(sys, "stdin", closed_input)
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
 
     assert factory.main() == 1
@@ -681,7 +638,8 @@ def test_terminal_standard_input_is_never_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
 
     class TerminalInput:
         def isatty(self) -> bool:
@@ -701,7 +659,7 @@ def test_terminal_standard_input_is_never_read(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
     monkeypatch.setattr(sys, "stdin", TerminalInput())
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
 
     assert factory.main() == 0
@@ -718,10 +676,12 @@ def test_terminal_standard_input_is_never_read(
 )
 def test_piped_and_redirected_standard_input_have_identical_context(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     payload: bytes,
     context: bytes,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     redirected = tmp_path / "redirected"
     redirected.write_bytes(payload)
     script = """import sys
@@ -741,7 +701,7 @@ raise SystemExit(factory.main())
         "-c",
         script,
         str(Path(factory.__file__).parent),
-        "--path",
+        "--checkout",
         str(tmp_path),
         "Fix",
     ]
@@ -772,7 +732,8 @@ def test_standard_input_follows_file_context_and_preserves_payload_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "notes").write_bytes(b"file\r\n")
     received: list[bytes] = []
 
@@ -791,7 +752,7 @@ def test_standard_input_follows_file_context_and_preserves_payload_bytes(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "notes",
@@ -824,7 +785,8 @@ def test_invalid_standard_input_refuses_before_run_admission(
     payload: bytes,
     reason: str,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
 
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Run Admission must not start after invalid standard input")
@@ -833,7 +795,7 @@ def test_invalid_standard_input_refuses_before_run_admission(
         factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff)
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(payload)))
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
 
     assert factory.main() == 1
@@ -847,7 +809,8 @@ def test_standard_input_read_failure_refuses_before_run_admission(
     capsys: pytest.CaptureFixture[str],
     failure: Exception,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
 
     class FailingStream(io.BytesIO):
         def read(self, size: int = -1) -> bytes:
@@ -860,7 +823,7 @@ def test_standard_input_read_failure_refuses_before_run_admission(
         factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff)
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(FailingStream()))
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.chdir(tmp_path)
 
     assert factory.main() == 1
@@ -874,7 +837,8 @@ def test_standard_input_payload_bytes_count_toward_context_gate(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "notes").write_bytes(b"X")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "2")
     monkeypatch.setattr(
@@ -885,7 +849,7 @@ def test_standard_input_payload_bytes_count_toward_context_gate(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "notes",
@@ -905,9 +869,9 @@ def test_absent_spec_and_empty_context_keep_only_required_envelope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "empty").write_bytes(b"\xef\xbb\xbf")
     received: list[bytes] = []
 
@@ -921,7 +885,7 @@ def test_absent_spec_and_empty_context_keep_only_required_envelope(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--path", str(tmp_path), "--file", "empty", "Do", "work"],
+        ["factory", "--checkout", str(tmp_path), "--file", "empty", "Do", "work"],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -937,13 +901,13 @@ def test_invalid_project_spec_refuses_before_codex(
     capsys: pytest.CaptureFixture[str],
     content: bytes,
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     marker = tmp_path / ".agent"
     marker.mkdir()
     (marker / "spec.md").write_bytes(content)
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
@@ -956,17 +920,16 @@ def test_project_spec_symlink_outside_boundary_refuses(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import subprocess
-
     project = tmp_path / "project"
     project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    git_init_commit(project)
+    register_checkout(monkeypatch, project, tmp_path / "config")
     marker = project / ".agent"
     marker.mkdir()
     outside = tmp_path / "outside"
     outside.write_text("secret")
     (marker / "spec.md").symlink_to(outside)
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(project), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(project), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(project)
 
@@ -979,7 +942,8 @@ def test_project_spec_parent_swap_refuses_before_codex(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     guidance = tmp_path / "guidance"
     guidance.mkdir()
     (guidance / "spec.md").write_text("inside")
@@ -1014,7 +978,7 @@ def test_project_spec_parent_swap_refuses_before_codex(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff)
     )
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
@@ -1028,17 +992,19 @@ def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import subprocess
 
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "context").write_bytes(b"\xef\xbb\xbfcaf\xc3\xa9")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "4")
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
     monkeypatch.setattr(
-        sys, "argv", ["factory", "--path", str(tmp_path), "--file", "context", "Fix"]
+        sys,
+        "argv",
+        ["factory", "--checkout", str(tmp_path), "--file", "context", "Fix"],
     )
     assert factory.main() == 1
     assert capsys.readouterr().err == (
@@ -1049,7 +1015,7 @@ def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--path", str(tmp_path), "--file", "context", "--force", "Fix"],
+        ["factory", "--checkout", str(tmp_path), "--file", "context", "--force", "Fix"],
     )
     assert factory.main() == 1
     assert capsys.readouterr().err == (
@@ -1064,7 +1030,8 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / ".agent").mkdir()
     (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
     context = tmp_path / "context"
@@ -1081,7 +1048,7 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
-    arguments = ["factory", "--path", str(tmp_path), "--file", "context"]
+    arguments = ["factory", "--checkout", str(tmp_path), "--file", "context"]
     monkeypatch.setattr(sys, "argv", [*arguments, "Fix"])
     assert factory.main() == 17
     assert capsys.readouterr().err == ""
@@ -1136,7 +1103,8 @@ def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
 ) -> None:
     threshold, payload, expected = override
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "context").write_bytes(payload)
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", threshold)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
@@ -1145,7 +1113,7 @@ def test_context_threshold_accepts_unsigned_ascii_decimal_overrides(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "context",
@@ -1169,8 +1137,70 @@ def test_parse_and_project_failures_precede_spooling_and_downstream_failures(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    git_init_commit(project)
+    register_checkout(monkeypatch, project, tmp_path / "config")
     missing = tmp_path / "missing"
+    stale_store = tmp_path / "stale-store" / "factory" / "projects.json"
+    stale_store.parent.mkdir(parents=True)
+    stale_store.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "clients": [{"id": CLIENT_ID, "key": "acme", "name": None}],
+                "projects": [
+                    {
+                        "id": PROJECT_ID,
+                        "client_id": CLIENT_ID,
+                        "key": "web",
+                        "name": None,
+                        "default_checkout_id": CHECKOUT_ID,
+                    }
+                ],
+                "repositories": [
+                    {
+                        "id": REPOSITORY_ID,
+                        "name": None,
+                        "common_dir": {
+                            "path": str(project / ".git"),
+                            "st_dev": 1,
+                            "st_ino": 3,
+                        },
+                    }
+                ],
+                "checkouts": [
+                    {
+                        "id": CHECKOUT_ID,
+                        "project_id": PROJECT_ID,
+                        "repository_id": REPOSITORY_ID,
+                        "boundary": {
+                            "path": str(missing),
+                            "st_dev": 1,
+                            "st_ino": 2,
+                        },
+                        "worktree_root": {
+                            "path": str(missing),
+                            "st_dev": 1,
+                            "st_ino": 2,
+                        },
+                        "git_dir": {
+                            "path": str(project / ".git"),
+                            "st_dev": 1,
+                            "st_ino": 3,
+                        },
+                        "common_dir": {
+                            "path": str(project / ".git"),
+                            "st_dev": 1,
+                            "st_ino": 3,
+                        },
+                    }
+                ],
+                "legacy": {},
+            }
+        )
+    )
+    unregistered = project / "inner"
+    unregistered.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=unregistered, check=True)
     spool_attempts: list[None] = []
     admission_attempts: list[Path] = []
 
@@ -1179,25 +1209,13 @@ def test_parse_and_project_failures_precede_spooling_and_downstream_failures(
         return io.BytesIO()
 
     if failure == "parse":
-        arguments = ["factory", "--unknown", "--path", str(missing), "Fix"]
+        arguments = ["factory", "--unknown", "--checkout", str(missing), "Fix"]
     elif failure == "explicit":
-        arguments = ["factory", "--path", str(missing), "Fix"]
+        arguments = ["factory", "--checkout", str(missing), "Fix"]
     elif failure == "registered":
-        config = tmp_path / "config"
-        registry = config / "factory" / "projects.json"
-        registry.parent.mkdir(parents=True)
-        registry.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "projects": {"api": str(missing)},
-                }
-            )
-        )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-        arguments = ["factory", "--project", "api", "Fix"]
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(stale_store.parents[1]))
+        arguments = ["factory", "--project", "acme/web", "Fix"]
     else:
-        (project / ".agent").symlink_to(missing, target_is_directory=True)
         arguments = ["factory", "Fix"]
 
     monkeypatch.setattr(factory.tempfile, "TemporaryFile", create_spool)
@@ -1210,7 +1228,7 @@ def test_parse_and_project_failures_precede_spooling_and_downstream_failures(
     )
     monkeypatch.setattr(sys, "argv", arguments)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"\xff")))
-    monkeypatch.chdir(project)
+    monkeypatch.chdir(unregistered if failure == "discovered" else project)
 
     expected_status = 2 if failure == "parse" else 1
     assert factory.main() == expected_status
@@ -1218,8 +1236,8 @@ def test_parse_and_project_failures_precede_spooling_and_downstream_failures(
     assert {
         "parse": 'unknown option "--unknown"',
         "explicit": "cannot be resolved",
-        "registered": 'Project "api" is stale: path does not exist',
-        "discovered": "Project Marker",
+        "registered": f'Checkout "{CHECKOUT_ID}" is stale: path does not exist',
+        "discovered": "The nearest Git worktree root",
     }[failure] in error
     assert "simultaneous admission failure" not in error
     assert "simultaneous Codex failure" not in error
@@ -1340,9 +1358,9 @@ def test_spool_is_private_rewound_and_closed_after_admission_refusal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     spools: list[io.BufferedRandom] = []
 
     def refuse(boundary: Path, spool: io.BufferedRandom) -> int:
@@ -1354,7 +1372,7 @@ def test_spool_is_private_rewound_and_closed_after_admission_refusal(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(refuse)
     )
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
@@ -1368,7 +1386,8 @@ def test_spool_lifetime_covers_every_codex_handoff_outcome(
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     created = track_named_spools(monkeypatch)
 
     def handoff(project: Project, spool: io.BufferedRandom) -> int:
@@ -1388,7 +1407,7 @@ def test_spool_lifetime_covers_every_codex_handoff_outcome(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
@@ -1415,7 +1434,8 @@ def test_rejected_composed_spools_are_closed_and_removed_before_admission(
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     context = tmp_path / "context"
     context.write_bytes(b"\xff" if failure == "composition" else b"x")
     created = track_named_spools(monkeypatch)
@@ -1434,7 +1454,7 @@ def test_rejected_composed_spools_are_closed_and_removed_before_admission(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "context",
@@ -1459,7 +1479,8 @@ def test_size_gate_and_rewind_failures_precede_run_admission(
     capsys: pytest.CaptureFixture[str],
     failure: str,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "context").write_bytes(b"x")
     created = track_named_spools(monkeypatch, fail_rewind=True)
     admission_attempts: list[Path] = []
@@ -1479,7 +1500,7 @@ def test_size_gate_and_rewind_failures_precede_run_admission(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "context",
@@ -1504,30 +1525,29 @@ def test_size_gate_and_rewind_failures_precede_run_admission(
     assert not path.exists()
 
 
-def test_explicit_subdirectory_does_not_inherit_ancestor_spec(
+def test_run_does_not_inherit_an_ancestor_spec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import subprocess
-
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".agent").mkdir()
     (tmp_path / ".agent" / "spec.md").write_text("ancestor guidance")
-    boundary = tmp_path / "service"
-    boundary.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git_init_commit(repo)
+    register_checkout(monkeypatch, repo, tmp_path / "config")
     received: list[bytes] = []
 
     def handoff(project: Project, spool: io.BufferedRandom) -> int:
-        assert project == Project(boundary, tmp_path)
+        assert project == Project(repo, repo)
         received.append(spool.read())
         return 0
 
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(boundary), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(repo), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(repo)
 
     assert factory.main() == 0
     assert received == [b"# Run Request\n\n## Instruction\n\nFix"]
@@ -1540,12 +1560,14 @@ def test_invalid_context_refuses_before_admission(
     capsys: pytest.CaptureFixture[str],
     content: bytes,
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "context").write_bytes(content)
     monkeypatch.setattr(
-        sys, "argv", ["factory", "--path", str(tmp_path), "--file", "context", "Fix"]
+        sys,
+        "argv",
+        ["factory", "--checkout", str(tmp_path), "--file", "context", "Fix"],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1559,7 +1581,8 @@ def test_context_path_with_nul_refuses_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
 
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
         pytest.fail("Codex must not receive Context from an invalid file path")
@@ -1581,9 +1604,8 @@ def test_external_context_file_expands_from_invocation_and_keeps_original_labels
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    boundary = project / "service"
-    boundary.mkdir()
+    git_init_commit(project)
+    register_checkout(monkeypatch, project, tmp_path / "config")
     invocation = project / "runner"
     invocation.mkdir()
     outside = tmp_path / "outside.txt"
@@ -1592,7 +1614,7 @@ def test_external_context_file_expands_from_invocation_and_keeps_original_labels
     received: list[bytes] = []
 
     def handoff(selected: Project, spool: io.BufferedRandom) -> int:
-        assert selected == Project(boundary, project)
+        assert selected == Project(project, project)
         received.append(spool.read())
         return 0
 
@@ -1606,8 +1628,8 @@ def test_external_context_file_expands_from_invocation_and_keeps_original_labels
         "argv",
         [
             "factory",
-            "--path",
-            str(boundary),
+            "--checkout",
+            str(project),
             "--file",
             "$CONTEXT_FILE",
             "--file",
@@ -1635,7 +1657,8 @@ def test_context_file_rejects_unset_or_empty_environment_variable(
     capsys: pytest.CaptureFixture[str],
     value: str | None,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     if value is None:
         monkeypatch.delenv("CONTEXT_FILE", raising=False)
     else:
@@ -1663,7 +1686,8 @@ def test_directory_context_source_refuses_before_admission(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "directory").mkdir()
 
     def unexpected_handoff(boundary: Path, spool: io.BufferedRandom) -> int:
@@ -1702,11 +1726,11 @@ def test_malformed_context_threshold_refuses_even_empty_context(
     capsys: pytest.CaptureFixture[str],
     setting: str,
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", setting)
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
@@ -1734,7 +1758,8 @@ def test_force_preserves_project_context_threshold_and_run_admission_failures(
     expected: str,
 ) -> None:
     monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "context").write_bytes(b"\xff")
     monkeypatch.setenv(
         "FACTORY_CONTEXT_WARN_BYTES", "invalid" if failure == "threshold" else "0"
@@ -1747,7 +1772,7 @@ def test_force_preserves_project_context_threshold_and_run_admission_failures(
 
     for force in ([], ["--force"]):
         monkeypatch.setattr(
-            sys, "argv", ["factory", "--path", path, *file_args, *force, "Fix"]
+            sys, "argv", ["factory", "--checkout", path, *file_args, *force, "Fix"]
         )
         assert factory.main() == 1
         diagnostic = capsys.readouterr().err
@@ -1760,9 +1785,9 @@ def test_repeated_file_context_uses_original_json_labels_and_preserves_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     name = 'line\n"quote".txt'
     (tmp_path / name).write_bytes(b"x\r\ny\r")
     received: list[bytes] = []
@@ -1777,7 +1802,7 @@ def test_repeated_file_context_uses_original_json_labels_and_preserves_payload(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--path", str(tmp_path), "--file", name, "--file", name, "Fix"],
+        ["factory", "--checkout", str(tmp_path), "--file", name, "--file", name, "Fix"],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
@@ -1796,7 +1821,8 @@ def test_repeated_file_context_skips_empty_sources_and_preserves_each_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "empty").write_bytes(b"")
     (tmp_path / "bom-only").write_bytes(b"\xef\xbb\xbf")
     (tmp_path / "mixed").write_bytes(b"\xef\xbb\xbfA\r\nB\nC\r")
@@ -1816,7 +1842,7 @@ def test_repeated_file_context_skips_empty_sources_and_preserves_each_payload(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "empty",
@@ -1854,7 +1880,8 @@ def test_only_empty_file_context_sources_leave_no_context_section(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "empty").write_bytes(b"")
     (tmp_path / "bom-only").write_bytes(b"\xef\xbb\xbf")
     received: list[bytes] = []
@@ -1871,7 +1898,7 @@ def test_only_empty_file_context_sources_leave_no_context_section(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "empty",
@@ -1894,7 +1921,8 @@ def test_repeated_file_context_counts_payload_bytes_from_each_occurrence(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "unicode").write_bytes(b"\xef\xbb\xbf\xc3\xa9")
     (tmp_path / "empty").write_bytes(b"")
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "3")
@@ -1903,7 +1931,7 @@ def test_repeated_file_context_counts_payload_bytes_from_each_occurrence(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "unicode",
@@ -1929,7 +1957,8 @@ def test_later_file_context_source_is_validated_before_run(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "valid").write_bytes(b"first")
     (tmp_path / "invalid").write_bytes(b"\xff")
 
@@ -1944,7 +1973,7 @@ def test_later_file_context_source_is_validated_before_run(
         "argv",
         [
             "factory",
-            "--path",
+            "--checkout",
             str(tmp_path),
             "--file",
             "valid",
@@ -1964,9 +1993,9 @@ def test_crlf_blank_lines_need_no_added_separator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / ".agent").mkdir()
     (tmp_path / ".agent" / "spec.md").write_bytes(b"guide\r\n\r\n")
     (tmp_path / "context").write_bytes(b"context\r\n\r\n")
@@ -1980,7 +2009,9 @@ def test_crlf_blank_lines_need_no_added_separator(
         factory, "select_harness", lambda _name: _selected_harness(handoff)
     )
     monkeypatch.setattr(
-        sys, "argv", ["factory", "--path", str(tmp_path), "--file", "context", "Fix"]
+        sys,
+        "argv",
+        ["factory", "--checkout", str(tmp_path), "--file", "context", "Fix"],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"next")))
     monkeypatch.chdir(tmp_path)
@@ -2001,15 +2032,15 @@ def test_spool_creation_failure_identifies_spool_and_cause(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
 
     def fail_spool(*args: object, **kwargs: object) -> io.BufferedRandom:
         raise OSError("temporary storage unavailable")
 
     monkeypatch.setattr(factory.tempfile, "TemporaryFile", fail_spool)
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
@@ -2024,7 +2055,8 @@ def test_spool_write_failure_identifies_spool_and_refuses_run(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / ".agent").mkdir()
     (tmp_path / ".agent" / "spec.md").write_text("guidance")
 
@@ -2043,7 +2075,7 @@ def test_spool_write_failure_identifies_spool_and_refuses_run(
     monkeypatch.setattr(
         factory, "select_harness", lambda _name: _selected_harness(unexpected_handoff)
     )
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 
@@ -2058,9 +2090,9 @@ def test_instruction_crlf_blank_line_needs_no_added_separator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    git_init_commit(tmp_path)
+    register_checkout(monkeypatch, tmp_path, tmp_path / "config")
     (tmp_path / "context").write_bytes(b"detail")
     received: list[bytes] = []
 
@@ -2074,7 +2106,7 @@ def test_instruction_crlf_blank_line_needs_no_added_separator(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--path", str(tmp_path), "--file", "context", "Fix\r\n\r\n"],
+        ["factory", "--checkout", str(tmp_path), "--file", "context", "Fix\r\n\r\n"],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)

@@ -44,6 +44,72 @@ def run(project: Project, run_request_spool: BinaryIO) -> int:
     return CodexRunner().run(project, run_request_spool)
 
 
+def register_run_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Commit tmp_path and register it as the acme/web Checkout of a v2 store."""
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+            "-q",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    boundary = {
+        "path": str(tmp_path),
+        "st_dev": tmp_path.stat().st_dev,
+        "st_ino": tmp_path.stat().st_ino,
+    }
+    git_dir = {
+        "path": str(tmp_path / ".git"),
+        "st_dev": (tmp_path / ".git").stat().st_dev,
+        "st_ino": (tmp_path / ".git").stat().st_ino,
+    }
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "clients": [{"id": "cli_" + "a" * 32, "key": "acme", "name": None}],
+                "projects": [
+                    {
+                        "id": "prj_" + "b" * 32,
+                        "client_id": "cli_" + "a" * 32,
+                        "key": "web",
+                        "name": None,
+                        "default_checkout_id": "chk_" + "d" * 32,
+                    }
+                ],
+                "repositories": [
+                    {"id": "repo_" + "c" * 32, "name": None, "common_dir": git_dir}
+                ],
+                "checkouts": [
+                    {
+                        "id": "chk_" + "d" * 32,
+                        "project_id": "prj_" + "b" * 32,
+                        "repository_id": "repo_" + "c" * 32,
+                        "boundary": boundary,
+                        "worktree_root": boundary,
+                        "git_dir": git_dir,
+                        "common_dir": git_dir,
+                    }
+                ],
+                "legacy": {},
+            }
+        )
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+
 HOST_PROBE_PROMPT = (
     "# Project Guidance\n\n"
     "factory-host-admission-project-guidance-v1\n\n"
@@ -2249,6 +2315,7 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     disable, modelling a higher-precedence hidden or environment policy.
     """
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    register_run_checkout(tmp_path, monkeypatch)
     executable = tmp_path / "bin" / "codex"
     executable.parent.mkdir()
     make_inspector_executable(executable)
@@ -2265,7 +2332,15 @@ def test_force_and_hidden_environment_state_cannot_bypass_capability_rejection(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["factory", "--path", str(tmp_path), "--file", "context", "--force", "Fix"],
+        [
+            "factory",
+            "--checkout",
+            str(tmp_path),
+            "--file",
+            "context",
+            "--force",
+            "Fix",
+        ],
     )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
 
@@ -2911,11 +2986,12 @@ def test_factory_reports_an_admission_failure_without_a_traceback(
     git = shutil.which("git")
     assert git is not None
     subprocess.run([git, "init", "-q"], cwd=tmp_path, check=True)
+    register_run_checkout(tmp_path, monkeypatch)
     path_directory = tmp_path / "path"
     path_directory.mkdir()
     (path_directory / "git").symlink_to(Path(git).resolve())
     monkeypatch.setenv("PATH", os.fspath(path_directory))
-    monkeypatch.setattr(sys, "argv", ["factory", "--path", str(tmp_path), "Fix"])
+    monkeypatch.setattr(sys, "argv", ["factory", "--checkout", str(tmp_path), "Fix"])
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(tmp_path)
 

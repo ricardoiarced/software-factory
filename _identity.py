@@ -4,12 +4,13 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import NoReturn, TypeVar, cast
 
 from _project import (
     GitInspectionError,
@@ -128,6 +129,14 @@ _ID_PREFIXES = {
 _ID = re.compile(r"(?:cli|prj|repo|chk)_[0-9a-f]{32}\Z")
 _STORE_KEYS = {"version", "clients", "projects", "repositories", "checkouts", "legacy"}
 _MIGRATE_FIRST = "projects registry schema v1; run 'factory project migrate' first"
+_NO_IDENTITY_STORE = (
+    "No identity store exists; register a Project first with "
+    "'factory project register CLIENT/KEY PATH'"
+)
+_DISCOVERY_WITHOUT_WORKTREE = (
+    "No Git worktree encloses the invocation directory; start inside a "
+    "registered Checkout or select one with --project or --checkout"
+)
 _GIT_ENVIRONMENT_OVERRIDES = (
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -656,23 +665,7 @@ def verify_checkout_proof(
 ) -> tuple[str, CheckoutProof]:
     """Verify one checkout path and return its boundary and Git proof."""
 
-    expanded = expand_path(supplied)
-    path = Path(expanded)
-    if not path.is_absolute():
-        path = invocation_dir / path
-    try:
-        boundary = path.resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        cause = (
-            error.strerror
-            if isinstance(error, OSError) and error.strerror
-            else "symlink loop"
-        )
-        raise IdentityError(
-            f"path {_quoted(supplied)} cannot be resolved: {cause}"
-        ) from error
-    if not boundary.is_dir():
-        raise IdentityError(f"path {_quoted(supplied)} is not a directory")
+    boundary = _canonical_run_path(supplied, invocation_dir)
     root_pin, git_dir_pin, common_pin, head = _git_proof(boundary, supplied)
     return str(boundary), CheckoutProof(root_pin, git_dir_pin, common_pin, head)
 
@@ -1558,6 +1551,291 @@ def set_default_checkout(selector: str, supplied_path: str) -> None:
         mutation,
         create_directory=False,
         missing_message=f"Project {_quoted(selector)} is not registered",
+    )
+
+
+@dataclass(frozen=True)
+class RunSelection:
+    """The four immutable identities behind one verified Run boundary."""
+
+    client_id: str
+    project_id: str
+    repository_id: str
+    checkout_id: str
+    boundary: Path
+
+
+def run_store() -> IdentityStore:
+    """Read the identity store for a Run, refusing absent or version-one state."""
+
+    document = _read_raw_document()
+    if document is None:
+        raise IdentityError(_NO_IDENTITY_STORE)
+    if _is_version(document, 1):
+        _validate_v1_document(document)
+        raise IdentityError(_MIGRATE_FIRST)
+    return _validate_store(document)
+
+
+def _canonical_run_path(supplied: str, invocation_dir: Path) -> Path:
+    """Return the resolved directory of one supplied Run path."""
+
+    try:
+        expanded = expand_path(supplied)
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = invocation_dir / path
+        boundary = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        cause = (
+            error.strerror
+            if isinstance(error, OSError) and error.strerror
+            else "symlink loop"
+        )
+        raise IdentityError(
+            f"path {_quoted(supplied)} cannot be resolved: {cause}"
+        ) from error
+    if not boundary.is_dir():
+        raise IdentityError(f"path {_quoted(supplied)} is not a directory")
+    return boundary
+
+
+_RUN_CONTEXT_FLAGS = (
+    "--is-inside-work-tree",
+    "--is-bare-repository",
+    "--show-toplevel",
+)
+
+
+def _git_context(path: Path, label: str) -> Path | None:
+    """Return the worktree root around one directory, or None without one."""
+
+    result = _run_git_identity(path, ["rev-parse", *_RUN_CONTEXT_FLAGS], label)
+    if result.returncode:
+        if (
+            result.stdout == b"false\ntrue\n"
+            and b"this operation must be run in a work tree" in result.stderr
+        ):
+            return None
+        if b"not a git repository" in result.stderr:
+            return None
+        raise IdentityError(
+            f"Git inspection failed for {label}: Git returned {result.returncode}"
+        )
+    lines = result.stdout.splitlines()
+    valid = (
+        len(lines) == len(_RUN_CONTEXT_FLAGS)
+        and lines[0] == b"true"
+        and lines[1] == b"false"
+    )
+    if not valid:
+        raise IdentityError(f"Git inspection failed for {label}: invalid Git output")
+    try:
+        return Path(os.fsdecode(lines[2])).resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise IdentityError(
+            f"Git inspection failed for {label}: invalid worktree path"
+        ) from error
+
+
+def _checkout_at_boundary(store: IdentityStore, boundary: Path) -> Checkout | None:
+    """Return the Checkout registered at exactly one boundary path."""
+
+    for checkout in store.checkouts:
+        if checkout.boundary.path == str(boundary):
+            return checkout
+    return None
+
+
+def _enclosing_registered_checkout(
+    store: IdentityStore, boundary: Path
+) -> Checkout | None:
+    """Return the nearest registered Checkout strictly containing one path."""
+
+    nearest: Checkout | None = None
+    depth = 0
+    for checkout in store.checkouts:
+        candidate = Path(checkout.boundary.path)
+        if boundary == candidate or not boundary.is_relative_to(candidate):
+            continue
+        if len(candidate.parts) > depth:
+            nearest, depth = checkout, len(candidate.parts)
+    return nearest
+
+
+def _refuse_contained_boundary(store: IdentityStore, boundary: Path) -> None:
+    """Refuse one interior path with its nearest enclosing registered Checkout."""
+
+    enclosing = _enclosing_registered_checkout(store, boundary)
+    if enclosing is None:
+        return
+    root = enclosing.boundary.path
+    raise IdentityError(
+        f"{_quoted(str(boundary))} is inside Checkout {enclosing.id} whose "
+        f"registered boundary is {_quoted(root)}; Run boundaries must exactly "
+        f"match registered Checkout boundaries. Run at {_quoted(root)}, or make "
+        f"{_quoted(str(boundary))} a Git worktree and register it as a Checkout"
+    )
+
+
+def _legacy_name_at(store: IdentityStore, boundary: Path) -> str | None:
+    """Return the first legacy Project recording one path, in name order."""
+
+    for name in sorted(store.legacy):
+        if store.legacy[name] == str(boundary):
+            return name
+    return None
+
+
+def _refuse_legacy_boundary(boundary: Path, name: str) -> NoReturn:
+    """Refuse one legacy-recorded path with the re-registration remedy."""
+
+    raise IdentityError(
+        f"{_quoted(str(boundary))} is recorded by legacy project {_quoted(name)}; "
+        "it is not Run-selectable until re-registered: 'factory project register "
+        f"CLIENT/KEY {_quoted(str(boundary))} --from-legacy {name}'"
+    )
+
+
+def _refuse_unselectable_boundary(boundary: Path) -> NoReturn:
+    """Refuse one unregistered path by its worktree shape."""
+
+    root = _git_context(boundary, f"path {_quoted(str(boundary))}")
+    if root is not None:
+        raise IdentityError(
+            f"{_quoted(str(boundary))} is a Git worktree root but not a registered "
+            "Checkout boundary; register it with 'factory checkout register "
+            f"CLIENT/KEY {_quoted(str(boundary))}' or select a Project with --project"
+        )
+    raise IdentityError(
+        f"{_quoted(str(boundary))} is not a Git worktree root and not a registered "
+        "Checkout boundary"
+    )
+
+
+def _check_checkout_scope(
+    store: IdentityStore, project: ProjectRecord, checkout: Checkout, boundary: Path
+) -> None:
+    """Refuse a scoped selection whose Checkout belongs to another Project."""
+
+    if checkout.project_id == project.id:
+        return
+    owner = _project_by_id(store, checkout.project_id)
+    raise IdentityError(
+        f"Checkout {checkout.id} at {_quoted(str(boundary))} belongs to Project "
+        f"{_selector(store, owner)}, not the selected Project "
+        f"{_selector(store, project)}; the selected Project admits only its own "
+        "Checkouts"
+    )
+
+
+def _project_checkout(store: IdentityStore, project: ProjectRecord) -> Checkout:
+    """Return a Project's default Checkout, its sole Checkout, or refuse."""
+
+    if project.default_checkout_id is not None:
+        checkout = _checkout(store, project.default_checkout_id)
+        if checkout is None:
+            raise _malformed("inconsistent Project default checkout reference")
+        return checkout
+    owned = [record for record in store.checkouts if record.project_id == project.id]
+    selector = _selector(store, project)
+    if not owned:
+        raise IdentityError(
+            f"Project {_quoted(selector)} has no registered Checkout; register "
+            f"one with 'factory project checkout register {selector} PATH'"
+        )
+    if len(owned) > 1:
+        raise IdentityError(
+            f"Project {_quoted(selector)} has no default Checkout and multiple "
+            "Checkouts; select one with --checkout PATH or set a default with "
+            f"'factory project set-default-checkout {selector} PATH'"
+        )
+    return owned[0]
+
+
+def _fresh_boundary(checkout: Checkout) -> Path:
+    """Re-establish one Checkout's registered boundary, refusing stale state."""
+
+    path = Path(checkout.boundary.path)
+    try:
+        mode = path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise IdentityError(
+            f"Checkout {_quoted(checkout.id)} is stale: path does not exist"
+        ) from error
+    if not stat.S_ISDIR(mode):
+        raise IdentityError(
+            f"Checkout {_quoted(checkout.id)} is stale: path is not a directory"
+        )
+    canonical = path.resolve(strict=True)
+    if str(canonical) != checkout.boundary.path:
+        raise IdentityError(
+            f"Checkout {_quoted(checkout.id)} is stale: path is not canonical"
+        )
+    return canonical
+
+
+def _verified_run_selection(store: IdentityStore, checkout: Checkout) -> RunSelection:
+    """Verify one Checkout freshly and resolve its four immutable identities."""
+
+    boundary = _fresh_boundary(checkout)
+    _git_proof(boundary, checkout.boundary.path)
+    project = _project_by_id(store, checkout.project_id)
+    return RunSelection(
+        client_id=project.client_id,
+        project_id=project.id,
+        repository_id=checkout.repository_id,
+        checkout_id=checkout.id,
+        boundary=boundary,
+    )
+
+
+def resolve_run_project(selector: str) -> RunSelection:
+    """Resolve one Project selector to its default or sole Checkout."""
+
+    store = run_store()
+    project = _resolve_project(store, selector)
+    return _verified_run_selection(store, _project_checkout(store, project))
+
+
+def resolve_run_checkout(
+    supplied: str, project_selector: str | None, invocation_dir: Path
+) -> RunSelection:
+    """Resolve one supplied path to a Checkout, optionally scoped to a Project."""
+
+    store = run_store()
+    boundary = _canonical_run_path(supplied, invocation_dir)
+    checkout = _checkout_at_boundary(store, boundary)
+    if checkout is None:
+        _refuse_contained_boundary(store, boundary)
+        legacy = _legacy_name_at(store, boundary)
+        if legacy is not None:
+            _refuse_legacy_boundary(boundary, legacy)
+        _refuse_unselectable_boundary(boundary)
+    if project_selector is not None:
+        _check_checkout_scope(
+            store, _resolve_project(store, project_selector), checkout, boundary
+        )
+    return _verified_run_selection(store, checkout)
+
+
+def resolve_run_discovery(invocation_dir: Path) -> RunSelection:
+    """Resolve the nearest enclosing worktree root to its registered Checkout."""
+
+    store = run_store()
+    root = _git_context(invocation_dir, "invocation directory")
+    if root is None:
+        raise IdentityError(_DISCOVERY_WITHOUT_WORKTREE)
+    checkout = _checkout_at_boundary(store, root)
+    if checkout is not None:
+        return _verified_run_selection(store, checkout)
+    legacy = _legacy_name_at(store, root)
+    if legacy is not None:
+        _refuse_legacy_boundary(root, legacy)
+    raise IdentityError(
+        f"The nearest Git worktree root {_quoted(str(root))} is not a registered "
+        "Checkout boundary; register it with 'factory checkout register "
+        f"CLIENT/KEY {_quoted(str(root))}' or select a Project with --project"
     )
 
 

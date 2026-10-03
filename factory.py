@@ -19,7 +19,6 @@ from _harness import (
     select_harness,
 )
 from _identity import (
-    _registered_project,
     list_clients,
     list_projects,
     migrate,
@@ -31,6 +30,9 @@ from _identity import (
     remove_client,
     remove_project_entry,
     remove_stored_checkout,
+    resolve_run_checkout,
+    resolve_run_discovery,
+    resolve_run_project,
     set_client_key,
     set_client_name,
     set_default_checkout,
@@ -38,24 +40,12 @@ from _identity import (
     set_project_name,
     show_project,
 )
-from _project import (
-    Project,
-    ProjectSelectionError,
-    StaleProjectError,
-    discover_project,
-    expand_path,
-    select_explicit_project,
-)
+from _project import Project, ProjectSelectionError, expand_path
 from _project_guidance import ProjectGuidanceError, open_project_spec
-from _project_registry import (
-    RegistryCommitUncertain,
-    RegistryError,
-    read_projects,
-    validate_project_name,
-)
+from _project_registry import RegistryCommitUncertain, RegistryError
 
 ROOT_SYNOPSIS = """Usage:
-  factory [--harness codex|claude] [--project NAME | --path PATH] [--file PATH]... [--force] [--] INSTRUCTION...
+  factory [--harness codex|claude] [--project NAME] [--checkout PATH] [--file PATH]... [--force] [--] INSTRUCTION...
   factory project COMMAND ...
   factory (-h | --help)
   factory --version
@@ -67,18 +57,21 @@ ROOT_HELP = (
 Run one Instruction in a selected Git-backed Project.
 
 Options:
-  --harness NAME  Select the Harness for the Run: codex (the default) or
-                  claude.
-  --project NAME  Select a Project by its registered name.
-  --path PATH     Select an explicit Project Boundary.
-  --file PATH     Add a file as a Context Source; repeat to add more.
-  --force         Continue when Context exceeds the warning threshold.
-  -h, --help      Show this help.
-  --version       Show the installed Factory version.
+  --harness NAME   Select the Harness for the Run: codex (the default) or
+                   claude.
+  --project NAME   Select a Project by its registered name.
+  --checkout PATH  Select a registered Checkout by its boundary path;
+                   combine with --project to require that Checkout to belong
+                   to it.
+  --file PATH      Add a file as a Context Source; repeat to add more.
+  --force          Continue when Context exceeds the warning threshold.
+  -h, --help       Show this help.
+  --version        Show the installed Factory version.
 
-With no selector, automatic discovery starts at the invocation directory. It
-uses the nearest .agent/ Project Marker within the containing Git worktree, or
-the worktree root when no marker exists. Explicit selectors never fall back.
+With no selector, automatic discovery starts at the invocation directory and
+resolves the nearest enclosing Git worktree root to a registered Checkout.
+Registration is what makes a directory Run-admissible. Explicit selectors
+never fall back.
 
 Run options are parsed left to right until the first non-option or --. Every
 following argument is Instruction text, even if it resembles an option.
@@ -102,7 +95,7 @@ Examples:
   factory --harness claude Fix the failing tests
   factory --project api --file error.log -- Diagnose this failure
   git diff | factory Review this patch
-  factory --path ./services/api Update dependencies
+  factory --checkout ./services/api Update dependencies
   factory -- project list
   factory project show api
   factory project remove api
@@ -179,7 +172,8 @@ class RunInputError(Exception):
 class RunArguments:
     instruction: str
     harness: str
-    selector: tuple[str, str] | None
+    project: str | None
+    checkout: str | None
     files: tuple[str, ...]
     force: bool
 
@@ -367,27 +361,30 @@ def _option_value(
     return option, value, position
 
 
-def _parse_selector_option(
-    option: str,
-    value: str,
-    selectors: set[str],
-) -> tuple[str, str]:
-    """Record one exclusive Project selector and return its kind and value."""
-    if option in selectors:
-        raise UsageError(f"{option} may appear only once")
-    selectors.add(option)
-    if len(selectors) > 1:
-        raise UsageError("--project and --path cannot be combined")
-    return option[2:], value
-
-
-def _parse_harness_option(value: str, seen_harness: bool) -> str:
-    """Return the requested Harness name, accepted only once."""
-    if seen_harness:
-        raise UsageError("--harness may appear only once")
+def _check_harness_name(value: str) -> None:
+    """Accept one Harness name only when it is a registered Harness."""
     if value not in HARNESS_NAMES:
         raise UsageError(f"unknown harness {_quoted(value)}")
-    return value
+
+
+def _parse_valued_run_option(
+    args: list[str],
+    position: int,
+    argument: str,
+    seen: dict[str, str],
+    files: list[str],
+) -> int:
+    """Record one valued Run option; selectors and --harness only once."""
+    option, value, position = _option_value(args, position, argument)
+    if option == "--file":
+        files.append(value)
+        return position
+    if option in seen:
+        raise UsageError(f"{option} may appear only once")
+    if option == "--harness":
+        _check_harness_name(value)
+    seen[option] = value
+    return position
 
 
 def _run_instruction(args: list[str], position: int) -> str:
@@ -399,11 +396,7 @@ def _run_instruction(args: list[str], position: int) -> str:
 
 
 def _parse_run(args: list[str]) -> RunArguments:
-    selectors: set[str] = set()
-    seen_force = False
-    seen_harness = False
-    selector: tuple[str, str] | None = None
-    harness = DEFAULT_HARNESS
+    seen: dict[str, str] = {}
     files: list[str] = []
     position = 0
     while position < len(args):
@@ -413,27 +406,32 @@ def _parse_run(args: list[str]) -> RunArguments:
             break
         if not argument.startswith("-") or argument == "-":
             break
-        option, _, _ = argument.partition("=")
-        if option in ("--project", "--path", "--file", "--harness"):
-            option, value, position = _option_value(args, position, argument)
-            if option in ("--project", "--path"):
-                selector = _parse_selector_option(option, value, selectors)
-            elif option == "--harness":
-                harness = _parse_harness_option(value, seen_harness)
-                seen_harness = True
-            else:
-                files.append(value)
+        option = argument.partition("=")[0]
+        if option == "--path":
+            raise UsageError(
+                "--path was removed; use --checkout PATH to select a "
+                "registered Checkout."
+            )
+        if option in ("--project", "--checkout", "--file", "--harness"):
+            position = _parse_valued_run_option(args, position, argument, seen, files)
         elif argument == "--force":
-            if seen_force:
+            if "--force" in seen:
                 raise UsageError("--force may appear only once")
-            seen_force = True
+            seen["--force"] = ""
         elif argument in ("-h", "--help", "--version"):
             raise UsageError(f"{argument} must be used alone")
         else:
             raise UsageError(f"unknown option {_quoted(argument)}")
         position += 1
     instruction = _run_instruction(args, position)
-    return RunArguments(instruction, harness, selector, tuple(files), seen_force)
+    return RunArguments(
+        instruction,
+        seen.get("--harness", DEFAULT_HARNESS),
+        seen.get("--project"),
+        seen.get("--checkout"),
+        tuple(files),
+        "--force" in seen,
+    )
 
 
 @dataclass(frozen=True)
@@ -575,18 +573,6 @@ def _parse_project(arguments: list[str]) -> ProjectInvocation:
     return ProjectInvocation(" ".join(route), tuple(values), options)
 
 
-def _select_registered_project(name: str) -> Project:
-    validate_project_name(name)
-    projects = read_projects()
-    if name not in projects:
-        raise RegistryError(f"Project {_quoted(name)} is not registered")
-    path = projects[name]
-    try:
-        return _registered_project(path)
-    except StaleProjectError as error:
-        raise RegistryError(f"Project {_quoted(name)} is {error}") from error
-
-
 def _usage(error: UsageError) -> int:
     synopsis = PROJECT_SYNOPSIS if error.project else ROOT_SYNOPSIS
     help_command = "factory project --help" if error.project else "factory --help"
@@ -686,12 +672,14 @@ def _dispatch_project(invocation: ProjectInvocation) -> int:
 
 
 def _select_run_project(run: RunArguments, invocation_dir: Path) -> Project:
-    """Resolve the Run Request's Project from its selector, never falling back."""
-    if run.selector is None:
-        return discover_project(invocation_dir)
-    if run.selector[0] == "path":
-        return select_explicit_project(run.selector[1], invocation_dir)
-    return _select_registered_project(run.selector[1])
+    """Resolve the Run Request's registered Checkout, never falling back."""
+    if run.checkout is not None:
+        selection = resolve_run_checkout(run.checkout, run.project, invocation_dir)
+    elif run.project is not None:
+        selection = resolve_run_project(run.project)
+    else:
+        selection = resolve_run_discovery(invocation_dir)
+    return Project(boundary=selection.boundary, enclosing_git_root=selection.boundary)
 
 
 def _dispatch_run(run: RunArguments) -> int:

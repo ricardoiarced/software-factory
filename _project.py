@@ -8,8 +8,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from _project_guidance import ProjectMarkerError, has_project_marker
-
 
 class ProjectSelectionError(Exception):
     """A Project could not be selected."""
@@ -114,51 +112,6 @@ def _containing_worktree_root(path: Path, label: str) -> Path:
             f"Git inspection failed for {label}: worktree does not contain path",
         )
     return top_level
-
-
-def select_explicit_project(supplied: str, invocation_dir: Path) -> Project:
-    """Resolve and validate an exact explicit Project Boundary."""
-
-    expanded_home = expand_path(supplied)
-    try:
-        boundary = Path(expanded_home)
-        if not boundary.is_absolute():
-            boundary = invocation_dir / boundary
-        boundary = boundary.resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        cause = (
-            error.strerror
-            if isinstance(error, OSError) and error.strerror
-            else "symlink loop"
-        )
-        raise ProjectSelectionError(
-            f"path {_quoted(supplied)} cannot be resolved: {cause}",
-        ) from error
-    if not boundary.is_dir():
-        raise ProjectSelectionError(f"path {_quoted(supplied)} is not a directory")
-
-    enclosing_git_root = _containing_worktree_root(
-        boundary,
-        f"path {_quoted(supplied)}",
-    )
-    return Project(boundary=boundary, enclosing_git_root=enclosing_git_root)
-
-
-def discover_project(invocation_dir: Path) -> Project:
-    """Select the nearest Project Marker within the containing worktree."""
-
-    root = _containing_worktree_root(invocation_dir, "invocation directory")
-    candidate = invocation_dir
-    while True:
-        try:
-            marker_present = has_project_marker(candidate)
-        except ProjectMarkerError as error:
-            raise ProjectSelectionError(
-                f"Project Marker at {_quoted(str(candidate / '.agent'))} {error}",
-            ) from error
-        if marker_present or candidate == root:
-            return Project(boundary=candidate, enclosing_git_root=root)
-        candidate = candidate.parent
 
 
 def inspect_registered_project(path: str) -> Project:

@@ -15,7 +15,7 @@ import pytest
 
 import _project_registry as project_registry
 import factory
-from _project import Project, ProjectSelectionError, select_explicit_project
+from _identity import IdentityError, _canonical_run_path, verify_checkout_proof
 from factory import _parse_run
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
@@ -985,29 +985,27 @@ def test_project_list_rejects_git_command_failure_as_a_whole(tmp_path: Path) -> 
     assert b"Git inspection failed" in result.stderr
 
 
-def test_explicit_path_preserves_canonical_subdirectory(
+def test_checkout_path_preserves_canonical_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
     boundary = tmp_path / "service"
     boundary.mkdir()
     (tmp_path / "link").symlink_to(boundary, target_is_directory=True)
     monkeypatch.setenv("FACTORY_TEST_BOUNDARY", "link")
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    expected = Project(boundary=boundary, enclosing_git_root=tmp_path)
-    assert select_explicit_project("$FACTORY_TEST_BOUNDARY", tmp_path) == expected
-    assert select_explicit_project("${FACTORY_TEST_BOUNDARY}", tmp_path) == expected
-    assert select_explicit_project("~/service", tmp_path) == expected
+    assert _canonical_run_path("$FACTORY_TEST_BOUNDARY", tmp_path) == boundary
+    assert _canonical_run_path("${FACTORY_TEST_BOUNDARY}", tmp_path) == boundary
+    assert _canonical_run_path("~/service", tmp_path) == boundary
 
 
 @pytest.mark.parametrize("value", ["missing", "empty"])
-def test_explicit_path_rejects_unset_or_empty_variable(
+def test_checkout_path_rejects_unset_or_empty_variable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     value: str,
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
+    env = registered_run_root(tmp_path)
     if value == "missing":
         monkeypatch.delenv("FACTORY_TEST_MISSING", raising=False)
         supplied = "${FACTORY_TEST_MISSING}"
@@ -1015,89 +1013,140 @@ def test_explicit_path_rejects_unset_or_empty_variable(
         monkeypatch.setenv("FACTORY_TEST_EMPTY", "")
         supplied = "$FACTORY_TEST_EMPTY"
 
-    result = invoke("--path", supplied, "Fix", cwd=tmp_path)
+    result = invoke("--checkout", supplied, "Fix", cwd=tmp_path, env=env)
 
     assert result.returncode == 1
     assert result.stdout == b""
     assert b"environment variable" in result.stderr
-    assert b"Run execution is not yet available" not in result.stderr
     assert b"Usage:" not in result.stderr
 
 
 @pytest.mark.parametrize("kind", ["missing", "file", "dangling", "outside-git"])
-def test_explicit_path_refuses_invalid_directory_without_fallback(
+def test_checkout_selection_refuses_invalid_directory_without_fallback(
     tmp_path: Path, kind: str
 ) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    git("init", "-q", cwd=project)
+    env = registered_run_root(tmp_path)
     if kind == "file":
-        (project / "target").write_text("data")
-        target = project / "target"
+        (tmp_path / "target").write_text("data")
+        target = tmp_path / "target"
     elif kind == "dangling":
-        target = project / "target"
-        target.symlink_to(project / "missing")
+        target = tmp_path / "target"
+        target.symlink_to(tmp_path / "missing")
     elif kind == "outside-git":
-        target = tmp_path / "other"
+        target = tmp_path / "plain"
         target.mkdir()
     else:
-        target = project / "missing"
+        target = tmp_path / "missing"
 
-    result = invoke("--path", str(target), "Fix", cwd=project)
+    result = invoke("--checkout", str(target), "Fix", cwd=tmp_path, env=env)
 
     assert result.returncode == 1
     assert result.stdout == b""
     assert b"factory: error:" in result.stderr
-    assert b"Run execution is not yet available" not in result.stderr
     assert b"Usage:" not in result.stderr
+    assert b"Traceback" not in result.stderr
 
 
-def test_explicit_path_uses_nested_git_worktree(tmp_path: Path) -> None:
-    outer = tmp_path / "outer"
-    outer.mkdir()
-    git("init", "-q", cwd=outer)
-    inner = outer / "inner"
-    inner.mkdir()
-    git("init", "-q", cwd=inner)
-    boundary = inner / "service"
-    boundary.mkdir()
+@pytest.mark.parametrize("kind", ["nested", "linked", "submodule", "non-utf8"])
+def test_checkout_proof_uses_the_containing_worktree_root(
+    tmp_path: Path, kind: str
+) -> None:
+    if kind == "nested":
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        git("init", "-q", cwd=outer)
+        root = outer / "inner"
+        root.mkdir()
+        git("init", "-q", cwd=root)
+        git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+            "-q",
+            cwd=root,
+        )
+    elif kind == "linked":
+        source = tmp_path / "source"
+        source.mkdir()
+        git("init", "-q", cwd=source)
+        git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+            "-q",
+            cwd=source,
+        )
+        root = tmp_path / "linked"
+        git("worktree", "add", "-q", "-b", "linked", str(root), cwd=source)
+    elif kind == "submodule":
+        source = tmp_path / "source"
+        source.mkdir()
+        git("init", "-q", cwd=source)
+        git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+            "-q",
+            cwd=source,
+        )
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        git("init", "-q", cwd=parent)
+        git(
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(source),
+            "module",
+            cwd=parent,
+        )
+        root = parent / "module"
+    elif kind == "non-utf8":
+        root = tmp_path / os.fsdecode(b"project-\xff")
+        root.mkdir()
+        git("init", "-q", cwd=root)
+        git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+            "-q",
+            cwd=root,
+        )
 
-    assert select_explicit_project(str(boundary), outer) == Project(boundary, inner)
+    interior = root / "service"
+    interior.mkdir()
+    boundary, _proof = verify_checkout_proof(str(root), tmp_path)
+    assert boundary == str(root)
+    with pytest.raises(IdentityError, match="boundary must equal"):
+        verify_checkout_proof(str(interior), tmp_path)
 
 
-def test_explicit_path_handles_newline_in_git_worktree_path(tmp_path: Path) -> None:
-    project = tmp_path / "project\nname"
-    project.mkdir()
-    git("init", "-q", cwd=project)
-    boundary = project / "service"
-    boundary.mkdir()
-
-    assert select_explicit_project(str(boundary), tmp_path) == Project(
-        boundary, project
-    )
-
-
-@pytest.mark.skipif(os.name != "posix", reason="POSIX filesystem byte paths")
-@pytest.mark.skipif(
-    sys.platform == "darwin",
-    reason="Darwin filesystems reject non-UTF-8 byte paths, so the fixture cannot exist",
-)
-def test_explicit_path_handles_non_utf8_git_worktree_path(tmp_path: Path) -> None:
-    project = tmp_path / os.fsdecode(b"project-\xff")
-    project.mkdir()
-    git("init", "-q", cwd=project)
-    boundary = project / "service"
-    boundary.mkdir()
-
-    assert select_explicit_project(str(boundary), tmp_path) == Project(
-        boundary, project
-    )
-
-
-def test_explicit_path_accepts_linked_worktree(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    git("init", "-q", cwd=source)
+def test_checkout_proof_refuses_an_unparsable_worktree_path(tmp_path: Path) -> None:
+    root = tmp_path / "project\nname"
+    root.mkdir()
+    git("init", "-q", cwd=root)
     git(
         "-c",
         "user.name=Test",
@@ -1108,81 +1157,38 @@ def test_explicit_path_accepts_linked_worktree(tmp_path: Path) -> None:
         "-m",
         "initial",
         "-q",
-        cwd=source,
-    )
-    linked = tmp_path / "linked"
-    git("worktree", "add", "-q", "-b", "linked", str(linked), cwd=source)
-    boundary = linked / "service"
-    boundary.mkdir()
-
-    assert select_explicit_project(str(boundary), source) == Project(boundary, linked)
-
-
-def test_explicit_path_accepts_submodule(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    git("init", "-q", cwd=source)
-    git(
-        "-c",
-        "user.name=Test",
-        "-c",
-        "user.email=test@example.com",
-        "commit",
-        "--allow-empty",
-        "-m",
-        "initial",
-        "-q",
-        cwd=source,
-    )
-    parent = tmp_path / "parent"
-    parent.mkdir()
-    git("init", "-q", cwd=parent)
-    git(
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        "-q",
-        str(source),
-        "module",
-        cwd=parent,
-    )
-    boundary = parent / "module" / "service"
-    boundary.mkdir()
-
-    assert select_explicit_project(str(boundary), parent) == Project(
-        boundary,
-        parent / "module",
+        cwd=root,
     )
 
+    with pytest.raises(IdentityError, match="invalid Git output"):
+        verify_checkout_proof(str(root), tmp_path)
 
-def test_explicit_path_rejects_bare_repository(tmp_path: Path) -> None:
+
+def test_checkout_proof_rejects_bare_repository(tmp_path: Path) -> None:
     bare = tmp_path / "bare.git"
     git("init", "--bare", "-q", str(bare), cwd=tmp_path)
 
-    with pytest.raises(ProjectSelectionError, match="non-bare Git worktree"):
-        select_explicit_project(str(bare), tmp_path)
+    with pytest.raises(IdentityError, match="non-bare Git worktree"):
+        verify_checkout_proof(str(bare), tmp_path)
 
 
-def test_explicit_path_rejects_missing_git(
+def test_checkout_proof_rejects_missing_git(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PATH", "")
 
-    with pytest.raises(ProjectSelectionError, match="Git inspection failed"):
-        select_explicit_project(str(tmp_path), tmp_path)
+    with pytest.raises(IdentityError, match="Git inspection failed"):
+        verify_checkout_proof(str(tmp_path), tmp_path)
 
 
-def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:
-    git("init", "-q", cwd=tmp_path)
-    boundary = tmp_path / "service"
-    boundary.mkdir()
+def test_valid_checkout_selection_reaches_run_stage(tmp_path: Path) -> None:
+    env = registered_run_root(tmp_path)
 
     result = invoke(
-        "--path=$FACTORY_TEST_BOUNDARY",
+        "--checkout=$FACTORY_TEST_BOUNDARY",
         "Fix",
         cwd=tmp_path,
-        env={"FACTORY_TEST_BOUNDARY": "service"},
+        env={**env, "FACTORY_TEST_BOUNDARY": str(tmp_path)},
     )
 
     assert result.returncode == 1
@@ -1192,28 +1198,27 @@ def test_valid_explicit_path_reaches_run_stage(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "case", ["outside", "bare", "missing-git", "inspection-failure"]
-)
+@pytest.mark.parametrize("case", ["outside", "bare", "missing-git"])
 def test_discovery_refuses_unusable_git_context(tmp_path: Path, case: str) -> None:
-    env: dict[str, str] = {}
+    env = registered_run_root(tmp_path, directory="repo")
+    cwd = tmp_path / "repo"
     if case == "bare":
-        git("init", "--bare", "-q", cwd=tmp_path)
-    elif case != "outside":
-        git("init", "-q", cwd=tmp_path)
-    if case == "missing-git":
-        env["PATH"] = ""
-    elif case == "inspection-failure":
-        env["GIT_DIR"] = str(tmp_path / "missing-git-dir")
+        cwd = tmp_path / "bare.git"
+        git("init", "--bare", "-q", str(cwd), cwd=tmp_path)
+    elif case == "outside":
+        cwd = tmp_path / "outside"
+        cwd.mkdir()
+    elif case == "missing-git":
+        env = {**env, "PATH": ""}
 
-    result = invoke("Fix", cwd=tmp_path, env=env)
+    result = invoke("Fix", cwd=cwd, env=env)
 
     assert result.returncode == 1
     assert result.stdout == b""
     expected = (
         b"Git inspection failed"
-        if case in ("missing-git", "inspection-failure")
-        else b"non-bare Git worktree"
+        if case == "missing-git"
+        else b"No Git worktree encloses the invocation directory"
     )
     assert expected in result.stderr
     assert b"Traceback" not in result.stderr
@@ -1228,7 +1233,7 @@ def test_explicit_root_help_is_stable_stdout() -> None:
     assert wide.stderr == narrow.stderr == b""
     assert wide.stdout.startswith(
         b"Usage:\n"
-        b"  factory [--harness codex|claude] [--project NAME | --path PATH] "
+        b"  factory [--harness codex|claude] [--project NAME] [--checkout PATH] "
         b"[--file PATH]... [--force] [--] INSTRUCTION...\n"
         b"  factory project COMMAND ...\n"
         b"  factory (-h | --help)\n"
@@ -1323,7 +1328,7 @@ def test_malformed_commands_have_relevant_usage_and_no_traceback(
     assert (
         b"factory project register [--name NAME] [--from-legacy NAME] "
         if args[:1] == ("project",)
-        else b"factory [--harness codex|claude] [--project NAME | --path PATH]"
+        else b"factory [--harness codex|claude] [--project NAME] [--checkout PATH]"
     ) in result.stderr
     assert hint in result.stderr
     assert b"Traceback" not in result.stderr
@@ -1376,15 +1381,111 @@ def test_valid_grammar_reaches_operational_stage(args: tuple[str, ...]) -> None:
         "lone-dash-instruction",
     ],
 )
+def registered_run_root(tmp_path: Path, directory: str = "") -> dict[str, str]:
+    """Register one worktree as acme/web's Checkout in a v2 store; return env."""
+    root = tmp_path / directory if directory else tmp_path
+    root.mkdir(exist_ok=True)
+    git("init", "-q", cwd=root)
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+        "-q",
+        cwd=root,
+    )
+    root_info = root.stat()
+    git_dir_info = (root / ".git").stat()
+    boundary = {
+        "path": str(root),
+        "st_dev": root_info.st_dev,
+        "st_ino": root_info.st_ino,
+    }
+    git_dir = {
+        "path": str(root / ".git"),
+        "st_dev": git_dir_info.st_dev,
+        "st_ino": git_dir_info.st_ino,
+    }
+    config = tmp_path / "config"
+    registry = config / "factory" / "projects.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "clients": [{"id": "cli_" + "a" * 32, "key": "acme", "name": None}],
+                "projects": [
+                    {
+                        "id": "prj_" + "b" * 32,
+                        "client_id": "cli_" + "a" * 32,
+                        "key": "web",
+                        "name": None,
+                        "default_checkout_id": "chk_" + "d" * 32,
+                    }
+                ],
+                "repositories": [
+                    {
+                        "id": "repo_" + "c" * 32,
+                        "name": None,
+                        "common_dir": git_dir,
+                    }
+                ],
+                "checkouts": [
+                    {
+                        "id": "chk_" + "d" * 32,
+                        "project_id": "prj_" + "b" * 32,
+                        "repository_id": "repo_" + "c" * 32,
+                        "boundary": boundary,
+                        "worktree_root": boundary,
+                        "git_dir": git_dir,
+                        "common_dir": git_dir,
+                    }
+                ],
+                "legacy": {},
+            }
+        )
+    )
+    return {"XDG_CONFIG_HOME": str(config)}
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        (
+            "--file",
+            "first.txt",
+            "--project=api",
+            "--file=first.txt",
+            "--force",
+            "--",
+            "  Fix  this  ",
+            "--file",
+            "last\tword",
+        ),
+        ("--", "project", "list"),
+        ("--project", "api", "Fix"),
+        ("--file=-log", "--file", "next.log", "Fix"),
+        ("-", "--force"),
+    ],
+    ids=[
+        "repeated-context-and-whitespace",
+        "terminator-escapes-project",
+        "separate-selector",
+        "repeatable-files",
+        "lone-dash-instruction",
+    ],
+)
 def test_run_accepts_documented_forms_through_cli(
     args: tuple[str, ...], tmp_path: Path
 ) -> None:
-    git("init", "-q", cwd=tmp_path)
+    env = registered_run_root(tmp_path)
     (tmp_path / "-log").write_text("context")
     (tmp_path / "next.log").write_text("context")
-    result = invoke(
-        *args, cwd=tmp_path, env={"XDG_CONFIG_HOME": str(tmp_path / "config")}
-    )
+    result = invoke(*args, cwd=tmp_path, env=env)
 
     assert result.returncode == 1
     assert result.stdout == b""
@@ -1413,9 +1514,16 @@ def test_run_parser_returns_instruction_selector_context_sources_and_force() -> 
 
     assert parsed.instruction == "  Fix  this   --file last\tword"
     assert parsed.harness == "codex"
-    assert parsed.selector == ("project", "api")
+    assert parsed.project == "api"
+    assert parsed.checkout is None
     assert parsed.files == ("first.txt", "first.txt")
     assert parsed.force is True
+
+    combined = _parse_run(["--project", "acme/web", "--checkout", ".", "Fix"])
+
+    assert combined.project == "acme/web"
+    assert combined.checkout == "."
+    assert combined.instruction == "Fix"
 
 
 def test_run_parser_returns_selected_harness() -> None:
@@ -1443,7 +1551,7 @@ def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) 
     """The silent harness fake refuses at the earliest local step; only the
     quoted executable path varies with the temporary directory.
     """
-    git("init", "-q", cwd=tmp_path)
+    env = registered_run_root(tmp_path)
     (tmp_path / ".agent").mkdir()
     (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
 
@@ -1452,7 +1560,7 @@ def test_selected_claude_harness_fails_closed_before_submission(tmp_path: Path) 
         "claude",
         "Fix",
         cwd=tmp_path,
-        env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
+        env=env,
     )
 
     assert result.returncode == 1
@@ -1481,7 +1589,7 @@ def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
     executable = fake_bin / harness
     executable.write_text(f"#!/bin/sh\nprintf '{version_output}'\n")
     executable.chmod(0o755)
-    git("init", "-q", cwd=tmp_path)
+    env = registered_run_root(tmp_path)
     (tmp_path / ".agent").mkdir()
     (tmp_path / ".agent" / "spec.md").write_text("Project Guidance")
 
@@ -1491,7 +1599,7 @@ def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
         "Fix",
         cwd=tmp_path,
         env={
-            "XDG_CONFIG_HOME": str(tmp_path / "config"),
+            **env,
             "PATH": os.pathsep.join((str(fake_bin), os.environ["PATH"])),
         },
     )
@@ -1505,18 +1613,18 @@ def test_a_dead_publisher_connection_refuses_the_run_before_any_submission(
 
 
 def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
-    git("init", "-q", cwd=tmp_path)
+    env = registered_run_root(tmp_path)
     explicit = invoke(
         "--harness",
         "codex",
         "Fix",
         cwd=tmp_path,
-        env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
+        env=env,
     )
     omitted = invoke(
         "Fix",
         cwd=tmp_path,
-        env={"XDG_CONFIG_HOME": str(tmp_path / "config")},
+        env=env,
     )
 
     assert explicit.returncode == omitted.returncode == 1
@@ -1534,13 +1642,12 @@ def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
             ("--project", "api", "--project", "api", "Fix"),
             b"--project may appear only once",
         ),
-        (("--path=a", "--path=b", "Fix"), b"--path may appear only once"),
-        (("--project=api", "--path=./api", "Fix"), b"cannot be combined"),
+        (("--checkout=a", "--checkout=b", "Fix"), b"--checkout may appear only once"),
         (("--force", "--force", "Fix"), b"--force may appear only once"),
         (("--file", "-log", "Fix"), b"--file requires a value"),
         (("--project", "--", "Fix"), b"--project requires a value"),
         (("--file=", "Fix"), b"--file requires a non-empty value"),
-        (("--path",), b"--path requires a non-empty value"),
+        (("--checkout",), b"--checkout requires a non-empty value"),
         (
             ("--harness", "claude", "--harness", "codex", "Fix"),
             b"--harness may appear only once",
@@ -1556,13 +1663,12 @@ def test_explicit_default_harness_matches_omission(tmp_path: Path) -> None:
     ],
     ids=[
         "duplicate-project",
-        "duplicate-path",
-        "conflicting-selectors",
+        "duplicate-checkout",
         "duplicate-force",
         "separate-dash-file",
         "separate-terminator-selector",
         "empty-equals-file",
-        "missing-path",
+        "missing-checkout",
         "duplicate-harness",
         "empty-equals-harness",
         "missing-harness",
@@ -1584,10 +1690,32 @@ def test_run_grammar_failures_exit_two(args: tuple[str, ...], reason: bytes) -> 
     assert b"Traceback" not in result.stderr
 
 
+@pytest.mark.parametrize("argument", [["--path", "./api"], ["--path=./api"]])
+def test_removed_path_flag_is_a_usage_error_naming_checkout(
+    argument: list[str],
+) -> None:
+    result = invoke(*argument, "Fix")
+
+    assert result.returncode == 2
+    assert result.stdout == b""
+    assert result.stderr == (
+        b"factory: error: --path was removed; use --checkout PATH to select a "
+        b"registered Checkout.\n"
+        b"Usage:\n"
+        b"  factory [--harness codex|claude] [--project NAME] [--checkout PATH] "
+        b"[--file PATH]... [--force] [--] INSTRUCTION...\n"
+        b"  factory project COMMAND ...\n"
+        b"  factory (-h | --help)\n"
+        b"  factory --version\n"
+        b"Try 'factory --help' for more information.\n"
+    )
+
+
 def test_only_exact_first_project_enters_administration(tmp_path: Path) -> None:
     administration = invoke("project", "list", env={"XDG_CONFIG_HOME": str(tmp_path)})
-    run = invoke("Project", "list")
-    escaped = invoke("--", "project", "list")
+    env = registered_run_root(tmp_path)
+    run = invoke("Project", "list", cwd=tmp_path, env=env)
+    escaped = invoke("--", "project", "list", cwd=tmp_path, env=env)
 
     assert administration.returncode == 0
     assert administration.stdout == b"No projects registered.\n"

@@ -1120,7 +1120,10 @@ def test_checkout_proof_uses_the_containing_worktree_root(
         root = parent / "module"
     elif kind == "non-utf8":
         root = tmp_path / os.fsdecode(b"project-\xff")
-        root.mkdir()
+        try:
+            root.mkdir()
+        except OSError:
+            pytest.skip("this filesystem cannot store non-UTF-8 paths")
         git("init", "-q", cwd=root)
         git(
             "-c",

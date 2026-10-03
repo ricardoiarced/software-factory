@@ -34,16 +34,12 @@ Project-specific direction supplied exclusively through the Project Spec selecte
 The Instruction and optional Context submitted for one Run.
 
 **Project**:
-A Git-backed local workspace selected by exactly one project name or explicit path, or by automatic discovery when neither selector is supplied.
+A Git-backed local workspace registered in the identity store and selected through one registered Checkout: by Project selector, by Checkout path, or by automatic discovery of the enclosing worktree root.
 _Avoid_: Repository, working directory
 
 **Project Boundary**:
-The canonical directory passed to Codex as its workspace root. Selection expands `~` and environment variables, rejects referenced variables that are unset or empty, makes relative paths absolute from the invocation directory, and resolves symlinks. Registrations store the resulting machine-local path, not an environment expression. Explicit and registered paths preserve that exact directory rather than widening to the Git root; automatic discovery searches only within the containing Git worktree for the nearest ancestor containing a Project Marker, falling back to that worktree's root.
-_Avoid_: Project root, working directory
-
-**Project Marker**:
-An `.agent/` directory that marks its containing directory as a Project Boundary during automatic discovery. A symlinked marker is valid only when its resolved target remains inside that boundary. Encountering a malformed marker stops discovery rather than widening the boundary. Explicit and registered selection do not require a marker.
-_Avoid_: Project Spec directory
+The canonical directory passed to Codex as its workspace root: exactly the verified Git worktree root of one registered Checkout. Registration expands `~` and environment variables, rejects referenced variables that are unset or empty, makes relative paths absolute from the invocation directory, resolves symlinks, and stores the resulting machine-local path — never an environment expression. A Run boundary is never widened to a directory other than the selected Checkout's registered root, and discovery resolves the nearest enclosing Git worktree root without searching past it.
+_Avoid_: Project root, working directory, Run boundary
 
 **Project Data Isolation**:
 The Run contract that permits model-generated shell commands to read and write within the selected Project Boundary while denying access to parent and sibling project data. A small Codex runtime set may remain readable, and Codex host behavior is outside this command boundary.

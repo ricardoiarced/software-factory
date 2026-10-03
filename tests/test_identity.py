@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1773,41 +1772,6 @@ def test_client_listing_reports_clients_with_name_fallback(tmp_path: Path) -> No
     listed = invoke("project", "client", "list", env=env)
     assert listed.returncode == 0
     assert listed.stdout == (b'CLIENT\tNAME\n"acme"\t"acme"\n"beta"\t"Beta"\n')
-
-
-def test_run_selection_keeps_the_version_one_registry_and_refuses_a_version_two_store(
-    tmp_path: Path,
-) -> None:
-    repository = tmp_path / "repo"
-    git_repo(repository)
-    (repository / ".agent").mkdir()
-    (repository / ".agent" / "spec.md").write_text("guide")
-    config = tmp_path / "config"
-    registry = config / "factory" / "projects.json"
-    registry.parent.mkdir(parents=True)
-    registry.write_text(
-        json.dumps({"version": 1, "projects": {"api": str(repository)}})
-    )
-    env = config_env(config)
-    empty_bin = tmp_path / "empty-bin"
-    empty_bin.mkdir()
-    os.symlink(shutil.which("git") or "git", empty_bin / "git")
-
-    version_one = invoke("--project", "api", "Fix", env={**env, "PATH": str(empty_bin)})
-    assert version_one.returncode == 1
-    assert version_one.stdout == b""
-    assert b'executable "codex" was not found on PATH' in version_one.stderr
-    assert b"Project Registry" not in version_one.stderr
-
-    registry.write_text(
-        json.dumps(
-            store_document(legacy={"api": str(repository)}),
-        )
-    )
-    version_two = invoke("--project", "api", "Fix", env=env)
-    assert version_two.returncode == 1
-    assert version_two.stdout == b""
-    assert b"malformed Project Registry: unsupported version" in version_two.stderr
 
 
 def test_re_register_commands_report_unknown_identifiers(tmp_path: Path) -> None:

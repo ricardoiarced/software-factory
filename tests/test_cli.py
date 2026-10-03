@@ -109,10 +109,10 @@ def installed_factory(
     """Build the wheel once and serve the installed entry point from a venv.
 
     The installed ``platformdirs`` dependency is served from the host through
-    ``PYTHONPATH`` so the registry works without network access; dependency
-    isolation itself stays with the strict smoke test above. Each invocation
-    runs away from the checkout so its modules can never shadow the installed
-    distribution under test.
+    a ``PYTHONPATH`` entry holding only that package, so the registry works
+    without network access and nothing else from the host environment can
+    shadow the installed distribution under test. Each invocation runs away
+    from the checkout for the same reason.
     """
 
     artifacts = tmp_path_factory.mktemp("dist")
@@ -141,15 +141,20 @@ def installed_factory(
         text=True,
     )
     factory_script = str(scripts / "factory")
-    platformdirs_package = Path(platformdirs.__file__).resolve().parent.parent
+    platformdirs_source = Path(platformdirs.__file__).resolve().parent
     working_directory = tmp_path_factory.mktemp("cwd")
+    served = tmp_path_factory.mktemp("python-path")
+    (served / "platformdirs").symlink_to(
+        platformdirs_source,
+        target_is_directory=True,
+    )
 
     def invoke(
         *arguments: str,
         env: dict[str, str],
         cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
-        path_entries = [str(platformdirs_package)]
+        path_entries = [str(served)]
         if env.get("PYTHONPATH"):
             path_entries.append(env["PYTHONPATH"])
         return subprocess.run(
@@ -226,7 +231,7 @@ def test_installed_cli_serves_administration_and_fails_closed_before_codex(
     assert listed.stderr == b""
 
     run = installed_factory(
-        "--path",
+        "--checkout",
         str(tmp_path),
         "Diagnose this failure",
         env=environment,

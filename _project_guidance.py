@@ -33,12 +33,6 @@ def _project_marker(boundary: Path) -> Path | None:
     return marker
 
 
-def has_project_marker(boundary: Path) -> bool:
-    """Whether a Project Boundary has a contained Project Marker."""
-
-    return _project_marker(boundary) is not None
-
-
 def open_project_spec(boundary: Path) -> BinaryIO | None:
     """Open the contained Project Spec, or return absent, without exposing its path."""
 

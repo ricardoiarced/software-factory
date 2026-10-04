@@ -123,10 +123,11 @@ class HarnessPolicy:
 
     Every control is derived by calling the certified recipe builders of the
     declared policy itself, so the gate's configured evidence cannot drift
-    from the configuration Run Admission actually passes to the child. The
-    gate records this evidence as configured or observed and never as
-    proven, which stays owned by exact-tuple certification and the Host
-    Admission Probe.
+    from the certified recipe it declares. The recorded fragments come from
+    the declaration's first entry; binding the evidence to the exact matched
+    artifact is the plan seal's contract, not this stage's. The gate records
+    this evidence as configured or observed and never as proven, which stays
+    owned by exact-tuple certification and the Host Admission Probe.
     """
 
     harness: str

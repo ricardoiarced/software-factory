@@ -1,19 +1,24 @@
-"""Shared Run Gate behavior at the identity and Git admission stages."""
+"""Shared Run Gate behavior at the identity, Git, runtime, and policy stages."""
 
+import hashlib
 import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import _claude
+import _codex
 import _rungate
 import factory
+from _harness import factory_version
 from _identity import RunSelection
 from _rungate import RunGateError, run_gate
 from _runrecord import run_record
@@ -190,14 +195,14 @@ def direct_selection(root: Path) -> RunSelection:
 
 
 def gate_verdict(
-    config: Path, selection: RunSelection
+    config: Path, selection: RunSelection, harness: str = "codex"
 ) -> tuple[dict[str, object], RunGateError | None]:
     """Run the gate directly against one store and return its record outcome."""
 
-    with run_record(["factory", "Fix"], "codex") as record:
+    with run_record(["factory", "Fix"], harness) as record:
         error: RunGateError | None = None
         try:
-            run_gate(record, selection)
+            run_gate(record, selection, harness)
         except RunGateError as refusal:
             error = refusal
     document = next(
@@ -206,9 +211,33 @@ def gate_verdict(
     return document, error
 
 
+def policy_evidence(
+    config: Path, selection: RunSelection, harness: str = "codex"
+) -> dict[str, object]:
+    """Run the gate for one selection and return its committed policy evidence."""
+
+    document, error = gate_verdict(config, selection, harness)
+    assert error is None
+    gate = document["gate"]
+    assert isinstance(gate, dict)
+    policy = gate["policy"]
+    assert isinstance(policy, dict)
+    return policy
+
+
 def revision(root: Path) -> str:
     result = git("rev-parse", "HEAD", cwd=root)
     return os.fsdecode(result.stdout.strip())
+
+
+def without_override(items: list[str], key: str) -> list[str]:
+    """Drop one certified ``-c`` override pair from the certified item list."""
+
+    overridden = [
+        index for index, item in enumerate(items) if item.startswith(f"{key}=")
+    ]
+    drop = {index - 1 for index in overridden} | set(overridden)
+    return [item for index, item in enumerate(items) if index not in drop]
 
 
 def test_the_run_gate_runs_between_the_context_gate_and_run_admission(
@@ -218,7 +247,6 @@ def test_the_run_gate_runs_between_the_context_gate_and_run_admission(
     (root / "context").write_bytes(b"ab")
     commit_worktree(root)
     monkeypatch.setenv("FACTORY_CONTEXT_WARN_BYTES", "1")
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"")))
     monkeypatch.chdir(root)
 
@@ -979,3 +1007,388 @@ def test_a_dirty_worktree_warns_the_identities_and_proceeds(
     )
     assessment = record_documents(config)[-1]["gate"]["git"]
     assert assessment["outcome"] == "dirty"
+
+
+def test_the_gate_extends_the_fixed_stage_order_with_the_policy_evidence_stages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+
+    policy = policy_evidence(config, direct_selection(root))
+    assert list(policy) == [
+        "at",
+        "runtime",
+        "instructions",
+        "sandbox",
+        "network",
+        "environment",
+    ]
+    for stage in ("runtime", "instructions", "sandbox", "network"):
+        document = policy[stage]
+        assert isinstance(document, dict)
+        assert document["harness"] == "codex"
+        assert document["provenance"] == "configured"
+    environment = policy["environment"]
+    assert isinstance(environment, dict)
+    assert environment["harness"] == "codex"
+    assert environment["provenance"] == "observed"
+
+
+def test_the_runtime_stage_records_the_declared_certified_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+
+    runtime = policy_evidence(config, direct_selection(root))["runtime"]
+    assert isinstance(runtime, dict)
+    assert runtime["harness"] == "codex"
+    assert runtime["factory_version"] == factory_version()
+    assert runtime["certified"] == [
+        {
+            "version": policy.version,
+            "channel": policy.install_channel,
+            "os": policy.operating_system,
+            "arch": policy.architecture,
+            "sha256": policy.sha256,
+        }
+        for policy in _codex._COMPATIBILITY_SET
+    ]
+
+
+def test_a_harness_with_no_certified_runtime_refuses_at_the_runtime_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
+
+    document, error = gate_verdict(config, direct_selection(root))
+    assert error is not None
+    refusal = document["refusal"]
+    assert refusal["stage"] == "runtime"
+    assert "declares no certified runtime" in refusal["detail"]
+    assert "UNKNOWN" in refusal["detail"]
+
+
+def test_an_unregistered_harness_refuses_at_the_runtime_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+
+    document, error = gate_verdict(config, direct_selection(root), harness="vim")
+    assert error is not None
+    refusal = document["refusal"]
+    assert refusal["stage"] == "runtime"
+    assert "not a registered Runner" in refusal["detail"]
+    assert "UNKNOWN" in refusal["detail"]
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+def test_the_instructions_stage_records_the_certified_instruction_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+
+    instructions = policy_evidence(config, direct_selection(root), harness)[
+        "instructions"
+    ]
+    assert isinstance(instructions, dict)
+    controls = instructions["controls"]
+    assert isinstance(controls, dict)
+    assert controls["project_spec"] == {
+        "path": ".agent/spec.md",
+        "scope": "boundary-only",
+    }
+    if harness == "codex":
+        assert controls["discovered_guidance"] == {
+            "project_doc_max_bytes": "0",
+            "project_root_markers": "[]",
+            "skills.include_instructions": "false",
+        }
+        assert controls["flags"] == [
+            "--ephemeral",
+            "--strict-config",
+            "--ignore-user-config",
+            "--ignore-rules",
+        ]
+    else:
+        assert controls["flags"] == [
+            "-p",
+            "--restricted",
+            "--safe-mode",
+            "--strict-mcp-config",
+        ]
+        assert controls["settings_source"] == "inline"
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+def test_a_missing_instruction_control_refuses_as_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    if harness == "codex":
+        configuration = _codex._Codex01600Policy._configuration
+
+        def without_project_doc(self: object, enclosing_git_root: Path) -> list[str]:
+            return without_override(
+                configuration(self, enclosing_git_root), "project_doc_max_bytes"
+            )
+
+        monkeypatch.setattr(
+            _codex._Codex01600Policy, "_configuration", without_project_doc
+        )
+    else:
+        invocation = _claude._ClaudePolicy._invocation
+
+        def without_restricted(self: object, boundary: Path) -> list[str]:
+            return [
+                item for item in invocation(self, boundary) if item != "--restricted"
+            ]
+
+        monkeypatch.setattr(_claude._ClaudePolicy, "_invocation", without_restricted)
+
+    document, error = gate_verdict(config, direct_selection(root), harness)
+    assert error is not None
+    refusal = document["refusal"]
+    assert refusal["stage"] == "instructions"
+    assert "cannot be established as version-bound" in refusal["detail"]
+    assert "UNKNOWN" in refusal["detail"]
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+def test_the_sandbox_stage_records_the_certified_permission_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+
+    sandbox = policy_evidence(config, direct_selection(root), harness)["sandbox"]
+    assert isinstance(sandbox, dict)
+    controls = sandbox["controls"]
+    assert isinstance(controls, dict)
+    if harness == "codex":
+        assert controls["approval_policy"] == '"never"'
+        assert controls["allow_login_shell"] == "false"
+        assert controls["default_permissions"] == '"factory-isolated"'
+        profile = controls["permission_profile"]
+        assert isinstance(profile, str)
+        assert "network = {enabled = false}" in profile
+        assert ":workspace_roots" in profile
+        assert controls["workspace_trust_level"] == '"untrusted"'
+    else:
+        assert controls["tools"] == _claude._ClaudePolicy._admitted_tools
+        assert controls["permission_mode"] == "dontAsk"
+        assert controls["sandbox_enabled"] is True
+        assert controls["fail_if_unavailable"] is True
+        assert controls["allow_unsandboxed_commands"] is False
+        assert controls["excluded_commands"] == []
+        read_fence = controls["read_fence"]
+        assert isinstance(read_fence, dict)
+        assert str(root) in read_fence["allow_read"]
+        assert str(root.parent) in read_fence["deny_read"]
+        credentials = controls["credential_denials"]
+        assert isinstance(credentials, list)
+        assert str(Path.home() / ".ssh") in credentials
+        assert str(Path.home() / ".aws") in credentials
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+def test_a_missing_or_contradicted_sandbox_control_refuses_as_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    if harness == "codex":
+        configuration = _codex._Codex01600Policy._configuration
+
+        def without_permissions(self: object, enclosing_git_root: Path) -> list[str]:
+            return without_override(
+                configuration(self, enclosing_git_root), "default_permissions"
+            )
+
+        monkeypatch.setattr(
+            _codex._Codex01600Policy, "_configuration", without_permissions
+        )
+    else:
+        document_builder = _claude._ClaudePolicy._settings_document
+
+        def disabled_sandbox(self: object, boundary: Path) -> str:
+            settings = json.loads(document_builder(self, boundary))
+            assert isinstance(settings, dict)
+            sandbox = settings["sandbox"]
+            assert isinstance(sandbox, dict)
+            sandbox["enabled"] = False
+            return json.dumps(settings, ensure_ascii=True, sort_keys=True)
+
+        monkeypatch.setattr(
+            _claude._ClaudePolicy, "_settings_document", disabled_sandbox
+        )
+
+    document, error = gate_verdict(config, direct_selection(root), harness)
+    assert error is not None
+    refusal = document["refusal"]
+    assert refusal["stage"] == "sandbox"
+    assert "cannot be established as version-bound" in refusal["detail"]
+    assert "UNKNOWN" in refusal["detail"]
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+def test_the_network_stage_records_the_certified_network_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+
+    network = policy_evidence(config, direct_selection(root), harness)["network"]
+    assert isinstance(network, dict)
+    controls = network["controls"]
+    assert isinstance(controls, dict)
+    if harness == "codex":
+        assert controls == {"sandbox_command_network": "disabled"}
+    else:
+        assert controls["sandbox_allowlist"] == {"strict": True, "allow": []}
+        assert controls["nonessential_traffic_pins"] == [
+            name for name, _ in _claude._ENVIRONMENT_PINS
+        ]
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+def test_a_missing_network_control_refuses_as_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    if harness == "codex":
+        profile_builder = _codex._Codex01600Policy._permission_profile
+
+        def enabled_network(self: object) -> str:
+            return profile_builder(self).replace(
+                "network = {enabled = false}", "network = {enabled = true}"
+            )
+
+        monkeypatch.setattr(
+            _codex._Codex01600Policy, "_permission_profile", enabled_network
+        )
+    else:
+        document_builder = _claude._ClaudePolicy._settings_document
+
+        def allowed_network(self: object, boundary: Path) -> str:
+            settings = json.loads(document_builder(self, boundary))
+            assert isinstance(settings, dict)
+            sandbox = settings["sandbox"]
+            assert isinstance(sandbox, dict)
+            network = sandbox["network"]
+            assert isinstance(network, dict)
+            network["allow"] = ["https://example.com"]
+            return json.dumps(settings, ensure_ascii=True, sort_keys=True)
+
+        monkeypatch.setattr(
+            _claude._ClaudePolicy, "_settings_document", allowed_network
+        )
+
+    document, error = gate_verdict(config, direct_selection(root), harness)
+    assert error is not None
+    refusal = document["refusal"]
+    assert refusal["stage"] == "network"
+    assert "cannot be established as version-bound" in refusal["detail"]
+    assert "UNKNOWN" in refusal["detail"]
+
+
+def test_the_environment_stage_records_the_effective_environment_derivation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    monkeypatch.setenv("FACTORY_PROVENANCE_VARIABLE", "present")
+    monkeypatch.setenv("CODEX_MANAGED_BY_NPM", "stray")
+
+    run_to_harness(monkeypatch, root, 0, "--checkout", str(root), "Fix")
+    assert factory.main() == 0
+    environment = record_documents(config)[-1]["gate"]["policy"]["environment"]
+    assert environment["digest_scheme"] == "factory-env-digest-v1"
+    assert environment["removals"] == list(_codex._CODEX_MANAGED_MARKERS)
+    assert environment["pins"] == []
+    assert "FACTORY_PROVENANCE_VARIABLE" in environment["inherited"]
+    assert "CODEX_MANAGED_BY_NPM" not in environment["inherited"]
+    effective = _rungate.effective_environment(
+        (), _codex._CODEX_MANAGED_MARKERS, tuple(os.environ.items())
+    )
+    assert environment["variable_count"] == len(effective)
+    assert environment["digest"] == _rungate.environment_digest(effective)
+    assert environment["shell_environment_policy"] == {
+        "inherit": '"core"',
+        "ignore_default_excludes": "false",
+    }
+    assert environment["config_location"] == {
+        "variable": "CODEX_HOME",
+        "path": os.environ.get("CODEX_HOME"),
+    }
+
+
+def test_the_claude_environment_stage_records_the_certified_pins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+
+    environment = policy_evidence(config, direct_selection(root), "claude")[
+        "environment"
+    ]
+    assert environment["pins"] == [name for name, _ in _claude._ENVIRONMENT_PINS]
+    assert environment["removals"] == []
+    assert environment["config_location"] == {
+        "variable": "CLAUDE_CONFIG_DIR",
+        "path": os.environ.get("CLAUDE_CONFIG_DIR"),
+    }
+    assert "shell_environment_policy" not in environment
+
+
+def test_the_environment_digest_canonical_serialization_is_pinned() -> None:
+    expected = hashlib.sha256(
+        b'{"schema":"factory-env-digest-v1","variables":[["A","1"],["B","2"]]}'
+    ).hexdigest()
+
+    assert _rungate.environment_digest((("A", "1"), ("B", "2"))) == expected
+    assert _rungate.environment_digest(
+        (("B", "2"), ("A", "1"))
+    ) == _rungate.environment_digest((("A", "1"), ("B", "2")))
+    assert _rungate.environment_digest((("A", "2"), ("B", "2"))) != expected
+    assert (
+        _rungate.environment_digest((("K", "\udcff"),))
+        == hashlib.sha256(
+            b'{"schema":"factory-env-digest-v1","variables":[["K","\\udcff"]]}'
+        ).hexdigest()
+    )
+
+
+@pytest.mark.parametrize("breakage", ["missing", "ambiguous"])
+def test_a_missing_or_ambiguous_required_pin_or_removal_refuses_as_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, breakage: str
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    if breakage == "missing":
+        monkeypatch.setattr("_claude._ENVIRONMENT_PINS", (("DISABLE_TELEMETRY", "1"),))
+    else:
+        declared = _rungate._claude_policy
+
+        def ambiguous(boundary: Path) -> _rungate.HarnessPolicy:
+            return replace(declared(boundary), removals=("DISABLE_TELEMETRY",))
+
+        monkeypatch.setattr(_rungate, "_claude_policy", ambiguous)
+
+    document, error = gate_verdict(config, direct_selection(root), "claude")
+    assert error is not None
+    refusal = document["refusal"]
+    assert refusal["stage"] == "environment"
+    assert "cannot be established as version-bound" in refusal["detail"]
+    assert "UNKNOWN" in refusal["detail"]
+    if breakage == "missing":
+        assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" in refusal["detail"]
+    else:
+        assert "DISABLE_TELEMETRY is both pinned and removed" in refusal["detail"]
+
+
+def test_environment_values_never_enter_the_run_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    monkeypatch.setenv("FACTORY_TEST_TOKEN", "s3cret-value")
+
+    run_to_harness(monkeypatch, root, 0, "--checkout", str(root), "Fix")
+    assert factory.main() == 0
+    text = json.dumps(record_documents(config)[-1])
+    assert "FACTORY_TEST_TOKEN" in text
+    assert "s3cret-value" not in text

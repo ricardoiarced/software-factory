@@ -52,7 +52,7 @@ class RunSelectionFacts(Protocol):
 
 
 class RunGateFacts(Protocol):
-    """The identity and Git evidence one passed Shared Run Gate carries."""
+    """The identity, Git, and policy evidence one passed Shared Run Gate carries."""
 
     @property
     def head(self) -> str: ...
@@ -65,6 +65,9 @@ class RunGateFacts(Protocol):
 
     @property
     def assessment(self) -> Mapping[str, object]: ...
+
+    @property
+    def policy(self) -> Mapping[str, object]: ...
 
 
 class LaunchAuthorization(Protocol):
@@ -237,6 +240,7 @@ class RunRecord:
             "object_format": facts.object_format,
             "proof": {name: dict(facts.pins[name]) for name in sorted(facts.pins)},
             "git": facts.assessment,
+            "policy": dict(facts.policy),
         }
         document = {**self._document, "gate": gate}
         self._store(document)

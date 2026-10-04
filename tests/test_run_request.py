@@ -1082,7 +1082,9 @@ def test_context_gate_counts_utf8_bytes_and_force_only_passes_gate(
     assert capsys.readouterr().err == (
         "factory: warning: Context is 5 bytes; the warning threshold is 4 bytes. "
         "Continuing because --force was supplied.\n"
-        "factory: error: Codex Compatibility Set is empty; no Run is supported.\n"
+        "factory: error: Codex declares no certified runtime; Factory cannot "
+        "establish the version-bound controls this Run requires and refuses "
+        "as UNKNOWN.\n"
     )
 
 
@@ -1143,7 +1145,11 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
         (
             "0",
             b"",
-            "factory: error: Codex Compatibility Set is empty; no Run is supported.\n",
+            (
+                "factory: error: Codex declares no certified runtime; Factory "
+                "cannot establish the version-bound controls this Run "
+                "requires and refuses as UNKNOWN.\n"
+            ),
         ),
         (
             "0",
@@ -1156,7 +1162,11 @@ def test_default_context_threshold_accepts_equality_and_force_only_oversize(
         (
             "0002",
             b"xy",
-            "factory: error: Codex Compatibility Set is empty; no Run is supported.\n",
+            (
+                "factory: error: Codex declares no certified runtime; Factory "
+                "cannot establish the version-bound controls this Run "
+                "requires and refuses as UNKNOWN.\n"
+            ),
         ),
     ],
 )
@@ -1815,7 +1825,7 @@ def test_malformed_context_threshold_refuses_even_empty_context(
             "threshold",
             "FACTORY_CONTEXT_WARN_BYTES must be an unsigned ASCII decimal integer",
         ),
-        ("admission", "Codex Compatibility Set is empty"),
+        ("admission", "reported an unrecognized version"),
     ],
 )
 def test_force_preserves_project_context_threshold_and_run_admission_failures(
@@ -1825,7 +1835,6 @@ def test_force_preserves_project_context_threshold_and_run_admission_failures(
     failure: str,
     expected: str,
 ) -> None:
-    monkeypatch.setattr("_codex._COMPATIBILITY_SET", ())
     root = tmp_path / "worktree"
     root.mkdir()
     git_init_commit(root)

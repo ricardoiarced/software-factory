@@ -12,20 +12,23 @@ declaration from the certified recipe builders themselves, refusing the Run
 on security-relevant UNKNOWN. Every stage lands in the record: passing
 stages as gate evidence, a failing stage as a structured refusal naming it.
 A Git common directory bound to Checkouts of more than one Client never
-admits a Run, and dirtiness warns without refusing (ADR 0003).
+admits a Run, and dirtiness warns without refusing (ADR 0003). A passed gate
+hands its evidence to the seal of one immutable Validated Run Plan — the
+launcher's sole gated-input source (ADR 0004).
 """
 
+import copy
 import hashlib
 import json
 import os
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from _harness import factory_version
+from _harness import PreparedRun, factory_version
 from _identity import (
     Checkout,
     Client,
@@ -58,6 +61,7 @@ _SANDBOX = "sandbox"
 _NETWORK = "network"
 _ENVIRONMENT = "environment"
 ENVIRONMENT_DIGEST_SCHEMA = "factory-env-digest-v1"
+PLAN_FINGERPRINT_SCHEMA = "factory-plan-fingerprint-v1"
 _PROJECT_SPEC_PATH = ".agent/spec.md"
 _REQUIRED_ENVIRONMENT_EDITS: Mapping[str, tuple[tuple[str, str], ...]] = {
     "codex": tuple(
@@ -104,6 +108,42 @@ class GateObservation:
     pins: Mapping[str, Mapping[str, object]]
     assessment: Mapping[str, object]
     policy: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class ValidatedRunPlan:
+    """The immutable gated launch inputs one successful gate authorizes.
+
+    The launcher consumes the plan as its sole gated-input source: the four
+    immutable identity IDs, the admitted boundary with its gate-time proof,
+    the observed Git facts, the harness executable identity, the effective
+    child environment with per-value provenance, the exact invocation and
+    Run Request bytes, and the admission verdicts with provenance. Nothing
+    re-derives a gated input from ambient filesystem, store, or environment
+    state after the seal (ADR 0004).
+    """
+
+    client_id: str
+    project_id: str
+    repository_id: str
+    checkout_id: str
+    boundary: Path
+    boundary_canonical: str
+    boundary_identity: tuple[int, int]
+    head: str
+    object_format: str
+    harness: str
+    executable: Path
+    executable_identity: tuple[int, int]
+    executable_sha256: str
+    invocation: tuple[str, ...]
+    environment: tuple[tuple[str, str], ...]
+    environment_provenance: Mapping[str, str]
+    pins: tuple[tuple[str, str], ...]
+    removals: tuple[str, ...]
+    instruction: bytes
+    evidence: Mapping[str, object]
+    fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -154,6 +194,22 @@ class _Proof:
 
 
 @dataclass(frozen=True)
+class ValidatedGate:
+    """The passed gate's evidence for the one Run it admitted.
+
+    ``observation`` is the recorded evidence, ``proof`` its typed fresh
+    Checkout proof, and ``environment`` the effective child environment
+    derived once from the single observed parent environment for both the
+    record document and the plan seal.
+    """
+
+    selection: RunSelection
+    observation: GateObservation
+    proof: _Proof
+    environment: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class _Gitlink:
     """One required submodule recorded in a tree's index."""
 
@@ -191,31 +247,36 @@ class _TreeStatus:
         )
 
 
-def run_gate(record: RunRecord, selection: RunSelection, harness: str) -> None:
+def run_gate(record: RunRecord, selection: RunSelection, harness: str) -> ValidatedGate:
     """Run the ordered gate stages for one selected Checkout, recording them.
 
     A passing gate commits its identity, Git, and policy evidence into the
-    record; a failing stage commits a structured refusal naming its stage
-    and then refuses the Run. No gate stage lands unrecorded.
+    record and returns the validated gate for the plan seal; a failing stage
+    commits a structured refusal naming its stage and then refuses the Run.
+    No gate stage lands unrecorded.
     """
 
     try:
-        observation = _gate_stages(selection, harness)
+        observation, proof, environment = _gate_stages(selection, harness)
     except _StageRefusal as refusal:
         record.refuse(refusal.stage, refusal.detail, facts=refusal.facts)
         raise RunGateError(refusal.detail) from None
     record.gated(observation)
     _warn_dirty(selection, observation.head, observation.assessment)
+    return ValidatedGate(selection, observation, proof, environment)
 
 
-def _gate_stages(selection: RunSelection, harness: str) -> GateObservation:
+def _gate_stages(
+    selection: RunSelection, harness: str
+) -> tuple[GateObservation, _Proof, tuple[tuple[str, str], ...]]:
     store = _validated_store()
     checkout = _selected_checkout(store, selection)
     _scan_association(store, checkout)
     proof = _fresh_proof(selection.boundary)
     _check_drift(store, checkout, selection, proof)
     status = _assess_with_recheck(checkout, proof)
-    return GateObservation(
+    document, environment = _policy_stages(harness, selection.boundary)
+    observation = GateObservation(
         head=proof.head,
         object_format=proof.object_format,
         pins={
@@ -224,27 +285,36 @@ def _gate_stages(selection: RunSelection, harness: str) -> GateObservation:
             "common_dir": _pin_evidence(proof.common_dir),
         },
         assessment=_assessment_document(status),
-        policy=_policy_stages(harness, selection.boundary),
+        policy=document,
     )
+    return observation, proof, environment
 
 
-def _policy_stages(harness: str, boundary: Path) -> dict[str, object]:
+def _policy_stages(
+    harness: str, boundary: Path
+) -> tuple[dict[str, object], tuple[tuple[str, str], ...]]:
     """Run the runtime and policy evidence stages in their fixed order.
 
     Each stage derives its document from the selected Harness's certified
     policy declaration and refuses as UNKNOWN when a required control cannot
     be established as version-bound; nothing here labels evidence proven.
+    The parent environment is observed exactly once and the effective child
+    environment derived once, feeding both the record document and the plan
+    seal.
     """
 
     policy = _harness_policy(harness, boundary)
-    return {
+    inherited = tuple(os.environ.items())
+    environment = effective_environment(policy.pins, policy.removals, inherited)
+    document = {
         "at": _timestamp(),
         "runtime": _runtime_document(policy),
         "instructions": _stage_document(policy, policy.instructions),
         "sandbox": _stage_document(policy, policy.sandbox),
         "network": _stage_document(policy, policy.network),
-        "environment": _environment_document(policy),
+        "environment": _environment_document(policy, environment, inherited),
     }
+    return document, environment
 
 
 def _harness_policy(harness: str, boundary: Path) -> HarnessPolicy:
@@ -739,23 +809,25 @@ def _require_environment_edits(policy: HarnessPolicy) -> None:
     )
 
 
-def _environment_document(policy: HarnessPolicy) -> dict[str, object]:
+def _environment_document(
+    policy: HarnessPolicy,
+    environment: tuple[tuple[str, str], ...],
+    inherited: tuple[tuple[str, str], ...],
+) -> dict[str, object]:
     _require_environment_edits(policy)
-    inherited = tuple(os.environ.items())
-    effective = effective_environment(policy.pins, policy.removals, inherited)
     overridden = {name for name, _ in policy.pins} | set(policy.removals)
     document: dict[str, object] = {
         "harness": policy.harness,
         "provenance": "observed",
         "digest_scheme": ENVIRONMENT_DIGEST_SCHEMA,
-        "digest": environment_digest(effective),
-        "variable_count": len(effective),
+        "digest": environment_digest(environment),
+        "variable_count": len(environment),
         "pins": [name for name, _ in policy.pins],
         "removals": list(policy.removals),
         "inherited": sorted(name for name, _ in inherited if name not in overridden),
         "config_location": {
             "variable": policy.config_variable,
-            "path": dict(effective).get(policy.config_variable),
+            "path": dict(environment).get(policy.config_variable),
         },
     }
     if policy.shell_environment_policy:
@@ -800,6 +872,126 @@ def environment_digest(variables: Sequence[tuple[str, str]]) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def _canonical_digest(document: Mapping[str, object]) -> str:
+    canonical = json.dumps(
+        document, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    )
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def plan_fingerprint(plan: ValidatedRunPlan) -> str:
+    """Return the pinned ``factory-plan-fingerprint-v1`` SHA-256 over one plan.
+
+    The canonical serialization is the versioned schema document binding the
+    immutable identity IDs, the boundary proof, the observed Git facts, the
+    harness executable identity, the invocation, the ``factory-env-digest-v1``
+    digest of the planned environment, and SHA-256 digests of the exact Run
+    Request bytes and the canonical evidence document; every bound value
+    changes the fingerprint, and no secret-bearing value enters it in plain
+    text.
+    """
+
+    canonical = json.dumps(
+        {
+            "schema": PLAN_FINGERPRINT_SCHEMA,
+            "identity": [
+                plan.client_id,
+                plan.project_id,
+                plan.repository_id,
+                plan.checkout_id,
+            ],
+            "boundary": {
+                "canonical": plan.boundary_canonical,
+                "st_dev": plan.boundary_identity[0],
+                "st_ino": plan.boundary_identity[1],
+            },
+            "git": {"head": plan.head, "object_format": plan.object_format},
+            "harness": {
+                "name": plan.harness,
+                "executable": str(plan.executable),
+                "st_dev": plan.executable_identity[0],
+                "st_ino": plan.executable_identity[1],
+                "sha256": plan.executable_sha256,
+            },
+            "invocation": list(plan.invocation),
+            "environment_digest": environment_digest(plan.environment),
+            "instruction": {
+                "sha256": hashlib.sha256(plan.instruction).hexdigest(),
+                "bytes": len(plan.instruction),
+            },
+            "evidence": {"sha256": _canonical_digest(plan.evidence)},
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def seal_validated_run_plan(
+    gate: ValidatedGate,
+    prepared: PreparedRun,
+    instruction: bytes,
+) -> ValidatedRunPlan:
+    """Seal the immutable plan one passed gate and completed admission authorize.
+
+    Everything security- or identity-relevant the gate approved binds by
+    value: the pinned environment edits become per-value provenance over the
+    planned effective environment, and the fingerprint commits the sealed
+    values. After the seal nothing re-derives a gated input.
+    """
+
+    pinned = {name for name, _ in prepared.environment}
+    provenance = {
+        name: ("pinned" if name in pinned else "inherited")
+        for name, _ in gate.environment
+    }
+    worktree = gate.proof.worktree_root
+    evidence: dict[str, object] = {
+        "gate": {
+            "head": gate.observation.head,
+            "object_format": gate.observation.object_format,
+            "proof": {
+                name: dict(gate.observation.pins[name])
+                for name in sorted(gate.observation.pins)
+            },
+            "assessment": copy.deepcopy(gate.observation.assessment),
+            "policy": copy.deepcopy(gate.observation.policy),
+        },
+        "admission": {
+            "harness": prepared.harness,
+            "executable": str(prepared.executable),
+            "executable_sha256": prepared.executable_sha256,
+            "probe": copy.deepcopy(prepared.probe),
+        },
+    }
+    selection = gate.selection
+    plan = ValidatedRunPlan(
+        client_id=selection.client_id,
+        project_id=selection.project_id,
+        repository_id=selection.repository_id,
+        checkout_id=selection.checkout_id,
+        boundary=selection.boundary,
+        boundary_canonical=worktree.path,
+        boundary_identity=(worktree.st_dev, worktree.st_ino),
+        head=gate.observation.head,
+        object_format=gate.observation.object_format,
+        harness=prepared.harness,
+        executable=prepared.executable,
+        executable_identity=prepared.executable_identity,
+        executable_sha256=prepared.executable_sha256,
+        invocation=prepared.invocation,
+        environment=gate.environment,
+        environment_provenance=provenance,
+        pins=prepared.environment,
+        removals=prepared.unset_environment,
+        instruction=instruction,
+        evidence=evidence,
+        fingerprint="",
+    )
+    return replace(plan, fingerprint=plan_fingerprint(plan))
 
 
 def _validated_store() -> IdentityStore:

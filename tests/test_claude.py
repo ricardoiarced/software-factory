@@ -2,6 +2,7 @@
 
 import contextlib
 import errno
+import hashlib
 import io
 import json
 import os
@@ -26,9 +27,94 @@ from conftest import (
 
 import _claude
 import _publisher
+import _rungate
 from _claude import ClaudeCodeRunner
-from _harness import PreparedRun, RunAdmissionError, launch
+from _harness import RunAdmissionError, launch
+from _identity import Pin, RunSelection
 from _project import Project
+
+
+def passed_gate(boundary: Path) -> _rungate.ValidatedGate:
+    """A minimal passed-gate stand-in for admission-focused Runner tests."""
+
+    try:
+        info = boundary.stat()
+        identity = (info.st_dev, info.st_ino)
+    except OSError:
+        identity = (0, 0)
+    proof = _rungate._Proof(
+        boundary=boundary,
+        worktree_root=Pin(str(boundary), *identity),
+        git_dir=Pin(str(boundary), *identity),
+        common_dir=Pin(str(boundary), *identity),
+        head="0" * 40,
+        object_format="sha1",
+    )
+    observation = _rungate.GateObservation(
+        head=proof.head,
+        object_format=proof.object_format,
+        pins={},
+        assessment={},
+        policy={},
+    )
+    selection = RunSelection(
+        client_id="cli_" + "a" * 32,
+        project_id="prj_" + "b" * 32,
+        repository_id="repo_" + "c" * 32,
+        checkout_id="chk_" + "d" * 32,
+        boundary=boundary,
+    )
+    environment = _rungate.effective_environment(
+        _claude._ENVIRONMENT_PINS,
+        (),
+        tuple(os.environ.items()),
+    )
+    return _rungate.ValidatedGate(selection, observation, proof, environment)
+
+
+def sealed_plan(
+    executable: Path,
+    boundary: Path,
+    *,
+    environment: tuple[tuple[str, str], ...] = (),
+    unset_environment: tuple[str, ...] = (),
+) -> _rungate.ValidatedRunPlan:
+    """One sealed Validated Run Plan launching the stub executable."""
+
+    effective = _rungate.effective_environment(
+        environment,
+        unset_environment,
+        tuple(os.environ.items()),
+    )
+    executable_info = executable.stat()
+    boundary_info = boundary.stat()
+    plan = _rungate.ValidatedRunPlan(
+        client_id="cli_" + "a" * 32,
+        project_id="prj_" + "b" * 32,
+        repository_id="repo_" + "c" * 32,
+        checkout_id="chk_" + "d" * 32,
+        boundary=boundary,
+        boundary_canonical=str(boundary),
+        boundary_identity=(boundary_info.st_dev, boundary_info.st_ino),
+        head="0" * 40,
+        object_format="sha1",
+        harness="Stub",
+        executable=executable,
+        executable_identity=(executable_info.st_dev, executable_info.st_ino),
+        executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        invocation=(str(executable),),
+        environment=effective,
+        environment_provenance={
+            name: ("pinned" if name in {n for n, _ in environment} else "inherited")
+            for name, _ in effective
+        },
+        pins=environment,
+        removals=unset_environment,
+        instruction=b"# Run Request\n\n## Instruction\n\nFix",
+        evidence={},
+        fingerprint="",
+    )
+    return replace(plan, fingerprint=_rungate.plan_fingerprint(plan))
 
 
 def make_claude_executable(path: Path, version: str) -> None:
@@ -91,7 +177,7 @@ def install_policy(
 
 def run_claude(project: Project) -> io.BytesIO:
     spool = io.BytesIO(b"# Run Request\n\n## Instruction\n\nFix")
-    ClaudeCodeRunner().run(project, spool)
+    ClaudeCodeRunner().run(project, spool, passed_gate(project.boundary))
     return spool
 
 
@@ -628,26 +714,13 @@ def test_the_certified_claude_launch_plan_pins_the_nonessential_traffic_environm
     executable = install_native_claude(tmp_path, monkeypatch, version="9.9.9")
     install_policy(executable, monkeypatch)
 
-    policy = _claude._ClaudePolicy(
-        version="9.9.9",
-        sha256="a" * 64,
-        operating_system=platform.system(),
-        architecture=platform.machine(),
-        install_channel="native-installer",
-        canonical_path=executable,
-        filesystem_identity=(2096, 1),
-    )
-    prepared = PreparedRun(
-        harness="Claude Code",
-        executable=executable,
-        invocation=tuple(policy._invocation(tmp_path)),
-        environment=_claude._ENVIRONMENT_PINS,
-    )
-    assert prepared.environment == (
+    plan = sealed_plan(executable, tmp_path, environment=_claude._ENVIRONMENT_PINS)
+    assert plan.pins == (
         ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
         ("DISABLE_TELEMETRY", "1"),
         ("DISABLE_ERROR_REPORTING", "1"),
     )
+    assert dict(plan.environment)["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
 
 
 def test_the_shared_lifecycle_applies_the_certified_environment_pins(
@@ -672,13 +745,7 @@ def test_the_shared_lifecycle_applies_the_certified_environment_pins(
         spool.flush()
         spool.seek(0)
         status = launch(
-            Project(tmp_path, tmp_path),
-            PreparedRun(
-                harness="Claude Code",
-                executable=executable,
-                invocation=(os.fspath(executable),),
-                environment=_claude._ENVIRONMENT_PINS,
-            ),
+            sealed_plan(executable, tmp_path, environment=_claude._ENVIRONMENT_PINS),
             spool,
         )
 
@@ -703,15 +770,7 @@ def test_the_shared_lifecycle_inherits_the_host_environment_without_pins(
         spool.write(b"# Run Request\n\n## Instruction\n\nFix")
         spool.flush()
         spool.seek(0)
-        status = launch(
-            Project(tmp_path, tmp_path),
-            PreparedRun(
-                harness="Codex",
-                executable=executable,
-                invocation=(os.fspath(executable),),
-            ),
-            spool,
-        )
+        status = launch(sealed_plan(executable, tmp_path), spool)
 
     assert status == 0
     assert capfd.readouterr().out == "inherited"
@@ -735,8 +794,7 @@ def test_run_requires_a_successful_host_admission_probe_before_launching_claude(
         probe_gate.write_text("ran")
 
     def gate_launch(
-        project: Project,
-        prepared: PreparedRun,
+        plan: _rungate.ValidatedRunPlan,
         spool: BinaryIO,
     ) -> int:
         launch_gate.write_text("launched")
@@ -928,7 +986,10 @@ def test_run_reuses_a_complete_host_admission_probe_success(
     second = policy.prepare_run(tmp_path)
 
     assert probes == ["ran"]
-    assert first == second == policy._invocation(tmp_path)
+    assert first[0] == second[0] == policy._invocation(tmp_path)
+    assert first[1]["cache"] == "fresh"
+    assert second[1]["cache"] == "reused"
+    assert first[1]["key"] == second[1]["key"]
 
 
 @pytest.mark.parametrize(
@@ -1067,6 +1128,7 @@ def test_host_admission_probe_success_is_atomically_stored_with_its_complete_ide
         "operating_system": policy.operating_system,
         "architecture": policy.architecture,
         "host_identity": {"release": "host-release", "version": "host-version"},
+        "sandbox_tooling": _claude._sandbox_tooling_identity(),
     }
 
 

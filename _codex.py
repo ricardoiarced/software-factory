@@ -9,6 +9,7 @@ import signal
 import socket
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, ClassVar
@@ -31,6 +32,7 @@ from _harness import (
 )
 from _project import Project
 from _publisher import verify_codex_newest_stable
+from _rungate import ValidatedGate, seal_validated_run_plan
 
 _GITHUB_ASSET_CHANNEL = "github-asset"
 _NPM_CHANNEL = "npm"
@@ -452,6 +454,46 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         except OSError:
             return False
 
+    def _probe_evidence(self, payload: bytes, *, reused: bool) -> dict[str, object]:
+        """One Host Admission Probe verdict with its key and provenance.
+
+        Age is recorded for auditability and is never an invalidation
+        condition; a fresh probe carries no reused-observation age.
+        """
+
+        age: float | None = None
+        if reused:
+            try:
+                age = max(
+                    0.0,
+                    time.time() - self._host_probe_cache_path(payload).stat().st_mtime,
+                )
+            except OSError:
+                age = None
+        return {
+            "cache": "reused" if reused else "fresh",
+            "key": hashlib.sha256(payload).hexdigest(),
+            "age_seconds": age,
+        }
+
+    def _cached_host_probe_evidence(self, payload: bytes) -> dict[str, object] | None:
+        """Return the reused-evidence verdict when a positive entry applies."""
+
+        if not self._has_cached_host_probe_success(payload):
+            return None
+        return self._probe_evidence(payload, reused=True)
+
+    def _fresh_host_probe_evidence(self, payload: bytes) -> dict[str, object]:
+        return self._probe_evidence(payload, reused=False)
+
+    def _invalidate_host_probe_success(self, payload: bytes) -> None:
+        """Drop a prior positive cache entry a failed probe disproved."""
+
+        try:
+            self._host_probe_cache_path(payload).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _store_host_probe_success(self, payload: bytes) -> None:
         path = self._host_probe_cache_path(payload)
         temporary: Path | None = None
@@ -650,15 +692,36 @@ printf '%s\n' 'factory-host-admission-probe-v1'
         self,
         project_boundary: Path,
         enclosing_git_root: Path,
-    ) -> list[str]:
-        """Apply all certified checks and build this policy's launch invocation."""
+        *,
+        re_probe: bool = False,
+    ) -> tuple[list[str], dict[str, object]]:
+        """Apply all certified checks and build this policy's launch invocation.
+
+        A cached Host Admission Probe success applies until one of its
+        declared cache-key identity inputs changes; ``re_probe`` bypasses
+        any cached entry and probes afresh, replacing the cached positive
+        result on success and invalidating it on failure.
+        """
 
         self._inspect_strict_configuration(project_boundary, enclosing_git_root)
         cache_payload = self._host_probe_cache_payload()
-        if not self._has_cached_host_probe_success(cache_payload):
+        if not re_probe:
+            cached = self._cached_host_probe_evidence(cache_payload)
+            if cached is not None:
+                return (
+                    self._invocation(project_boundary, enclosing_git_root),
+                    cached,
+                )
+        try:
             self._run_host_admission_probe()
-            self._store_host_probe_success(cache_payload)
-        return self._invocation(project_boundary, enclosing_git_root)
+        except RunAdmissionError:
+            self._invalidate_host_probe_success(cache_payload)
+            raise
+        self._store_host_probe_success(cache_payload)
+        return (
+            self._invocation(project_boundary, enclosing_git_root),
+            self._fresh_host_probe_evidence(cache_payload),
+        )
 
 
 _COMPATIBILITY_SET: tuple[_Codex01600Policy, ...] = (
@@ -860,12 +923,15 @@ def _recheck_artifact(policy: _Codex01600Policy) -> None:
         raise _changed_artifact_failure(policy)
 
 
-def _admit_run(project: Project) -> tuple[_Codex01600Policy, list[str]]:
+def _admit_run(
+    project: Project, *, re_probe: bool = False
+) -> tuple[_Codex01600Policy, list[str], dict[str, object]]:
     """Establish the complete production evidence and strict invocation.
 
     The order is fixed: local executable resolution and installed-version
     read, then the live newest-stable lookup and its refusal classification,
-    then the exact-tuple Compatibility Set match.
+    then the exact-tuple Compatibility Set match, the certified checks with
+    their Host Admission Probe evidence, and the final artifact recheck.
     """
 
     executable = _resolve_executable()
@@ -877,29 +943,46 @@ def _admit_run(project: Project) -> tuple[_Codex01600Policy, list[str]]:
     version = _reported_version(executable)
     verify_codex_newest_stable(executable, version)
     policy = _match_compatibility(executable, version)
-    invocation = policy.prepare_run(
+    invocation, probe = policy.prepare_run(
         project.boundary,
         project.enclosing_git_root,
+        re_probe=re_probe,
     )
     _recheck_artifact(policy)
-    return policy, invocation
+    return policy, invocation, probe
 
 
 class CodexRunner:
-    """The certified Codex Runner: unchanged admission, shared lifecycle."""
+    """The certified Codex Runner: unchanged admission, bound launch."""
 
-    def admit(self, project: Project) -> PreparedRun:
-        """Establish all production evidence and freeze the launch plan."""
+    def admit(self, project: Project, *, re_probe: bool = False) -> PreparedRun:
+        """Establish all production evidence and freeze the admitted inputs."""
 
-        policy, invocation = _admit_run(project)
+        policy, invocation, probe = _admit_run(project, re_probe=re_probe)
         return PreparedRun(
             harness="Codex",
             executable=policy.canonical_path,
             invocation=tuple(invocation),
+            executable_identity=policy.filesystem_identity,
+            executable_sha256=policy.sha256,
             unset_environment=_CODEX_MANAGED_MARKERS,
+            probe=probe,
         )
 
-    def run(self, project: Project, run_request_spool: BinaryIO) -> int:
-        """Admit, then launch one Run and return Codex's exit status."""
+    def run(
+        self,
+        project: Project,
+        run_request_spool: BinaryIO,
+        gate: ValidatedGate,
+        *,
+        re_probe: bool = False,
+    ) -> int:
+        """Admit, seal the Validated Run Plan, and launch it by value."""
 
-        return launch(project, self.admit(project), run_request_spool)
+        prepared = self.admit(project, re_probe=re_probe)
+        instruction = run_request_spool.read()
+        run_request_spool.seek(0)
+        return launch(
+            seal_validated_run_plan(gate, prepared, instruction),
+            run_request_spool,
+        )

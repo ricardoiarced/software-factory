@@ -34,20 +34,84 @@ Project-specific direction supplied exclusively through the Project Spec selecte
 The Instruction and optional Context submitted for one Run.
 
 **Project**:
-A Git-backed local workspace registered in the identity store and selected through one registered Checkout: by Project selector, by Checkout path, or by automatic discovery of the enclosing worktree root.
-_Avoid_: Repository, working directory
+A logical body of work owned by exactly one Client. A Project may use multiple Repositories and Checkouts while retaining one immutable Project ID.
+_Avoid_: Repository, Checkout, working directory
 
-**Project Boundary**:
-The canonical directory passed to Codex as its workspace root: exactly the verified Git worktree root of one registered Checkout. Registration expands `~` and environment variables, rejects referenced variables that are unset or empty, makes relative paths absolute from the invocation directory, resolves symlinks, and stores the resulting machine-local path — never an environment expression. A Run boundary is never widened to a directory other than the selected Checkout's registered root, and discovery resolves the nearest enclosing Git worktree root without searching past it.
-_Avoid_: Project root, working directory, Run boundary
+**Client**:
+The customer or owning organization to which a Project belongs. A Client may own multiple Projects.
+_Avoid_: Git owner, Harness account
 
-**Project Data Isolation**:
-The Run contract that permits model-generated shell commands to read and write within the selected Project Boundary while denying access to other Projects' Project-exclusive data and to anything outside the selected Project's Client boundary. A Repository explicitly bound to several Projects of one Client is authorized shared data for those Projects, not a denial. A small Codex runtime set may remain readable, and Codex host behavior is outside this command boundary.
-_Avoid_: Process isolation, unqualified strict isolation
+**Client ID**:
+Factory-generated immutable identity of one Client, distinct from its lookup key and display name.
+_Avoid_: Client key, Client name
+
+**Client Key**:
+A stable human-readable lookup key unique among Clients. Changing the key does not change the Client ID.
+_Avoid_: Client ID, Client name
+
+**Project ID**:
+Factory-generated immutable identity of one logical Project, independent of its Repository, Checkout, key, or display name.
+_Avoid_: Project Name, Project Key, Checkout ID
+
+**Project Key**:
+A stable human-readable lookup key unique within one Client. Different Clients may use the same Project Key.
+_Avoid_: Project ID, Project Name
+
+**Repository**:
+The source-control identity that one or more Projects may use. A Project may eventually use more than one Repository.
+_Avoid_: Project, Checkout
 
 **Shared Repository**:
-A Repository bound to Checkouts of more than one Project of the same Client through explicit selection. Its state is authorized shared data for those Projects only; a Git common directory is never partitioned by Client, so a Repository bound to Checkouts of more than one Client never admits a Run.
-_Avoid_: Cross-project repository, multi-tenant repository
+A Repository explicitly bound to Checkouts of more than one Project of the same Client. Its repository-wide Git state is authorized shared data for those Projects; binding across Clients is refused, and a cross-Client shared Repository is never Run-admissible.
+_Avoid_: Shared Git directory, cross-client repository
+
+**Checkout**:
+One registered local Git worktree assigned to exactly one Project and one Repository at a time. Each Checkout has its own immutable Factory-generated Checkout ID and local Git identity proof.
+_Avoid_: Project, Repository, working directory
+
+**Checkout Git Assessment**:
+A fresh observation of a selected Checkout's Git state before a Run. CLEAN means the required inspection completed and found no relevant changes; DIRTY means it completed and found relevant changes; UNKNOWN means the required state could not be established and the Run is refused. The assessment describes the observed state, not an immutable snapshot of the later execution.
+_Avoid_: Cleanliness boolean, snapshot, execution-state proof
+
+**Default Checkout**:
+The Checkout a Project selects for a Run when no explicit Checkout selector is supplied: the Project's stored default reference if valid, otherwise its sole Checkout. Ambiguity refuses rather than guesses, and convenience selection never changes the stored default.
+_Avoid_: Active checkout, implicit checkout
+
+**Shared Run Gate**:
+The ordered fail-closed validation stages that every Run executes before Harness admission — identity-store state, selection and scope, store-graph invariants, cross-client association scan, fresh Checkout and Repository proof, identity drift, and the Checkout Git Assessment — and that the Project Doctor reports as read-only observation using the same implementation, diagnostics, and precedence.
+_Avoid_: Doctor-only validation, separate doctor checker, advisory checks
+
+**Project Doctor**:
+The read-only `factory doctor project` inspection that reports, as observation, the state the next Run of one selected Project would meet: its identity inventory, shared-Repository topology, and the Shared Run Gate over one target Checkout, plus optional per-Harness admission observations under `--harness`. Doctor labels every reported fact with its provenance, never mutates identity state, never runs the Host Admission Probe or submits a Run Request, never speculates about checks the gate would not have reached, and never presents an observed check as proven.
+_Avoid_: Health check, repair command, admission proof, Harness doctor
+
+**Project Boundary**:
+The canonical directory passed to the selected Harness as its workspace root: always the selected Checkout's pinned, freshly verified Git worktree root. Registered Git worktree roots are the only Run-admissible boundaries; registration is the act that establishes one. Explicit `--checkout` selection requires an exact registered boundary and refuses an interior path rather than rewriting it; automatic discovery treats the invocation directory only as a starting point, finds the nearest enclosing Git worktree root, and stops there — registered or refused, never searching outward. Selection expands `~` and environment variables, rejects referenced variables that are unset or empty, makes relative paths absolute from the invocation directory, and resolves symlinks. Registrations store the resulting machine-local path, not an environment expression.
+_Avoid_: Project root, working directory, Run boundary
+
+**Validated Run Plan**:
+The immutable set of gated Run inputs a successful Shared Run Gate produces: resolved identity, validated Project Boundary and its gate-time proof, Harness identity, effective environment, argv, exact Instruction and Context bytes, and every admission and evidence verdict with provenance. The launcher consumes the plan as its sole source of gated inputs and verdicts and never re-derives them after validation; plan construction, launch, and outcome form one in-process chain.
+_Avoid_: admission snapshot, launch recipe
+
+**Two-Observation Fact**:
+A fact observed once while the Validated Run Plan is built and re-observed at the launch boundary, where any disagreement refuses as Changed During Admission. The re-observation answers only same-or-changed and never contributes new admitted state.
+_Avoid_: re-admission, double gate
+
+**Single-Observation Fact**:
+A fact authoritative exactly once per Run; its backing source is never consulted again to establish that fact for that Run.
+_Avoid_: cached evidence
+
+**Launch Boundary Recheck**:
+The final admission invariant inside the launcher, immediately before process creation: re-observe the Two-Observation Facts and compare them against the Validated Run Plan.
+_Avoid_: revalidation phase, second gate
+
+**Changed During Admission**:
+The frozen refusal family for a Two-Observation Fact disagreement or an impossible launch-boundary re-observation; it never falls back to the first observation or substitutes the newer value. Distinct from identity drift, which compares the identity store against fresh filesystem proof.
+_Avoid_: generic mismatch
+
+**Project Data Isolation**:
+The Run contract that permits model-generated shell commands to read and write within the selected Project Boundary while denying access to Project-exclusive data of other Projects and to anything outside the selected Project's Client boundary; a Repository explicitly bound to multiple Projects of the same Client is authorized shared data for those Projects, not sibling-private data. A small Codex runtime set may remain readable, and Codex host behavior is outside this command boundary.
+_Avoid_: Process isolation, unqualified strict isolation
 
 **Fail-Closed Isolation**:
 The Run admission policy that refuses execution when Project Data Isolation cannot be enforced as specified. Factory never falls back to a weaker isolation mode.
@@ -62,7 +126,7 @@ The exact Claude Code executable artifacts and platform combinations certified b
 _Avoid_: Compatibility range, minimum Claude Code version
 
 **Artifact Family**:
-The packaging of one Harness release that a Compatibility Set tuple is certified against — a publisher release asset, a native installer, or an npm package whose digest anchors the unpacked platform binary or, for packages without a platform binary, the unpacked entry point. Different families of the same Harness version certify separately and never stand in for one another.
+The packaging of one Harness release that a Compatibility Set tuple is certified against — a publisher release asset, a native installer, or an npm package whose digest anchors the unpacked platform binary. Different families of the same Harness version certify separately and never stand in for one another.
 _Avoid_: Package format, release flavor
 
 **Candidate Manifest**:
@@ -82,7 +146,7 @@ The fail-closed checks that establish a Run can use a member of the selected Har
 _Avoid_: Compatibility mode
 
 **Host Admission Probe**:
-A cacheable synthetic sandbox check that proves the current host enforces the certified permission boundary required for Run Admission.
+A cacheable synthetic sandbox check that proves the current host enforces the certified permission boundary required for Run Admission. A cached success remains reusable until one of its declared cache-key identity inputs changes or the operator forces a fresh probe; probe age is recorded for audit and is never itself an invalidation condition.
 _Avoid_: Sandbox detection
 
 **Masked Denial**:
@@ -106,24 +170,20 @@ The Run contract that suppresses Codex-discovered project instruction files, ign
 _Avoid_: Project Spec supremacy, sole instruction source
 
 **Project Name**:
-A case-sensitive, 1–64 character ASCII identifier that resolves to one Project through the Project Registry. It starts and ends with an ASCII letter or digit and may contain letters, digits, periods, underscores, and hyphens; names that differ only by case remain distinct.
-_Avoid_: Alias, shortcut
+A case-sensitive, 1–64 character ASCII selector in the path-only Project Registry. It is a local registration handle, not the immutable Project ID or the Client-scoped Project Key.
+_Avoid_: Project ID, Project Key
 
 **Project Registry**:
-The local collection of project names and the canonical project paths they resolve to. Paths are validated when registered and before each Run; a stale registration remains recorded so the user can inspect, replace, or remove it.
-_Avoid_: Project list, catalog
-
-**Default Checkout**:
-The Checkout record a Project designates as its selection default: the first Checkout is set at registration, `project set-default-checkout` changes it, and removing the referenced Checkout clears it without selecting a replacement. Convenience selection never writes this field.
-_Avoid_: Active checkout, current checkout
+The pre-identity, path-only local collection of Project Names and canonical paths they resolve to. Explicit migration converts it to Factory's authoritative Client, Project, Repository, and Checkout identity store; Factory never changes the registry schema implicitly.
+_Avoid_: Project list, catalog, Project ID
 
 **Legacy Registration**:
-A version-one Project Registry entry carried verbatim into the identity store's legacy section by `project migrate`. It records a name and a path, assigns no identity, is inspected and removed only through the explicit `--legacy` namespace, never resolves as a selectable Project, and its surviving claim blocks fresh registration of the same canonical path until it is consumed with `--from-legacy` or removed.
-_Avoid_: Old project, migrated project
+A Project Registry entry that records only a Project Name and a canonical path, without any Client, Project, Repository, or Checkout identity. A Legacy Registration is inspectable data, never selectable for a Run, and leaves the registry only through explicit conversion or removal.
+_Avoid_: Legacy project, stale project, orphan
 
 **Re-registration**:
-The explicit continuity claim that repairs one immutable Checkout or Repository record by ID: Factory freshly verifies the supplied path, replaces only that record's Git pin after self-excluded uniqueness checks, preserves the record's identity and relationships, and reports the old and new proof. It never runs implicitly and never mints a replacement record.
-_Avoid_: Re-add, silent repair, duplicate registration
+An explicit continuity claim that preserves an immutable Checkout or Repository identity while replacing its pinned local proof with freshly verified evidence. Re-registration never infers continuity from paths, names, or Git state.
+_Avoid_: Re-add, automatic repair, silent rebinding
 
 **Run**:
 One non-interactive execution started for an instruction in a project by the selected Harness.

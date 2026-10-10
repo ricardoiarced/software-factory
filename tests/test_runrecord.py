@@ -1,5 +1,6 @@
 """The durable Run Record envelope and launch atomicity (S14)."""
 
+import hashlib
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import sys
 import tempfile
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -16,10 +18,9 @@ from typing import Any, BinaryIO
 import pytest
 
 import _harness
+import _rungate
 import _runrecord
 import factory
-from _harness import PreparedRun
-from _project import Project
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
@@ -81,18 +82,49 @@ def stub_executable(root: Path, body: str = "exit 0\n") -> Path:
     return executable
 
 
-def prepared(
+def sealed_plan(
     executable: Path,
+    boundary: Path,
+    *,
     environment: tuple[tuple[str, str], ...] = (),
     unset_environment: tuple[str, ...] = (),
-) -> PreparedRun:
-    return PreparedRun(
+) -> _rungate.ValidatedRunPlan:
+    """One sealed Validated Run Plan launching the stub executable."""
+
+    effective = _rungate.effective_environment(
+        environment,
+        unset_environment,
+        tuple(os.environ.items()),
+    )
+    executable_info = executable.stat()
+    boundary_info = boundary.stat()
+    plan = _rungate.ValidatedRunPlan(
+        client_id=CLIENT_ID,
+        project_id=PROJECT_ID,
+        repository_id=REPOSITORY_ID,
+        checkout_id=CHECKOUT_ID,
+        boundary=boundary,
+        boundary_canonical=str(boundary),
+        boundary_identity=(boundary_info.st_dev, boundary_info.st_ino),
+        head="0" * 40,
+        object_format="sha1",
         harness="Stub",
         executable=executable,
+        executable_identity=(executable_info.st_dev, executable_info.st_ino),
+        executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
         invocation=(str(executable),),
-        environment=environment,
-        unset_environment=unset_environment,
+        environment=effective,
+        environment_provenance={
+            name: ("pinned" if name in {n for n, _ in environment} else "inherited")
+            for name, _ in effective
+        },
+        pins=environment,
+        removals=unset_environment,
+        instruction=b"# Run Request\n\n## Instruction\n\nFix",
+        evidence={},
+        fingerprint="",
     )
+    return replace(plan, fingerprint=_rungate.plan_fingerprint(plan))
 
 
 def launch_with_record(
@@ -106,9 +138,9 @@ def launch_with_record(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     with _runrecord.run_record(["Fix"], "codex"), run_spool() as spool:
         return _harness.launch(
-            Project(config, config),
-            prepared(
+            sealed_plan(
                 executable,
+                config,
                 environment=environment,
                 unset_environment=unset_environment,
             ),
@@ -450,7 +482,14 @@ def test_the_launch_commit_records_the_admitted_launch_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = tmp_path / "config"
+    config.mkdir(parents=True, exist_ok=True)
     stub = stub_executable(tmp_path, "exit 3\n")
+    plan = sealed_plan(
+        stub,
+        config,
+        environment=(("FACTORY_PIN", "1"),),
+        unset_environment=("FACTORY_UNSET",),
+    )
 
     assert (
         launch_with_record(
@@ -471,12 +510,14 @@ def test_the_launch_commit_records_the_admitted_launch_plan(
         "harness",
         "executable",
         "invocation",
+        "plan_fingerprint",
         "environment",
         "unset_environment",
     ]
     assert launch["harness"] == "Stub"
     assert launch["executable"] == str(stub)
     assert launch["invocation"] == [str(stub)]
+    assert launch["plan_fingerprint"] == plan.fingerprint
     assert launch["environment"] == {"FACTORY_PIN": "1"}
     assert launch["unset_environment"] == ["FACTORY_UNSET"]
     datetime.fromisoformat(launch["committed_at"])
@@ -490,6 +531,7 @@ def test_the_launch_commit_records_the_admitted_launch_plan(
         "harness",
         "executable",
         "invocation",
+        "plan_fingerprint",
     ]
 
 
@@ -514,7 +556,7 @@ def test_a_failed_launch_commit_refuses_before_process_creation(
         _runrecord.run_record(["Fix"], "codex"),
         run_spool() as spool,
     ):
-        _harness.launch(Project(tmp_path, tmp_path), prepared(stub), spool)
+        _harness.launch(sealed_plan(stub, tmp_path), spool)
 
     document = only_record(tmp_path / "config")
     assert document["status"] == "open"
@@ -525,7 +567,7 @@ def test_launch_without_an_active_run_record_writes_nothing(tmp_path: Path) -> N
     stub = stub_executable(tmp_path)
 
     with run_spool() as spool:
-        status = _harness.launch(Project(tmp_path, tmp_path), prepared(stub), spool)
+        status = _harness.launch(sealed_plan(stub, tmp_path), spool)
 
     assert status == 0
     assert not (tmp_path / "config" / "factory").exists()
@@ -545,15 +587,18 @@ def test_post_launch_outcomes_are_recorded_best_effort(
     datetime.fromisoformat(document["outcome"]["at"])
 
     spawned = tmp_path / "spawned-config"
-    missing = tmp_path / "missing-bin" / "stub"
+    blocked = tmp_path / "blocked-bin" / "stub"
+    blocked.parent.mkdir()
+    blocked.write_text("#!/bin/sh\nexit 0\n")
     with pytest.raises(_harness.RunAdmissionError, match="could not start"):
-        launch_with_record(spawned, missing, monkeypatch)
+        launch_with_record(spawned, blocked, monkeypatch)
     document = only_record(spawned)
     assert document["status"] == "launched"
     assert document["outcome"]["kind"] == "spawn-failure"
-    assert "No such file or directory" in document["outcome"]["detail"]
+    assert "Permission denied" in document["outcome"]["detail"]
 
     signaled_config = tmp_path / "signaled-config"
+    signaled_config.mkdir(parents=True)
     killer = stub_executable(tmp_path / "signaled", "kill -USR1 $$\n")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(signaled_config))
     factory_pid = os.fork()
@@ -561,11 +606,7 @@ def test_post_launch_outcomes_are_recorded_best_effort(
         os.setpgid(0, 0)
         try:
             with _runrecord.run_record(["Fix"], "codex"), run_spool() as spool:
-                _harness.launch(
-                    Project(signaled_config, signaled_config),
-                    prepared(killer),
-                    spool,
-                )
+                _harness.launch(sealed_plan(killer, signaled_config), spool)
         except BaseException:  # noqa: BLE001
             os._exit(125)
         os._exit(0)

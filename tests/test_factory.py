@@ -1237,7 +1237,7 @@ def test_explicit_root_help_is_stable_stdout() -> None:
     assert wide.stdout.startswith(
         b"Usage:\n"
         b"  factory [--harness codex|claude] [--project NAME] [--checkout PATH] "
-        b"[--file PATH]... [--force] [--] INSTRUCTION...\n"
+        b"[--file PATH]... [--force] [--re-probe] [--] INSTRUCTION...\n"
         b"  factory project COMMAND ...\n"
         b"  factory (-h | --help)\n"
         b"  factory --version\n"
@@ -1733,12 +1733,26 @@ def test_removed_path_flag_is_a_usage_error_naming_checkout(
         b"registered Checkout.\n"
         b"Usage:\n"
         b"  factory [--harness codex|claude] [--project NAME] [--checkout PATH] "
-        b"[--file PATH]... [--force] [--] INSTRUCTION...\n"
+        b"[--file PATH]... [--force] [--re-probe] [--] INSTRUCTION...\n"
         b"  factory project COMMAND ...\n"
         b"  factory (-h | --help)\n"
         b"  factory --version\n"
         b"Try 'factory --help' for more information.\n"
     )
+
+
+def test_the_re_probe_flag_parses_once_without_a_value(tmp_path: Path) -> None:
+    env = registered_run_root(tmp_path)
+
+    accepted = invoke("--checkout", str(tmp_path), "--re-probe", "Fix", env=env)
+    repeated = invoke("--re-probe", "--re-probe", "Fix", env=env)
+    valued = invoke("--re-probe=1", "Fix", env=env)
+
+    assert repeated.returncode == valued.returncode == 2
+    assert b"--re-probe may appear only once" in repeated.stderr
+    assert b"unknown option" in valued.stderr
+    assert accepted.returncode != 2
+    assert b"Traceback" not in accepted.stderr
 
 
 def test_only_exact_first_project_enters_administration(tmp_path: Path) -> None:

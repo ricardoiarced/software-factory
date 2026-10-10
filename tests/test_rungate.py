@@ -1,5 +1,6 @@
 """Shared Run Gate behavior at the identity, Git, runtime, and policy stages."""
 
+import errno
 import hashlib
 import io
 import json
@@ -7,7 +8,8 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import replace
+import tempfile
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ import pytest
 
 import _claude
 import _codex
+import _harness
 import _rungate
 import factory
 from _harness import factory_version
@@ -169,7 +172,13 @@ def run_to_harness(
     requests: list[bytes] = []
     calls: list[Path] = []
 
-    def handoff(project: factory.Project, spool: object) -> int:
+    def handoff(
+        project: factory.Project,
+        spool: object,
+        gate: object,
+        *,
+        re_probe: bool = False,
+    ) -> int:
         calls.append(project.boundary)
         requests.append(spool.read())
         return status
@@ -1392,3 +1401,703 @@ def test_environment_values_never_enter_the_run_record(
     text = json.dumps(record_documents(config)[-1])
     assert "FACTORY_TEST_TOKEN" in text
     assert "s3cret-value" not in text
+
+
+def passed_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str = "codex"
+) -> tuple[Path, Path, _rungate.ValidatedGate]:
+    """Run the real gate over the registered acme/web Checkout and return it."""
+
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    with run_record(["factory", "Fix"], harness) as record:
+        gate = run_gate(record, direct_selection(root), harness)
+    return root, config, gate
+
+
+def stub_harness(tmp_path: Path) -> Path:
+    """One executable stub whose bytes bind into sealed plans."""
+
+    executable = tmp_path / "harness-bin" / "harness"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    return executable
+
+
+def admitted_run(
+    harness: str,
+    executable: Path,
+    *,
+    probe: dict[str, object] | None = None,
+) -> _harness.PreparedRun:
+    """The admitted inputs one Runner freezes for the stub executable."""
+
+    info = executable.stat()
+    return _harness.PreparedRun(
+        harness="Claude Code" if harness == "claude" else "Codex",
+        executable=executable,
+        invocation=(str(executable),),
+        executable_identity=(info.st_dev, info.st_ino),
+        executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        environment=_claude._ENVIRONMENT_PINS if harness == "claude" else (),
+        unset_environment=() if harness == "claude" else _codex._CODEX_MANAGED_MARKERS,
+        probe=probe,
+    )
+
+
+def sealed_plan(
+    harness: str,
+    gate: _rungate.ValidatedGate,
+    executable: Path,
+    *,
+    probe: dict[str, object] | None = None,
+    instruction: bytes = b"# Run Request\n\n## Instruction\n\nFix",
+) -> _rungate.ValidatedRunPlan:
+    """Seal the passed gate and the admitted stub into one Validated Run Plan."""
+
+    return _rungate.seal_validated_run_plan(
+        gate, admitted_run(harness, executable, probe=probe), instruction
+    )
+
+
+def quoted_absolute(path: Path) -> str:
+    return json.dumps(str(path.absolute()), ensure_ascii=False)
+
+
+def record_document(config: Path, identifier: str) -> dict[str, object]:
+    """Read one Run Record document by its identifier."""
+
+    return json.loads(
+        (config / "factory" / "runs" / f"{identifier}.json").read_text(encoding="utf-8")
+    )
+
+
+def launch_sealed(config: Path, plan: _rungate.ValidatedRunPlan) -> dict[str, object]:
+    """Launch one sealed plan under an active Run Record; return its document."""
+
+    with (
+        tempfile.TemporaryFile(mode="w+b") as spool,
+        run_record(["factory", "Fix"], "codex") as record,
+    ):
+        assert _harness.launch(plan, spool) == 0
+        document = record_document(config, record.identifier)
+    assert document["status"] == "launched"
+    return document
+
+
+def claude_probe_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[_claude._ClaudePolicy, Path, list[str]]:
+    """A Claude policy whose Host Admission Probe records each run."""
+
+    executable = tmp_path / "probe-claude"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    policy = _claude._ClaudePolicy(
+        version="9.9.9",
+        sha256="a" * 64,
+        operating_system="Linux",
+        architecture="x86_64",
+        install_channel="native-installer",
+        canonical_path=executable,
+        filesystem_identity=(2096, 1),
+    )
+    probes: list[str] = []
+    monkeypatch.setattr(
+        _claude._ClaudePolicy,
+        "_run_host_admission_probe",
+        lambda self: probes.append("ran"),
+    )
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(_claude, "_cache_directory", lambda: cache)
+    return policy, cache, probes
+
+
+def test_a_passed_gate_seals_the_validated_run_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _config, gate = passed_gate(tmp_path, monkeypatch, "claude")
+    executable = stub_harness(tmp_path)
+    instruction = b"# Run Request\n\n## Instruction\n\nFix the fence\n"
+    probe = {"cache": "fresh", "key": "k" * 64, "age_seconds": None}
+    prepared = admitted_run("claude", executable, probe=probe)
+    plan = _rungate.seal_validated_run_plan(gate, prepared, instruction)
+    selection = direct_selection(root)
+    pinned = {name for name, _ in _claude._ENVIRONMENT_PINS}
+
+    assert (plan.client_id, plan.project_id, plan.repository_id, plan.checkout_id) == (
+        selection.client_id,
+        selection.project_id,
+        selection.repository_id,
+        selection.checkout_id,
+    )
+    assert plan.boundary == selection.boundary
+    assert plan.boundary_canonical == os.path.realpath(root)
+    assert plan.boundary_identity == (root.stat().st_dev, root.stat().st_ino)
+    assert plan.head == gate.observation.head == revision(root)
+    assert plan.object_format == gate.observation.object_format
+    assert plan.harness == "Claude Code"
+    assert plan.executable == executable
+    assert plan.executable_identity == prepared.executable_identity
+    assert plan.executable_sha256 == prepared.executable_sha256
+    assert plan.invocation == prepared.invocation
+    assert plan.environment == gate.environment
+    assert plan.pins == _claude._ENVIRONMENT_PINS
+    assert plan.removals == ()
+    assert plan.instruction == instruction
+    assert plan.environment_provenance == {
+        name: ("pinned" if name in pinned else "inherited")
+        for name, _ in plan.environment
+    }
+    assert set(plan.environment_provenance.values()) == {"pinned", "inherited"}
+    assert plan.evidence["gate"]["head"] == plan.head
+    assert plan.evidence["gate"]["object_format"] == plan.object_format
+    assert plan.evidence["gate"]["proof"] == {
+        name: dict(gate.observation.pins[name])
+        for name in sorted(gate.observation.pins)
+    }
+    assert plan.evidence["gate"]["assessment"] == gate.observation.assessment
+    assert plan.evidence["gate"]["policy"] == gate.observation.policy
+    assert plan.evidence["admission"] == {
+        "harness": "Claude Code",
+        "executable": str(executable),
+        "executable_sha256": prepared.executable_sha256,
+        "probe": probe,
+    }
+    assert plan.fingerprint == _rungate.plan_fingerprint(plan)
+    assert plan == _rungate.seal_validated_run_plan(gate, prepared, instruction)
+    with pytest.raises(FrozenInstanceError):
+        plan.head = "tampered"
+
+
+def test_the_launcher_consumes_the_plan_without_rederiving_gated_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FACTORY_PLANNED_VARIABLE", "gate-time-value")
+    root, config, gate = passed_gate(tmp_path, monkeypatch)
+    executable = stub_harness(tmp_path)
+    plan = sealed_plan("codex", gate, executable)
+    (config / "factory" / "projects.json").write_text("corrupt after the seal")
+    commit_worktree(root)
+    monkeypatch.setenv("FACTORY_PLANNED_VARIABLE", "ambient-value")
+    monkeypatch.setenv("CODEX_MANAGED_BY_NPM", "stray-return")
+    monkeypatch.setenv("FACTORY_POST_SEAL_VARIABLE", "ambient-only")
+    launched: dict[str, object] = {}
+
+    class RecordingProcess:
+        def __init__(self, invocation: object, **keywords: object) -> None:
+            launched["invocation"] = tuple(invocation)
+            launched["cwd"] = keywords["cwd"]
+            launched["env"] = keywords["env"]
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", RecordingProcess)
+    document = launch_sealed(config, plan)
+    environment = launched["env"]
+    assert isinstance(environment, dict)
+
+    assert launched["invocation"] == plan.invocation
+    assert launched["cwd"] == plan.boundary
+    assert environment == dict(plan.environment)
+    assert environment["FACTORY_PLANNED_VARIABLE"] == "gate-time-value"
+    assert "CODEX_MANAGED_BY_NPM" not in environment
+    assert "FACTORY_POST_SEAL_VARIABLE" not in environment
+    assert document["launch"]["plan_fingerprint"] == plan.fingerprint
+
+
+def test_the_plan_fingerprint_canonical_serialization_is_pinned() -> None:
+    plan = _rungate.ValidatedRunPlan(
+        client_id="cli_" + "a" * 32,
+        project_id="prj_" + "b" * 32,
+        repository_id="repo_" + "c" * 32,
+        checkout_id="chk_" + "d" * 32,
+        boundary=Path("/selected"),
+        boundary_canonical="/selected",
+        boundary_identity=(2096, 42),
+        head="a" * 40,
+        object_format="sha1",
+        harness="Claude Code",
+        executable=Path("/bin/stub"),
+        executable_identity=(2096, 7),
+        executable_sha256="b" * 64,
+        invocation=("claude", "-p", "Fix"),
+        environment=(("A", "1"), ("B", "2")),
+        environment_provenance={"A": "inherited", "B": "inherited"},
+        pins=(),
+        removals=(),
+        instruction=b"Fix",
+        evidence={"probe": {"cache": "fresh"}},
+        fingerprint="",
+    )
+    canonical = (
+        '{"boundary":{"canonical":"/selected","st_dev":2096,"st_ino":42},'
+        '"environment_digest":'
+        '"22bbdfd991c6ee7f2ba43ce580d059fe4d02a2fc285aeec91d6613e8126554dd",'
+        '"evidence":{"sha256":'
+        '"a372fdd54a95d360e983ae985567305578ea62cef75aa1c4f49ad004080a0109"},'
+        '"git":{"head":"' + "a" * 40 + '","object_format":"sha1"},'
+        '"harness":{"executable":"/bin/stub","name":"Claude Code","sha256":"'
+        + "b"
+        * 64
+        + '","st_dev":2096,"st_ino":7},'
+        '"identity":["cli_'
+        + "a" * 32
+        + '","prj_'
+        + "b" * 32
+        + '","repo_'
+        + "c" * 32
+        + '","chk_'
+        + "d" * 32
+        + '"],'
+        '"instruction":{"bytes":3,"sha256":'
+        '"21f1595b614ffc31c2693545a5ccb27559edf20c53cdd21099bc83b743313fd8"},'
+        '"invocation":["claude","-p","Fix"],'
+        '"schema":"factory-plan-fingerprint-v1"}'
+    )
+    fingerprint = hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+    assert _rungate.plan_fingerprint(plan) == fingerprint
+    assert (
+        _rungate.plan_fingerprint(replace(plan, environment=(("B", "2"), ("A", "1"))))
+        == fingerprint
+    )
+    mutations = (
+        replace(plan, client_id="cli_" + "e" * 32),
+        replace(plan, project_id="prj_" + "e" * 32),
+        replace(plan, repository_id="repo_" + "e" * 32),
+        replace(plan, checkout_id="chk_" + "e" * 32),
+        replace(plan, boundary_canonical="/elsewhere"),
+        replace(plan, boundary_identity=(2096, 43)),
+        replace(plan, head="b" * 40),
+        replace(plan, object_format="sha256"),
+        replace(plan, harness="Codex"),
+        replace(plan, executable=Path("/bin/other")),
+        replace(plan, executable_identity=(2096, 8)),
+        replace(plan, executable_sha256="c" * 64),
+        replace(plan, invocation=("claude", "-p", "Fix it")),
+        replace(plan, environment=(("A", "1"), ("B", "3"))),
+        replace(plan, instruction=b"Fix it"),
+        replace(plan, evidence={"probe": {"cache": "reused"}}),
+    )
+    assert all(
+        _rungate.plan_fingerprint(mutated) != fingerprint for mutated in mutations
+    )
+
+
+def test_the_boundary_recheck_precedes_the_durable_launch_commit_and_process_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, config, gate = passed_gate(tmp_path, monkeypatch)
+    executable = stub_harness(tmp_path)
+    plan = sealed_plan("codex", gate, executable)
+    events: list[str] = []
+    state: dict[str, object] = {}
+    real_recheck = _harness._recheck_boundary
+    real_commit = _harness.commit_pending_launch
+    real_popen = subprocess.Popen
+
+    def recheck(observed: object) -> None:
+        events.append("recheck")
+        real_recheck(observed)  # type: ignore[arg-type]
+
+    def commit(authorization: object) -> None:
+        events.append("commit")
+        real_commit(authorization)  # type: ignore[arg-type]
+
+    def popen(invocation: object, **keywords: object) -> subprocess.Popen[bytes]:
+        events.append("popen")
+        state["record_at_popen"] = record_document(config, str(state["identifier"]))[
+            "status"
+        ]
+        return real_popen(invocation, **keywords)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_harness, "_recheck_boundary", recheck)
+    monkeypatch.setattr(_harness, "commit_pending_launch", commit)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    with (
+        tempfile.TemporaryFile(mode="w+b") as spool,
+        run_record(["factory", "Fix"], "codex") as record,
+    ):
+        state["identifier"] = record.identifier
+        assert _harness.launch(plan, spool) == 0
+    document = record_document(config, str(state["identifier"]))
+
+    assert events == ["recheck", "commit", "popen"]
+    assert state["record_at_popen"] == "launched"
+    assert document["launch"]["plan_fingerprint"] == plan.fingerprint
+
+    drifted = replace(
+        plan,
+        boundary_identity=(plan.boundary_identity[0], plan.boundary_identity[1] + 1),
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *arguments, **keywords: pytest.fail(
+            "process creation must not be attempted"
+        ),
+    )
+    with (
+        pytest.raises(_harness.RunAdmissionError),
+        tempfile.TemporaryFile(mode="w+b") as spool,
+        run_record(["factory", "Fix"], "codex") as record,
+    ):
+        _harness.launch(drifted, spool)
+    refused = record_document(config, record.identifier)
+
+    assert events == ["recheck", "commit", "popen", "recheck"]
+    assert refused["status"] == "open"
+    assert "launch" not in refused
+
+
+def test_launch_supplies_the_planned_environment_and_working_directory_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FACTORY_PLANNED_VARIABLE", "planned-value")
+    root, _config, gate = passed_gate(tmp_path, monkeypatch)
+    executable = tmp_path / "harness-bin" / "harness"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text(
+        "#!/bin/sh\n"
+        "{\n"
+        "printf '%s' \"$FACTORY_PLANNED_VARIABLE\"\n"
+        "printf '\\n'\n"
+        "printf '%s' \"$PWD\"\n"
+        'if [ -n "${FACTORY_POST_SEAL_VARIABLE+x}" ]; then\n'
+        "printf '\\nambient'\n"
+        "fi\n"
+        "} > observation.txt\n"
+    )
+    executable.chmod(0o755)
+    plan = sealed_plan("codex", gate, executable)
+    monkeypatch.setenv("FACTORY_PLANNED_VARIABLE", "ambient-after-seal")
+    monkeypatch.setenv("FACTORY_POST_SEAL_VARIABLE", "ambient-only")
+
+    with tempfile.TemporaryFile(mode="w+b") as spool:
+        assert _harness.launch(plan, spool) == 0
+    observed = (root / "observation.txt").read_text(encoding="utf-8").splitlines()
+
+    assert observed[0] == "planned-value"
+    assert Path(observed[1]).resolve() == root.resolve()
+    assert len(observed) == 2
+
+
+def test_a_boundary_vanishing_at_launch_refuses_with_the_frozen_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _config, gate = passed_gate(tmp_path, monkeypatch)
+    plan = sealed_plan("codex", gate, stub_harness(tmp_path))
+    shutil.rmtree(root)
+
+    with pytest.raises(_harness.RunAdmissionError) as raised:
+        _harness.launch(plan, io.BytesIO(b"# Run Request\n"))
+
+    assert str(raised.value) == (
+        f"The Project Boundary {quoted_absolute(root)} does not exist at launch; "
+        "the Run was admitted against a directory that has since disappeared."
+    )
+
+
+def test_a_boundary_replaced_by_a_file_refuses_with_the_frozen_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _config, gate = passed_gate(tmp_path, monkeypatch)
+    plan = sealed_plan("codex", gate, stub_harness(tmp_path))
+    shutil.rmtree(root)
+    root.write_text("now a plain file", encoding="utf-8")
+
+    with pytest.raises(_harness.RunAdmissionError) as raised:
+        _harness.launch(plan, io.BytesIO(b"# Run Request\n"))
+
+    assert str(raised.value) == (
+        f"The Project Boundary {quoted_absolute(root)} is no longer a directory "
+        "at launch."
+    )
+
+
+def test_a_boundary_identity_change_at_launch_refuses_with_the_frozen_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _config, gate = passed_gate(tmp_path, monkeypatch)
+    plan = sealed_plan("codex", gate, stub_harness(tmp_path))
+    drifted = replace(
+        plan,
+        boundary_identity=(plan.boundary_identity[0] + 1, plan.boundary_identity[1]),
+    )
+    observed = root.stat()
+
+    with pytest.raises(_harness.RunAdmissionError) as raised:
+        _harness.launch(drifted, io.BytesIO(b"# Run Request\n"))
+
+    assert str(raised.value) == (
+        f"The Project Boundary {quoted_absolute(root)} changed during admission: "
+        f"the gate admitted dev/ino {drifted.boundary_identity[0]}:"
+        f"{drifted.boundary_identity[1]}, launch found {observed.st_dev}:"
+        f"{observed.st_ino}; refusing to launch against a directory other "
+        "than the one validated."
+    )
+
+
+def test_a_boundary_resolving_elsewhere_at_launch_refuses_with_the_frozen_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _config, gate = passed_gate(tmp_path, monkeypatch)
+    plan = sealed_plan("codex", gate, stub_harness(tmp_path))
+    drifted = replace(plan, boundary_canonical=os.fspath(tmp_path / "elsewhere"))
+
+    with pytest.raises(_harness.RunAdmissionError) as raised:
+        _harness.launch(drifted, io.BytesIO(b"# Run Request\n"))
+
+    assert str(raised.value) == (
+        f"The Project Boundary {quoted_absolute(root)} resolved to "
+        f"{quoted_absolute(root)} at launch, not the admitted canonical path "
+        f"{quoted_absolute(Path(drifted.boundary_canonical))}; refusing."
+    )
+
+
+def test_an_impossible_boundary_reobservation_refuses_rather_than_trusting_the_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _config, gate = passed_gate(tmp_path, monkeypatch)
+    plan = sealed_plan("codex", gate, stub_harness(tmp_path))
+    real_stat = Path.stat
+
+    def refuse_observation(
+        path: Path, *arguments: object, **keywords: object
+    ) -> os.stat_result:
+        if path == root:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_stat(path, *arguments, **keywords)  # type: ignore[arg-type,return-value]
+
+    monkeypatch.setattr(Path, "stat", refuse_observation)
+
+    with pytest.raises(_harness.RunAdmissionError) as raised:
+        _harness.launch(plan, io.BytesIO(b"# Run Request\n"))
+
+    assert str(raised.value) == (
+        f"The Project Boundary {quoted_absolute(root)} could not be re-observed "
+        "at launch (Permission denied); refusing rather than trusting the "
+        "admitted observation."
+    )
+
+
+def test_an_executable_changed_at_launch_refuses_with_the_unchanged_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, _config, gate = passed_gate(tmp_path, monkeypatch)
+    executable = stub_harness(tmp_path)
+    plan = sealed_plan("codex", gate, executable)
+    executable.write_text("#!/bin/sh\nexit 7\n")
+    executable.chmod(0o755)
+
+    with pytest.raises(_harness.RunAdmissionError) as raised:
+        _harness.launch(plan, io.BytesIO(b"# Run Request\n"))
+
+    assert str(raised.value) == (
+        f"{plan.harness} executable {quoted_absolute(executable)} changed "
+        "during Run Admission; refusing to evaluate its replacement"
+    )
+
+
+def test_an_uninspectable_executable_at_launch_refuses_before_the_launch_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, config, gate = passed_gate(tmp_path, monkeypatch)
+    executable = stub_harness(tmp_path)
+    plan = sealed_plan("codex", gate, executable)
+    executable.chmod(0o000)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *arguments, **keywords: pytest.fail(
+            "process creation must not be attempted"
+        ),
+    )
+
+    with (
+        pytest.raises(_harness.RunAdmissionError) as raised,
+        tempfile.TemporaryFile(mode="w+b") as spool,
+        run_record(["factory", "Fix"], "codex") as record,
+    ):
+        _harness.launch(plan, spool)
+
+    assert str(raised.value) == (
+        f"{plan.harness} executable {quoted_absolute(executable)} could not be "
+        "inspected: Permission denied; check its permissions"
+    )
+    document = record_document(config, record.identifier)
+    assert document["status"] == "open"
+    assert "launch" not in document
+
+
+def test_the_claude_probe_cache_key_binds_the_resolved_sandbox_tooling_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, cache, probes = claude_probe_policy(tmp_path, monkeypatch)
+    tooling = tmp_path / "tooling"
+    tooling.mkdir()
+    for name, contents in (("bwrap", b"bubblewrap_v1"), ("socat", b"relay_v1")):
+        tool = tooling / name
+        tool.write_bytes(contents)
+        tool.chmod(0o755)
+    monkeypatch.setattr(_claude.shutil, "which", lambda name: str(tooling / name))
+    payload = policy._host_probe_cache_payload()
+    key = hashlib.sha256(payload).hexdigest()
+
+    assert json.loads(payload)["sandbox_tooling"] == {
+        "bwrap": {
+            "path": str(tooling / "bwrap"),
+            "sha256": hashlib.sha256(b"bubblewrap_v1").hexdigest(),
+        },
+        "socat": {
+            "path": str(tooling / "socat"),
+            "sha256": hashlib.sha256(b"relay_v1").hexdigest(),
+        },
+    }
+    first = policy.prepare_run(tmp_path)
+    second = policy.prepare_run(tmp_path)
+
+    assert probes == ["ran"]
+    assert first[1] == {"cache": "fresh", "key": key, "age_seconds": None}
+    assert second[1]["cache"] == "reused"
+    assert second[1]["key"] == key
+    assert (cache / "host-admission-probe" / f"{key}.json").is_file()
+
+    (tooling / "bwrap").write_bytes(b"bubblewrap_v2")
+    rekeyed = policy.prepare_run(tmp_path)
+    rekey = rekeyed[1]["key"]
+
+    assert probes == ["ran", "ran"]
+    assert rekeyed[1]["cache"] == "fresh"
+    assert rekey == hashlib.sha256(policy._host_probe_cache_payload()).hexdigest()
+    assert rekey != key
+    assert (cache / "host-admission-probe" / f"{rekey}.json").is_file()
+
+    (tooling / "bwrap").chmod(0o000)
+    unreadable = policy.prepare_run(tmp_path)
+    identity = json.loads(policy._host_probe_cache_payload())["sandbox_tooling"]
+
+    assert identity["bwrap"]["sha256"] is None
+    assert unreadable[1]["cache"] == "fresh"
+    assert unreadable[1]["key"] not in {key, rekey}
+
+
+def test_probe_evidence_stays_valid_until_a_cache_key_input_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, cache, probes = claude_probe_policy(tmp_path, monkeypatch)
+    first = policy.prepare_run(tmp_path)
+    entry = cache / "host-admission-probe" / f"{first[1]['key']}.json"
+    aged = entry.stat().st_mtime - 1_000_000_000
+    os.utime(entry, (aged, aged))
+
+    second = policy.prepare_run(tmp_path)
+
+    assert probes == ["ran"]
+    assert second[1]["cache"] == "reused"
+    assert second[1]["key"] == first[1]["key"]
+    assert second[1]["age_seconds"] > 999_999_999
+
+    monkeypatch.setattr("_claude._factory_version", lambda: "next-factory")
+    third = policy.prepare_run(tmp_path)
+    monkeypatch.setattr(
+        "_claude._host_identity",
+        lambda: {"release": "next-kernel", "version": "next"},
+    )
+    fourth = policy.prepare_run(tmp_path)
+    fifth = replace(policy, version="9.9.10", sha256="b" * 64).prepare_run(tmp_path)
+    sixth = replace(policy, operating_system="Other", architecture="riscv").prepare_run(
+        tmp_path
+    )
+
+    assert [evidence[1]["cache"] for evidence in (third, fourth, fifth, sixth)] == [
+        "fresh",
+        "fresh",
+        "fresh",
+        "fresh",
+    ]
+    keys = {
+        first[1]["key"],
+        third[1]["key"],
+        fourth[1]["key"],
+        fifth[1]["key"],
+        sixth[1]["key"],
+    }
+    assert len(keys) == 5
+
+
+def test_re_probe_bypasses_the_cache_and_replaces_the_positive_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, cache, probes = claude_probe_policy(tmp_path, monkeypatch)
+    first = policy.prepare_run(tmp_path)
+    reused = policy.prepare_run(tmp_path)
+    key = first[1]["key"]
+    entry = cache / "host-admission-probe" / f"{key}.json"
+    generation = entry.stat().st_ino
+
+    reprobed = policy.prepare_run(tmp_path, re_probe=True)
+
+    assert probes == ["ran", "ran"]
+    assert first[1]["cache"] == "fresh"
+    assert reused[1]["cache"] == "reused"
+    assert reprobed[1]["cache"] == "fresh"
+    assert reprobed[1]["key"] == key
+    assert tuple((cache / "host-admission-probe").iterdir()) == (entry,)
+    assert entry.stat().st_ino != generation
+    served = policy.prepare_run(tmp_path)
+
+    assert probes == ["ran", "ran"]
+    assert served[1]["cache"] == "reused"
+
+
+def test_a_failed_re_probe_refuses_and_invalidates_the_prior_positive_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, cache, probes = claude_probe_policy(tmp_path, monkeypatch)
+    cached = policy.prepare_run(tmp_path)
+    entry = cache / "host-admission-probe" / f"{cached[1]['key']}.json"
+
+    def failing(self: _claude._ClaudePolicy) -> None:
+        raise self._host_probe_failure("exit status 7")
+
+    monkeypatch.setattr(_claude._ClaudePolicy, "_run_host_admission_probe", failing)
+    with pytest.raises(_harness.RunAdmissionError, match="exit status 7"):
+        policy.prepare_run(tmp_path, re_probe=True)
+
+    assert not entry.exists()
+    monkeypatch.setattr(
+        _claude._ClaudePolicy,
+        "_run_host_admission_probe",
+        lambda self: probes.append("ran"),
+    )
+    recovered = policy.prepare_run(tmp_path)
+
+    assert probes == ["ran", "ran"]
+    assert recovered[1]["cache"] == "fresh"
+    assert recovered[1]["key"] == cached[1]["key"]
+    assert entry.exists()
+
+
+def test_probe_provenance_binds_into_the_plan_and_the_launch_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, config, gate = passed_gate(tmp_path, monkeypatch)
+    executable = stub_harness(tmp_path)
+    reused = {"cache": "reused", "key": "k" * 64, "age_seconds": 12.5}
+    plan = sealed_plan("codex", gate, executable, probe=reused)
+    reprobed = sealed_plan(
+        "codex",
+        gate,
+        executable,
+        probe={"cache": "fresh", "key": "k" * 64, "age_seconds": None},
+    )
+
+    assert plan.evidence["admission"]["probe"] == reused
+    assert reprobed.fingerprint != plan.fingerprint
+    document = launch_sealed(config, plan)
+
+    assert document["launch"]["plan_fingerprint"] == plan.fingerprint

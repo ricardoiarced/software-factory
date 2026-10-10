@@ -27,6 +27,7 @@ from conftest import (
 )
 
 import _codex
+import _rungate
 import factory
 from _codex import (
     CodexRunner,
@@ -35,13 +36,56 @@ from _codex import (
     _reported_version,
 )
 from _harness import RunAdmissionError
+from _identity import Pin, RunSelection
 from _project import Project
+
+
+def passed_gate(boundary: Path) -> _rungate.ValidatedGate:
+    """A minimal passed-gate stand-in for admission-focused Runner tests."""
+
+    try:
+        info = boundary.stat()
+        identity = (info.st_dev, info.st_ino)
+    except OSError:
+        identity = (0, 0)
+    proof = _rungate._Proof(
+        boundary=boundary,
+        worktree_root=Pin(str(boundary), *identity),
+        git_dir=Pin(str(boundary), *identity),
+        common_dir=Pin(str(boundary), *identity),
+        head="0" * 40,
+        object_format="sha1",
+    )
+    observation = _rungate.GateObservation(
+        head=proof.head,
+        object_format=proof.object_format,
+        pins={},
+        assessment={},
+        policy={},
+    )
+    selection = RunSelection(
+        client_id="cli_" + "a" * 32,
+        project_id="prj_" + "b" * 32,
+        repository_id="repo_" + "c" * 32,
+        checkout_id="chk_" + "d" * 32,
+        boundary=boundary,
+    )
+    environment = _rungate.effective_environment(
+        (),
+        _codex._CODEX_MANAGED_MARKERS,
+        tuple(os.environ.items()),
+    )
+    return _rungate.ValidatedGate(selection, observation, proof, environment)
 
 
 def run(project: Project, run_request_spool: BinaryIO) -> int:
     """Exercise the certified Runner exactly as the Factory command does."""
 
-    return CodexRunner().run(project, run_request_spool)
+    return CodexRunner().run(
+        project,
+        run_request_spool,
+        passed_gate(project.boundary),
+    )
 
 
 def register_run_checkout(
@@ -392,7 +436,7 @@ def capture_policy_preparation(
 
     monkeypatch.setattr("_codex.subprocess.run", inspect)
     monkeypatch.setattr("_codex.subprocess.Popen", probe)
-    invocation = policy.prepare_run(boundary, git_root)
+    invocation, _evidence = policy.prepare_run(boundary, git_root)
     return invocation, inspections, probes
 
 
@@ -1252,10 +1296,12 @@ def test_run_uses_the_project_selection_git_root_without_rediscovery(
         self: _Codex01600Policy,
         project_boundary: Path,
         enclosing_git_root: Path,
-    ) -> list[str]:
+        *,
+        re_probe: bool = False,
+    ) -> tuple[list[str], dict[str, object]]:
         assert self is policy
         prepared_with.append((project_boundary, enclosing_git_root))
-        return invocation
+        return invocation, {"cache": "fresh"}
 
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     monkeypatch.setattr(_Codex01600Policy, "prepare_run", prepare_run)
@@ -1288,10 +1334,12 @@ def test_run_uses_the_matched_policy_as_its_only_certified_behavior(
         self: _Codex01600Policy,
         project_boundary: Path,
         enclosing_git_root: Path,
-    ) -> list[str]:
+        *,
+        re_probe: bool = False,
+    ) -> tuple[list[str], dict[str, object]]:
         assert self is policy
         calls.append((project_boundary, enclosing_git_root))
-        return invocation
+        return invocation, {"cache": "fresh"}
 
     monkeypatch.setenv("PATH", os.fspath(executable.parent))
     monkeypatch.setattr(_Codex01600Policy, "prepare_run", prepare_run)
@@ -1327,11 +1375,14 @@ def test_run_refuses_an_executable_change_without_evaluating_it_before_launch(
         self: _Codex01600Policy,
         project_boundary: Path,
         enclosing_git_root: Path,
-    ) -> list[str]:
-        invocation = actual_prepare_run(
+        *,
+        re_probe: bool = False,
+    ) -> tuple[list[str], dict[str, object]]:
+        prepared = actual_prepare_run(
             self,
             project_boundary,
             enclosing_git_root,
+            re_probe=re_probe,
         )
         changed = executable.read_text() + "# changed\n"
         if change == "replacement":
@@ -1342,7 +1393,7 @@ def test_run_refuses_an_executable_change_without_evaluating_it_before_launch(
         else:
             executable.write_text(changed)
             executable.chmod(0o755)
-        return invocation
+        return prepared
 
     def inspect(
         command: list[str],
@@ -1706,7 +1757,9 @@ def test_concurrent_cache_readers_observe_a_complete_success(
         )
 
     assert len(probes) == 1
-    assert all(invocation == invocations[0] for invocation in invocations)
+    launches = [invocation for invocation, _evidence in invocations]
+    assert all(invocation == launches[0] for invocation in launches)
+    assert all(evidence["cache"] == "reused" for _launch, evidence in invocations)
 
 
 def test_run_refuses_when_the_malformed_profile_negative_control_succeeds(

@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -34,6 +35,7 @@ from _harness import (
 )
 from _project import Project
 from _publisher import verify_claude_code_newest_stable
+from _rungate import ValidatedGate, seal_validated_run_plan
 
 _VERSION_OUTPUT = re.compile(
     rb"([0-9]+(?:\.[0-9]+)*(?:[-+][0-9A-Za-z.-]+)?) \(Claude Code\)\n\Z",
@@ -416,6 +418,30 @@ def _require_sandbox_dependencies() -> None:
             raise _sandbox_dependency_failure(dependency)
 
 
+def _sandbox_tooling_identity() -> dict[str, object]:
+    """The resolved sandbox-tooling identities probe evidence depends on.
+
+    Each declared dependency binds its resolved path and its SHA-256, so
+    replacing or changing either tool changes the probe cache key; an
+    unreadable tool binds no digest, and becoming readable changes the key.
+    """
+
+    tools: dict[str, object] = {}
+    for dependency in _SANDBOX_DEPENDENCIES:
+        resolved = shutil.which(dependency)
+        if resolved is None:
+            continue
+        path = Path(resolved)
+        digest: str | None
+        try:
+            with path.open("rb") as tool:
+                digest = hashlib.file_digest(tool, "sha256").hexdigest()
+        except OSError:
+            digest = None
+        tools[dependency] = {"path": str(path), "sha256": digest}
+    return tools
+
+
 def _observed_install_channel(executable: Path) -> str | None:
     """Name the install channel this executable's canonical path was installed
     through, or None when the path matches no certified channel."""
@@ -766,6 +792,7 @@ class _ClaudePolicy:
             "operating_system": self.operating_system,
             "architecture": self.architecture,
             "host_identity": _host_identity(),
+            "sandbox_tooling": _sandbox_tooling_identity(),
         }
         return (
             json.dumps(
@@ -783,6 +810,46 @@ class _ClaudePolicy:
             return self._host_probe_cache_path(payload).read_bytes() == payload
         except OSError:
             return False
+
+    def _probe_evidence(self, payload: bytes, *, reused: bool) -> dict[str, object]:
+        """One Host Admission Probe verdict with its key and provenance.
+
+        Age is recorded for auditability and is never an invalidation
+        condition; a fresh probe carries no reused-observation age.
+        """
+
+        age: float | None = None
+        if reused:
+            try:
+                age = max(
+                    0.0,
+                    time.time() - self._host_probe_cache_path(payload).stat().st_mtime,
+                )
+            except OSError:
+                age = None
+        return {
+            "cache": "reused" if reused else "fresh",
+            "key": hashlib.sha256(payload).hexdigest(),
+            "age_seconds": age,
+        }
+
+    def _cached_host_probe_evidence(self, payload: bytes) -> dict[str, object] | None:
+        """Return the reused-evidence verdict when a positive entry applies."""
+
+        if not self._has_cached_host_probe_success(payload):
+            return None
+        return self._probe_evidence(payload, reused=True)
+
+    def _fresh_host_probe_evidence(self, payload: bytes) -> dict[str, object]:
+        return self._probe_evidence(payload, reused=False)
+
+    def _invalidate_host_probe_success(self, payload: bytes) -> None:
+        """Drop a prior positive cache entry a failed probe disproved."""
+
+        try:
+            self._host_probe_cache_path(payload).unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _store_host_probe_success(self, payload: bytes) -> None:
         path = self._host_probe_cache_path(payload)
@@ -1325,14 +1392,35 @@ class _ClaudePolicy:
                 error.strerror or str(error),
             ) from error
 
-    def prepare_run(self, project_boundary: Path) -> list[str]:
-        """Run the cached Host Admission Probe, then build this invocation."""
+    def prepare_run(
+        self,
+        project_boundary: Path,
+        *,
+        re_probe: bool = False,
+    ) -> tuple[list[str], dict[str, object]]:
+        """Run the Host Admission Probe, then build this invocation.
+
+        A cached success applies until one of its declared cache-key
+        identity inputs changes; ``re_probe`` bypasses any cached entry and
+        probes afresh, replacing the cached positive result on success and
+        invalidating it on failure.
+        """
 
         cache_payload = self._host_probe_cache_payload()
-        if not self._has_cached_host_probe_success(cache_payload):
+        if not re_probe:
+            cached = self._cached_host_probe_evidence(cache_payload)
+            if cached is not None:
+                return self._invocation(project_boundary), cached
+        try:
             self._run_host_admission_probe()
-            self._store_host_probe_success(cache_payload)
-        return self._invocation(project_boundary)
+        except RunAdmissionError:
+            self._invalidate_host_probe_success(cache_payload)
+            raise
+        self._store_host_probe_success(cache_payload)
+        return (
+            self._invocation(project_boundary),
+            self._fresh_host_probe_evidence(cache_payload),
+        )
 
 
 _CLAUDE_COMPATIBILITY_SET: tuple[_ClaudePolicy, ...] = (
@@ -1466,14 +1554,16 @@ def _recheck_artifact(policy: _ClaudePolicy) -> None:
         raise _changed_artifact_failure(policy)
 
 
-def _admit_run(project: Project) -> tuple[_ClaudePolicy, list[str]]:
+def _admit_run(
+    project: Project, *, re_probe: bool = False
+) -> tuple[_ClaudePolicy, list[str], dict[str, object]]:
     """Establish the complete production evidence and strict invocation.
 
     The order is fixed: local executable resolution and installed-version
     read, then the live newest-stable lookup and its refusal classification,
     then the empty-set and exact-tuple Compatibility Set match, the uncached
     managed-policy gate, the sandbox dependency preflight, the Host Admission
-    Probe, and the final artifact recheck.
+    Probe evidence, and the final artifact recheck.
     """
 
     executable = _resolve_executable()
@@ -1488,26 +1578,42 @@ def _admit_run(project: Project) -> tuple[_ClaudePolicy, list[str]]:
     policy = _match_compatibility(executable, version)
     _require_no_managed_policy(executable)
     _require_sandbox_dependencies()
-    invocation = policy.prepare_run(project.boundary)
+    invocation, probe = policy.prepare_run(project.boundary, re_probe=re_probe)
     _recheck_artifact(policy)
-    return policy, invocation
+    return policy, invocation, probe
 
 
 class ClaudeCodeRunner:
     """The certified Claude Code Runner: fail-closed until certification."""
 
-    def admit(self, project: Project) -> PreparedRun:
-        """Establish all production evidence and freeze the launch plan."""
+    def admit(self, project: Project, *, re_probe: bool = False) -> PreparedRun:
+        """Establish all production evidence and freeze the admitted inputs."""
 
-        policy, invocation = _admit_run(project)
+        policy, invocation, probe = _admit_run(project, re_probe=re_probe)
         return PreparedRun(
             harness="Claude Code",
             executable=policy.canonical_path,
             invocation=tuple(invocation),
+            executable_identity=policy.filesystem_identity,
+            executable_sha256=policy.sha256,
             environment=_ENVIRONMENT_PINS,
+            probe=probe,
         )
 
-    def run(self, project: Project, run_request_spool: BinaryIO) -> int:
-        """Admit, then launch one Run and return Claude Code's exit status."""
+    def run(
+        self,
+        project: Project,
+        run_request_spool: BinaryIO,
+        gate: ValidatedGate,
+        *,
+        re_probe: bool = False,
+    ) -> int:
+        """Admit, seal the Validated Run Plan, and launch it by value."""
 
-        return launch(project, self.admit(project), run_request_spool)
+        prepared = self.admit(project, re_probe=re_probe)
+        instruction = run_request_spool.read()
+        run_request_spool.seek(0)
+        return launch(
+            seal_validated_run_plan(gate, prepared, instruction),
+            run_request_spool,
+        )

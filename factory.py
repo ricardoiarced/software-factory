@@ -48,7 +48,7 @@ from _rungate import RunGateError, run_gate
 from _runrecord import RunRecord, RunRecordError, run_record
 
 ROOT_SYNOPSIS = """Usage:
-  factory [--harness codex|claude] [--project NAME] [--checkout PATH] [--file PATH]... [--force] [--] INSTRUCTION...
+  factory [--harness codex|claude] [--project NAME] [--checkout PATH] [--file PATH]... [--force] [--re-probe] [--] INSTRUCTION...
   factory project COMMAND ...
   factory (-h | --help)
   factory --version
@@ -68,6 +68,10 @@ Options:
                    to it.
   --file PATH      Add a file as a Context Source; repeat to add more.
   --force          Continue when Context exceeds the warning threshold.
+  --re-probe       Bypass any cached Host Admission Probe result and probe
+                   afresh during this Run's admission; success replaces the
+                   cached result, and failure refuses the Run and
+                   invalidates it.
   -h, --help       Show this help.
   --version        Show the installed Factory version.
 
@@ -179,6 +183,7 @@ class RunArguments:
     checkout: str | None
     files: tuple[str, ...]
     force: bool
+    re_probe: bool
 
 
 def _quoted(value: str) -> str:
@@ -417,10 +422,10 @@ def _parse_run(args: list[str]) -> RunArguments:
             )
         if option in ("--project", "--checkout", "--file", "--harness"):
             position = _parse_valued_run_option(args, position, argument, seen, files)
-        elif argument == "--force":
-            if "--force" in seen:
-                raise UsageError("--force may appear only once")
-            seen["--force"] = ""
+        elif argument in ("--force", "--re-probe"):
+            if argument in seen:
+                raise UsageError(f"{argument} may appear only once")
+            seen[argument] = ""
         elif argument in ("-h", "--help", "--version"):
             raise UsageError(f"{argument} must be used alone")
         else:
@@ -434,6 +439,7 @@ def _parse_run(args: list[str]) -> RunArguments:
         seen.get("--checkout"),
         tuple(files),
         "--force" in seen,
+        "--re-probe" in seen,
     )
 
 
@@ -749,12 +755,14 @@ def _run_request(run: RunArguments, record: RunRecord) -> int:
         except OSError as error:
             _refuse_spool_failure(record, error)
         try:
-            run_gate(record, selection, run.harness)
+            gate = run_gate(record, selection, run.harness)
         except RunGateError as error:
             sys.stderr.write(f"factory: error: {error}\n")
             return 1
         try:
-            return select_harness(run.harness).run(project, spool)
+            return select_harness(run.harness).run(
+                project, spool, gate, re_probe=run.re_probe
+            )
         except RunAdmissionError as error:
             record.refuse("admission", str(error), facts=_admission_facts(error))
             raise

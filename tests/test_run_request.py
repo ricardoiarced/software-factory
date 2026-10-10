@@ -19,9 +19,22 @@ from _project import Project
 def _selected_harness(
     handoff: Callable[[Project, io.BufferedRandom], int],
 ) -> SimpleNamespace:
-    """A Runner stand-in whose run() is the recorded handoff."""
+    """A Runner stand-in whose run() is the recorded handoff.
 
-    return SimpleNamespace(run=handoff)
+    The stand-in consumes the passed gate and re-probe flag without
+    inspecting them; these tests exercise composition, not admission.
+    """
+
+    def run(
+        project: Project,
+        spool: io.BufferedRandom,
+        gate: object,
+        *,
+        re_probe: bool = False,
+    ) -> int:
+        return handoff(project, spool)
+
+    return SimpleNamespace(run=run)
 
 
 CLIENT_ID = "cli_" + "a" * 32
@@ -746,7 +759,7 @@ def test_piped_and_redirected_standard_input_have_identical_context(
 sys.path.insert(0, sys.argv[1])
 import factory
 sys.argv = ['factory', *sys.argv[2:]]
-def handoff(boundary, spool):
+def handoff(boundary, spool, gate, re_probe=False):
     sys.stdout.buffer.write(spool.read())
     return 0
 class FakeRunner:

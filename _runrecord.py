@@ -71,7 +71,13 @@ class RunGateFacts(Protocol):
 
 
 class LaunchAuthorization(Protocol):
-    """The admitted launch plan a Launch Commit records as authorization."""
+    """The admitted launch plan a Launch Commit records as authorization.
+
+    The certified environment edits ride as ``pins`` and ``removals`` — the
+    plan's complete effective environment is its launch source and never
+    enters the record — and ``fingerprint`` binds the commit to the sealed
+    Validated Run Plan it authorizes.
+    """
 
     @property
     def harness(self) -> str: ...
@@ -83,10 +89,13 @@ class LaunchAuthorization(Protocol):
     def invocation(self) -> tuple[str, ...]: ...
 
     @property
-    def environment(self) -> tuple[tuple[str, str], ...]: ...
+    def pins(self) -> tuple[tuple[str, str], ...]: ...
 
     @property
-    def unset_environment(self) -> tuple[str, ...]: ...
+    def removals(self) -> tuple[str, ...]: ...
+
+    @property
+    def fingerprint(self) -> str: ...
 
 
 def _timestamp() -> str:
@@ -258,13 +267,12 @@ class RunRecord:
             "harness": authorization.harness,
             "executable": str(authorization.executable),
             "invocation": list(authorization.invocation),
+            "plan_fingerprint": authorization.fingerprint,
         }
-        if authorization.environment:
-            launch["environment"] = {
-                name: value for name, value in authorization.environment
-            }
-        if authorization.unset_environment:
-            launch["unset_environment"] = list(authorization.unset_environment)
+        if authorization.pins:
+            launch["environment"] = {name: value for name, value in authorization.pins}
+        if authorization.removals:
+            launch["unset_environment"] = list(authorization.removals)
         document = {**self._document, "status": "launched", "launch": launch}
         self._store(document)
         self._document = document

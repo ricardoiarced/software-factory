@@ -39,8 +39,15 @@ def test_codex_runner_admit_freezes_the_matched_launch_plan(
 ) -> None:
     executable = tmp_path / "codex-artifact"
     invocation = [str(executable), "exec", "-"]
-    policy = SimpleNamespace(canonical_path=executable)
-    monkeypatch.setattr("_codex._admit_run", lambda project: (policy, invocation))
+    policy = SimpleNamespace(
+        canonical_path=executable,
+        filesystem_identity=(2096, 1),
+        sha256="a" * 64,
+    )
+    monkeypatch.setattr(
+        "_codex._admit_run",
+        lambda project, *, re_probe=False: (policy, invocation, None),
+    )
 
     prepared = CodexRunner().admit(Project(tmp_path, tmp_path))
 
@@ -48,6 +55,8 @@ def test_codex_runner_admit_freezes_the_matched_launch_plan(
         harness="Codex",
         executable=executable,
         invocation=tuple(invocation),
+        executable_identity=(2096, 1),
+        executable_sha256="a" * 64,
         unset_environment=(
             "CODEX_MANAGED_PACKAGE_ROOT",
             "CODEX_MANAGED_BY_NPM",
@@ -89,6 +98,6 @@ def test_claude_runner_refuses_admission_and_never_launches(
         RunAdmissionError,
         match="Claude Compatibility Set is empty",
     ):
-        runner.run(project, spool)
+        runner.run(project, spool, SimpleNamespace())
 
     assert spool.tell() == 0

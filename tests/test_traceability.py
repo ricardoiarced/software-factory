@@ -16,7 +16,7 @@ from certification.test_exact_tuple import EVIDENCE_PROPERTIES, PRODUCTION_CHECK
 PROJECT = Path(__file__).resolve().parents[1]
 MATRIX = PROJECT / "docs" / "traceability.md"
 ACCEPTANCE_IDS = tuple(f"AC-{number:02d}" for number in range(1, 13))
-SECTION_STATEMENT_COUNTS = (6, 3, 14, 9, 12, 9, 24, 5, 11, 4, 10, 0, 16, 8, 15)
+SECTION_STATEMENT_COUNTS = (6, 3, 14, 9, 12, 9, 24, 5, 11, 4, 10, 0, 16, 8, 22)
 STATEMENT_IDS = {
     f"S{section}.{number}"
     for section, count in enumerate(SECTION_STATEMENT_COUNTS, start=1)

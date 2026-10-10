@@ -29,7 +29,7 @@ the pins in `pyproject.toml`. All commands run from the repo root.
 - `_harness.py`, `_codex.py`, `_claude.py` — Runner protocol, per-harness admission and run
 - `_publisher.py` — live newest-stable publisher lookups; `_project*.py` — project registry/guidance
 - `_rungate.py` — the Shared Run Gate: identity, Git, runtime, and policy admission stages
-- `_runrecord.py` — the durable Run Record envelope and launch atomicity
+- `_runrecord.py` — the durable Run Record envelope: launch atomicity, outcome recording, and strict audit readback
 - `_identity.py` — the version-two identity store: records, administration, and migration
 - Production surface is frozen to these modules (S2.1, `docs/traceability.md`)
 - `tests/` — deterministic suite; `certification/` — maintainer-only real-host suite (`certification/results/` holds records)

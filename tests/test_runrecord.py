@@ -8,19 +8,22 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, BinaryIO
 
 import pytest
 
+import _codex
 import _harness
 import _rungate
 import _runrecord
 import factory
+from _identity import RunSelection
 
 FACTORY = Path(__file__).resolve().parents[1] / "factory.py"
 
@@ -724,3 +727,315 @@ def test_the_run_record_serialization_is_deterministic_and_versioned(
     assert (
         runs_directory(tmp_path / "config") / f"{identifier}.json"
     ).read_bytes() == (refused)
+
+
+def admitted_run(executable: Path) -> _harness.PreparedRun:
+    """The admitted inputs one Runner freezes for the stub executable."""
+
+    info = executable.stat()
+    return _harness.PreparedRun(
+        harness="Codex",
+        executable=executable,
+        invocation=(str(executable),),
+        executable_identity=(info.st_dev, info.st_ino),
+        executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        unset_environment=_codex._CODEX_MANAGED_MARKERS,
+    )
+
+
+def test_an_admitted_run_reads_back_the_frozen_final_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config"
+    worktree = tmp_path / "worktree"
+    registered_store(config, worktree)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    selection = RunSelection(
+        client_id=CLIENT_ID,
+        project_id=PROJECT_ID,
+        repository_id=REPOSITORY_ID,
+        checkout_id=CHECKOUT_ID,
+        boundary=worktree,
+    )
+    stub = stub_executable(tmp_path)
+
+    with _runrecord.run_record(["Fix"], "codex") as record:
+        record.selected(selection)
+        gate = _rungate.run_gate(record, selection, "codex")
+        plan = _rungate.seal_validated_run_plan(
+            gate,
+            admitted_run(stub),
+            b"# Run Request\n\n## Instruction\n\nFix",
+        )
+        with run_spool() as spool:
+            assert _harness.launch(plan, spool) == 0
+
+    document = _runrecord.read_run_record(
+        runs_directory(config) / f"{record.identifier}.json"
+    )
+    assert list(document) == [
+        "schema",
+        "id",
+        "argv",
+        "harness",
+        "opened_at",
+        "status",
+        "selection",
+        "gate",
+        "launch",
+        "outcome",
+    ]
+    assert document["status"] == "launched"
+    assert document["selection"] == {
+        "client_id": CLIENT_ID,
+        "project_id": PROJECT_ID,
+        "repository_id": REPOSITORY_ID,
+        "checkout_id": CHECKOUT_ID,
+        "boundary": str(worktree),
+    }
+    assert set(document["gate"]) == {
+        "at",
+        "head",
+        "object_format",
+        "proof",
+        "git",
+        "policy",
+    }
+    assert document["launch"]["plan_fingerprint"] == plan.fingerprint
+    assert document["outcome"] == {
+        "kind": "exit",
+        "status": 0,
+        "at": document["outcome"]["at"],
+    }
+
+
+def test_a_terminal_record_is_never_rewritten(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config"
+    assert invoke(config, "Fix").returncode == 1
+    path = only_record_file(config)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["status"] == "refused"
+    terminal = _runrecord.RunRecord(document["id"], document)
+
+    terminal.refuse("admission", "late cause")
+    terminal.record_outcome({"kind": "exit", "status": 0})
+    with pytest.raises(_runrecord.RunRecordError):
+        terminal.selected(
+            RunSelection(
+                client_id=CLIENT_ID,
+                project_id=PROJECT_ID,
+                repository_id=REPOSITORY_ID,
+                checkout_id=CHECKOUT_ID,
+                boundary=config,
+            )
+        )
+    with pytest.raises(_runrecord.RunRecordError):
+        terminal.gated(
+            SimpleNamespace(
+                head="0" * 40,
+                object_format="sha1",
+                pins={},
+                assessment={},
+                policy={},
+            )
+        )
+    with pytest.raises(_runrecord.RunRecordError):
+        terminal.commit_launch(sealed_plan(stub_executable(tmp_path), config))
+
+    assert path.read_bytes() == _runrecord._serialize(document)
+    assert _runrecord.read_run_record(path) == document
+
+    stored: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        _runrecord.RunRecord, "_store", lambda self, update: stored.append(update)
+    )
+    finalized = _runrecord.RunRecord(
+        "run_" + "f" * 32,
+        {"status": "launched", "launch": {"committed_at": "committed"}},
+    )
+    finalized.record_outcome({"kind": "exit", "status": 0})
+    finalized.refuse("admission", "late cause")
+    assert len(stored) == 1
+    assert stored[0]["outcome"]["kind"] == "exit"
+
+
+def test_a_crash_leaves_the_honest_unknown_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config"
+    config.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    stub = stub_executable(tmp_path)
+
+    crashed_pid = os.fork()
+    if crashed_pid == 0:
+        os.setpgid(0, 0)
+        try:
+            with _runrecord.run_record(["Fix"], "codex"):
+                os._exit(9)
+        except BaseException:  # noqa: BLE001
+            os._exit(125)
+    _, crashed_status = os.waitpid(crashed_pid, 0)
+    assert os.WIFEXITED(crashed_status)
+    assert os.WEXITSTATUS(crashed_status) == 9
+
+    opened = only_record(config)
+    assert opened["status"] == "open"
+    assert "selection" not in opened
+    read_back = _runrecord.read_run_record(
+        runs_directory(config) / f"{opened['id']}.json"
+    )
+    assert read_back["status"] == "open"
+    assert "outcome" not in read_back
+
+    launched_pid = os.fork()
+    if launched_pid == 0:
+        os.setpgid(0, 0)
+        try:
+            with (
+                _runrecord.run_record(["Fix"], "codex"),
+                run_spool(),
+            ):
+                _runrecord.commit_pending_launch(sealed_plan(stub, config))
+                os._exit(9)
+        except BaseException:  # noqa: BLE001
+            os._exit(125)
+    _, launched_status = os.waitpid(launched_pid, 0)
+    assert os.WIFEXITED(launched_status)
+    assert os.WEXITSTATUS(launched_status) == 9
+
+    crashed = latest_record(config)
+    assert crashed["status"] == "launched"
+    assert "outcome" not in crashed
+    read_back = _runrecord.read_run_record(
+        runs_directory(config) / f"{crashed['id']}.json"
+    )
+    assert read_back["status"] == "launched"
+    assert "outcome" not in read_back
+
+
+def test_readback_refuses_unrecognized_records(tmp_path: Path) -> None:
+    runs = runs_directory(tmp_path)
+    runs.mkdir(parents=True)
+    timestamp = "2026-01-01T00:00:00.000000+00:00"
+    document: dict[str, Any] = {
+        "schema": "factory-run-v1",
+        "id": "run_" + "9" * 32,
+        "argv": {"schema": "factory-argv-v1", "argv": ["Fix"]},
+        "harness": "codex",
+        "opened_at": timestamp,
+        "status": "open",
+    }
+    launch = {
+        "committed_at": timestamp,
+        "harness": "Codex",
+        "executable": "/bin/stub",
+        "invocation": ["/bin/stub"],
+        "plan_fingerprint": "f" * 64,
+    }
+
+    def written(name: str, payload: bytes) -> Path:
+        path = runs / name
+        path.write_bytes(payload)
+        return path
+
+    def refusing(name: str, change: Callable[[dict[str, Any]], None]) -> Path:
+        case = json.loads(json.dumps(document))
+        change(case)
+        return written(name, _runrecord._serialize(case))
+
+    complete = written(f"run_{'9' * 32}.json", _runrecord._serialize(document))
+    assert _runrecord.read_run_record(complete) == document
+
+    refusal = {"stage": "selection", "detail": "cause", "at": timestamp}
+    unrecognized = [
+        refusing(
+            "foreign.json",
+            lambda case: case.update(schema="factory-run-v2", id="run_" + "a" * 32),
+        ),
+        refusing("unknown.json", lambda case: case.update(extra=True)),
+        refusing("missing.json", lambda case: case.pop("harness")),
+        refusing("status.json", lambda case: case.update(status="finished")),
+        refusing(
+            "argv.json", lambda case: case.update(argv={"schema": "other", "argv": []})
+        ),
+        refusing("opened.json", lambda case: case.update(opened_at="not-a-timestamp")),
+        refusing("carrying.json", lambda case: case.update(refusal=refusal)),
+        refusing("norefusal.json", lambda case: case.update(status="refused")),
+        refusing("nolaunch.json", lambda case: case.update(status="launched")),
+        refusing(
+            "refused-launch.json",
+            lambda case: case.update(status="refused", refusal=refusal, launch=launch),
+        ),
+        refusing(
+            "launched-refusal.json",
+            lambda case: case.update(status="launched", launch=launch, refusal=refusal),
+        ),
+        refusing(
+            "outcome.json",
+            lambda case: case.update(
+                status="launched",
+                launch=launch,
+                outcome={"kind": "paused", "at": timestamp},
+            ),
+        ),
+        refusing(
+            "commit.json",
+            lambda case: case.update(
+                status="launched", launch={**launch, "invocation": None}
+            ),
+        ),
+        refusing(
+            "mismatched.json",
+            lambda case: case.update(id="run_" + "b" * 32),
+        ),
+    ]
+    for path in unrecognized:
+        with pytest.raises(_runrecord.RunRecordError):
+            _runrecord.read_run_record(path)
+
+    with pytest.raises(_runrecord.RunRecordError):
+        _runrecord.read_run_record(written("object.json", b"[]\n"))
+    with pytest.raises(_runrecord.RunRecordError):
+        _runrecord.read_run_record(written("broken.json", b"{\n"))
+    linked = written(
+        "real.json", _runrecord._serialize({**document, "id": "run_" + "c" * 32})
+    )
+    alias = runs / f"run_{'c' * 32}.json"
+    alias.symlink_to(linked)
+    with pytest.raises(_runrecord.RunRecordError):
+        _runrecord.read_run_record(alias)
+
+
+def test_the_run_path_never_reads_the_run_record_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = tmp_path / "config"
+    runs = runs_directory(config)
+    runs.mkdir(parents=True)
+    planted = runs / f"run_{'8' * 32}.json"
+    planted.write_text("{ not json", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    def forbidden(path: Path) -> dict[str, object]:
+        pytest.fail("the Run path read the Run Record store")
+
+    monkeypatch.setattr(_runrecord, "read_run_record", forbidden)
+    monkeypatch.setattr(sys, "argv", ["factory", "Fix"])
+
+    assert factory.main() == 1
+    assert "No identity store exists" in capsys.readouterr().err
+    assert planted.read_text(encoding="utf-8") == "{ not json"
+    assert len(list(runs.glob("run_*.json"))) == 2
+
+    stub = stub_executable(tmp_path)
+    assert launch_with_record(tmp_path / "launch-config", stub, monkeypatch) == 0
+    document = only_record(tmp_path / "launch-config")
+    assert document["outcome"]["status"] == 0

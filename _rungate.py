@@ -1119,6 +1119,18 @@ def _selected_checkout(store: IdentityStore, selection: RunSelection) -> Checkou
     return checkout
 
 
+def _association_diagnostic(repository_id: str, names: str) -> str:
+    """Return the frozen store-detected cross-client diagnostic, shared verbatim
+    by the gate's association stage and the doctor's topology report."""
+
+    return (
+        f"Repository {repository_id} is bound to Checkouts of more than one "
+        f"Client ({names}); a Git common directory is not partitioned by "
+        "Client, so Project Data Isolation cannot be proven and cross-Client "
+        "shared Repositories never admit Runs."
+    )
+
+
 def _scan_association(store: IdentityStore, checkout: Checkout) -> None:
     """Refuse a Repository whose referencing Checkouts span two Clients."""
 
@@ -1127,10 +1139,7 @@ def _scan_association(store: IdentityStore, checkout: Checkout) -> None:
         names = ", ".join(sorted(keys))
         raise _StageRefusal(
             _ASSOCIATION,
-            f"Repository {checkout.repository_id} is bound to Checkouts of "
-            f"more than one Client ({names}); a Git common directory is not "
-            "partitioned by Client, so Project Data Isolation cannot be "
-            "proven and cross-Client shared Repositories never admit Runs.",
+            _association_diagnostic(checkout.repository_id, names),
             facts={"repository_id": checkout.repository_id, "clients": names},
         )
 
@@ -1516,13 +1525,11 @@ def _checkout_head(inner: Path, path: str) -> str:
     return os.fsdecode(result.stdout.strip())
 
 
-def _warn_dirty(
+def _dirty_message(
     selection: RunSelection, head: str, assessment: Mapping[str, object]
-) -> None:
-    """Warn on stderr that the observed working tree is dirty; never refuse."""
+) -> str:
+    """Return the frozen DIRTY warning content shared by the Run and doctor."""
 
-    if assessment.get("outcome") != "dirty":
-        return
     parts: list[str] = []
     for name in ("staged", "unstaged", "untracked", "conflicts"):
         paths = assessment.get(name)
@@ -1534,12 +1541,24 @@ def _warn_dirty(
             summary for entry in submodules if (summary := _submodule_summary(entry))
         )
     detail = "; ".join(parts)
+    return (
+        f"Checkout {selection.checkout_id} (client {selection.client_id}, project "
+        f"{selection.project_id}, repository {selection.repository_id}) at "
+        f"{_quoted(str(selection.boundary))} is dirty at HEAD {head}: {detail}. "
+        "Ignored paths are excluded, and the observed working tree is not fully "
+        "represented by HEAD."
+    )
+
+
+def _warn_dirty(
+    selection: RunSelection, head: str, assessment: Mapping[str, object]
+) -> None:
+    """Warn on stderr that the observed working tree is dirty; never refuse."""
+
+    if assessment.get("outcome") != "dirty":
+        return
     sys.stderr.write(
-        f"factory: warning: Checkout {selection.checkout_id} (client "
-        f"{selection.client_id}, project {selection.project_id}, repository "
-        f"{selection.repository_id}) at {_quoted(str(selection.boundary))} is "
-        f"dirty at HEAD {head}: {detail}. Ignored paths are excluded, and the "
-        "observed working tree is not fully represented by HEAD.\n"
+        f"factory: warning: {_dirty_message(selection, head, assessment)}\n"
     )
 
 

@@ -12,7 +12,7 @@ dependencies = ["platformdirs>=4"]
 factory = "factory:main"
 
 [tool.setuptools]
-py-modules = ["factory", "_harness", "_runrecord", "_rungate", "_codex", "_claude", "_publisher", "_identity", "_project", "_project_guidance", "_project_registry"]
+py-modules = ["factory", "_harness", "_runrecord", "_rungate", "_codex", "_claude", "_publisher", "_identity", "_project", "_project_guidance", "_project_registry", "_doctor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -46,6 +46,7 @@ include = [
     "_project.py",
     "_project_guidance.py",
     "_project_registry.py",
+    "_doctor.py",
 ]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"

@@ -1746,12 +1746,18 @@ def _project_checkout(store: IdentityStore, project: ProjectRecord) -> Checkout:
             f"one with 'factory project checkout register {selector} PATH'"
         )
     if len(owned) > 1:
-        raise IdentityError(
-            f"Project {_quoted(selector)} has no default Checkout and multiple "
-            "Checkouts; select one with --checkout PATH or set a default with "
-            f"'factory project set-default-checkout {selector} PATH'"
-        )
+        raise _ambiguous_target(selector)
     return owned[0]
+
+
+def _ambiguous_target(selector: str) -> IdentityError:
+    """Refuse the shared ambiguous-target diagnostic of Run and doctor selection."""
+
+    return IdentityError(
+        f"Project {selector} has several Checkouts and no valid default Checkout; "
+        "select one explicitly with --checkout PATH or set a default with "
+        f"'factory project set-default-checkout {selector} PATH'."
+    )
 
 
 def _fresh_boundary(checkout: Checkout) -> Path:
@@ -1799,12 +1805,14 @@ def resolve_run_project(selector: str) -> RunSelection:
     return _verified_run_selection(store, _project_checkout(store, project))
 
 
-def resolve_run_checkout(
-    supplied: str, project_selector: str | None, invocation_dir: Path
-) -> RunSelection:
+def _checkout_selection(
+    store: IdentityStore,
+    supplied: str,
+    project: ProjectRecord | None,
+    invocation_dir: Path,
+) -> Checkout:
     """Resolve one supplied path to a Checkout, optionally scoped to a Project."""
 
-    store = run_store()
     boundary = _canonical_run_path(supplied, invocation_dir)
     checkout = _checkout_at_boundary(store, boundary)
     if checkout is None:
@@ -1813,11 +1821,42 @@ def resolve_run_checkout(
         if legacy is not None:
             _refuse_legacy_boundary(boundary, legacy)
         _refuse_unselectable_boundary(boundary)
-    if project_selector is not None:
-        _check_checkout_scope(
-            store, _resolve_project(store, project_selector), checkout, boundary
-        )
-    return _verified_run_selection(store, checkout)
+    if project is not None:
+        _check_checkout_scope(store, project, checkout, boundary)
+    return checkout
+
+
+def resolve_run_checkout(
+    supplied: str, project_selector: str | None, invocation_dir: Path
+) -> RunSelection:
+    """Resolve one supplied path to a Checkout, optionally scoped to a Project."""
+
+    store = run_store()
+    project = (
+        None if project_selector is None else _resolve_project(store, project_selector)
+    )
+    return _verified_run_selection(
+        store, _checkout_selection(store, supplied, project, invocation_dir)
+    )
+
+
+def resolve_inspection_target(
+    store: IdentityStore,
+    project: ProjectRecord,
+    supplied: str | None,
+    invocation_dir: Path,
+) -> Checkout:
+    """Resolve the doctor's target Checkout through the Run's selection chain.
+
+    The chain is the Run's — the frozen refusal table for a supplied path,
+    scope-checked against the Project, else the Project's default or sole
+    Checkout — without the Run's freshness verification, which the doctor
+    observes at the proof and drift stages instead of refusing selection.
+    """
+
+    if supplied is None:
+        return _project_checkout(store, project)
+    return _checkout_selection(store, supplied, project, invocation_dir)
 
 
 def resolve_run_discovery(invocation_dir: Path) -> RunSelection:

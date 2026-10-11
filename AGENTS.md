@@ -75,5 +75,9 @@ See `docs/agents/triage-labels.md`.
 This is a single-context layout.  
 See `docs/agents/domain.md`.
 
+### Pull requests
+Every pull request body is written through the `/pr` skill, invoked before the body is written.  
+See `docs/agents/pr.md`.
+
 ## More context
 - Architecture / deeper docs: `docs/` — `traceability.md` is normative, `adr/` holds decisions

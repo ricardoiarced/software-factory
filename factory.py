@@ -11,6 +11,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import BinaryIO, NoReturn
 
+from _doctor import doctor_project
 from _harness import (
     DEFAULT_HARNESS,
     HARNESS_NAMES,
@@ -50,6 +51,7 @@ from _runrecord import RunRecord, RunRecordError, run_record
 ROOT_SYNOPSIS = """Usage:
   factory [--harness codex|claude] [--project NAME] [--checkout PATH] [--file PATH]... [--force] [--re-probe] [--] INSTRUCTION...
   factory project COMMAND ...
+  factory doctor project [--] SELECTOR [--checkout PATH] [--harness NAME]
   factory (-h | --help)
   factory --version
 """
@@ -162,13 +164,52 @@ Only exact lowercase project as the first argument enters this namespace.
 """
 )
 
+DOCTOR_SYNOPSIS = """Usage:
+  factory doctor project [--] SELECTOR [--checkout PATH] [--harness NAME]
+  factory doctor (-h | --help)
+"""
+
+DOCTOR_HELP = (
+    DOCTOR_SYNOPSIS
+    + """
+Report, as read-only observation, the state the next Run of one Project
+would meet: the resolved identity, the Checkout inventory, the shared
+Repository topology, and the Shared Run Gate over one target Checkout — the
+same stages, diagnostics, and precedence a Run applies before admission.
+
+Every reported fact carries its provenance: stored (identity-store value),
+observed (fresh observation this invocation), cached (Host Admission Probe
+cache entry), or not reached (a stage the gate would not have reached).
+Doctor never mutates identity state, never runs the Host Admission Probe,
+and never submits a Run Request.
+
+Findings never change the exit status. The exit status is 0 when the
+inspection completed, 1 when the target could not be resolved, and 2 for
+usage errors.
+
+Options:
+  --checkout PATH  Observe the registered Checkout at PATH; it must belong
+                   to the selected Project.
+  --harness NAME   Also observe one Harness's admission: codex or claude.
+                   This performs one live newest-stable lookup. Without it,
+                   doctor performs no network access.
+  -h, --help       Show this help.
+
+Doctor observations are not Run admission; a Run re-validates every check
+before launch.
+"""
+)
+
 
 class UsageError(Exception):
     """A malformed command line and its relevant namespace."""
 
-    def __init__(self, reason: str, *, project: bool = False) -> None:
+    def __init__(
+        self, reason: str, *, project: bool = False, doctor: bool = False
+    ) -> None:
         super().__init__(reason)
         self.project = project
+        self.doctor = doctor
 
 
 class RunInputError(Exception):
@@ -583,12 +624,93 @@ def _parse_project(arguments: list[str]) -> ProjectInvocation:
 
 
 def _usage(error: UsageError) -> int:
-    synopsis = PROJECT_SYNOPSIS if error.project else ROOT_SYNOPSIS
-    help_command = "factory project --help" if error.project else "factory --help"
+    if error.doctor:
+        synopsis, help_command = DOCTOR_SYNOPSIS, "factory doctor --help"
+    elif error.project:
+        synopsis, help_command = PROJECT_SYNOPSIS, "factory project --help"
+    else:
+        synopsis, help_command = ROOT_SYNOPSIS, "factory --help"
     sys.stderr.write(
         f"factory: error: {error}\n{synopsis}Try '{help_command}' for more information.\n"
     )
     return 2
+
+
+@dataclass(frozen=True)
+class DoctorArguments:
+    """One parsed Project Doctor command line."""
+
+    selector: str
+    checkout: str | None
+    harness: str | None
+
+
+def _doctor_value(
+    arguments: list[str], position: int, argument: str
+) -> tuple[str, int]:
+    """Return one valued Doctor option's value and the position past it."""
+    try:
+        _, value, position = _option_value(arguments, position, argument)
+    except UsageError as error:
+        raise UsageError(str(error), doctor=True) from error
+    return value, position
+
+
+def _parse_doctor_project(arguments: list[str]) -> DoctorArguments:
+    """Parse the doctor project command line: one selector, two options."""
+    selector: str | None = None
+    options: dict[str, str] = {}
+    positionals_only = False
+    position = 0
+    while position < len(arguments):
+        argument = arguments[position]
+        if positionals_only or not argument.startswith("-") or argument == "-":
+            if selector is not None:
+                raise UsageError(
+                    "factory doctor project expects one selector", doctor=True
+                )
+            selector = argument
+        elif argument in ("-h", "--help", "--version"):
+            raise UsageError(f"{argument} must be used alone", doctor=True)
+        elif argument == "--":
+            positionals_only = True
+        elif argument == "--path":
+            raise UsageError(
+                "--path was removed; use --checkout PATH to select a "
+                "registered Checkout.",
+                doctor=True,
+            )
+        elif argument in ("--checkout", "--harness"):
+            if argument in options:
+                raise UsageError(f"{argument} may appear only once", doctor=True)
+            value, position = _doctor_value(arguments, position, argument)
+            if argument == "--harness":
+                try:
+                    _check_harness_name(value)
+                except UsageError as error:
+                    raise UsageError(str(error), doctor=True) from error
+            options[argument] = value
+        else:
+            raise UsageError(f"unknown Doctor option {_quoted(argument)}", doctor=True)
+        position += 1
+    if selector is None:
+        raise UsageError("factory doctor project expects one selector", doctor=True)
+    return DoctorArguments(
+        selector, options.get("--checkout"), options.get("--harness")
+    )
+
+
+def _dispatch_doctor(arguments: list[str]) -> int:
+    """Run one Project Doctor command to completion."""
+    if arguments in (["-h"], ["--help"]):
+        sys.stdout.write(DOCTOR_HELP)
+        return 0
+    if not arguments:
+        raise UsageError("a Doctor command is required", doctor=True)
+    if arguments[0] != "project":
+        raise UsageError(f"unknown Doctor command {_quoted(arguments[0])}", doctor=True)
+    parsed = _parse_doctor_project(arguments[1:])
+    return doctor_project(parsed.selector, parsed.checkout, parsed.harness, Path.cwd())
 
 
 def _route(arguments: list[str]) -> int:
@@ -599,11 +721,16 @@ def _route(arguments: list[str]) -> int:
     if arguments in (["project", "-h"], ["project", "--help"]):
         sys.stdout.write(PROJECT_HELP)
         return 0
+    if arguments in (["doctor", "-h"], ["doctor", "--help"]):
+        sys.stdout.write(DOCTOR_HELP)
+        return 0
     if arguments == ["--version"]:
         sys.stdout.write(f"factory {version('software-factory')}\n")
         return 0
     if arguments[:1] == ["project"]:
         return _dispatch_project(_parse_project(arguments[1:]))
+    if arguments[:1] == ["doctor"]:
+        return _dispatch_doctor(arguments[1:])
     return _dispatch_run(_parse_run(arguments))
 
 

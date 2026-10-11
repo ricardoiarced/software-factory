@@ -517,9 +517,9 @@ def test_project_run_refuses_multiple_checkouts_without_a_default(
 
     assert result.returncode == 1
     expected = (
-        'factory: error: Project "acme/web" has no default Checkout and multiple '
-        "Checkouts; select one with --checkout PATH or set a default with "
-        "'factory project set-default-checkout acme/web PATH'.\n"
+        "factory: error: Project acme/web has several Checkouts and no valid "
+        "default Checkout; select one explicitly with --checkout PATH or set a "
+        "default with 'factory project set-default-checkout acme/web PATH'.\n"
     )
     assert result.stderr == expected.encode()
 

@@ -188,3 +188,15 @@ _Avoid_: Re-add, automatic repair, silent rebinding
 **Run**:
 One non-interactive execution started for an instruction in a project by the selected Harness.
 _Avoid_: Job, task, session
+
+**Run Record**:
+The durable, standalone audit artifact Factory writes for one Run on the Run execution path: the command line, the selected Checkout's immutable identities and boundary, the Shared Run Gate's evidence, the structured refusal or the Launch Commit with the plan fingerprint, and the observed outcome, under a frozen schema (`factory-run-v1`). Opened after CLI parsing and before any selection, extended until finalized — refused, or launched with exactly one outcome — then immutable; a crash leaves an honestly unfinished record whose outcome reads back unknown. Strict readback is audit-only evidence inspection: recorded history never resumes, replays, or admits a Run. A refused preflight is a terminal recorded Run outcome, and read-only consumers such as the Project Doctor never mint one.
+_Avoid_: Run history, log, journal, event stream
+
+**Run ID**:
+The Factory-generated, cryptographically random, immutable `run_…` token allocated before the first Shared Run Gate stage of every invocation entering the Run path, in the same prefix discipline as the other identity IDs. Never derived from names, paths, Git state, or timestamps, never reused across retries, and carrying no ordering semantics.
+_Avoid_: attempt number, session ID, derived correlation ID
+
+**Launch Commit**:
+The crash-durable authorization record written to the active Run Record immediately after the final pre-spawn check and before process creation, binding the sealed Validated Run Plan's fingerprint and the admitted launch plan. A Launch Commit that cannot be made durable refuses the Run before process creation, so a process is never created without a preceding durable authorization.
+_Avoid_: launch log, spawn marker, post-hoc entry

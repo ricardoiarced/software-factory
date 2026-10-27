@@ -21,7 +21,7 @@ markers = [
 ]
 
 [dependency-groups]
-dev = ["pytest", "platformdirs", "build", "ruff", "pyright==1.1.414"]
+dev = ["pytest", "platformdirs", "build", "ruff==0.17.0", "pyright==1.1.414"]
 
 [tool.ruff]
 target-version = "py311"

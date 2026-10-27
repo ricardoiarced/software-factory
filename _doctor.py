@@ -74,8 +74,9 @@ _OBSERVED = "observed"
 _CACHED = "cached"
 _NOT_REACHED = "not reached"
 _CACHE_STEP = "host admission probe cache"
-_CONFIGURED = "configured"
 _GATE_STAGES = (_STORE_GRAPH, _SCOPE, _ASSOCIATION, _PROOF, _DRIFT, _GIT)
+_StepResult = str | tuple[str, str] | None
+_Step = Callable[[str, Callable[[], _StepResult]], None]
 _LAUNCH_EFFECTIVENESS: Mapping[str, tuple[str, str, str]] = {
     "codex": (
         (
@@ -229,6 +230,7 @@ def _inventory_lines(
     lines = [
         "Inventory",
         f"  Client: {client.key} {client.id} ({_STORED})",
+        f"  Project: {_selector(store, project)} {project.id} ({_STORED})",
     ]
     owned = sorted(
         (c for c in store.checkouts if c.project_id == project.id),
@@ -239,10 +241,10 @@ def _inventory_lines(
         marker = "" if checkout is not target else " (target)"
         lines.append(
             f"  Checkout: {checkout.id} at {_quoted(checkout.boundary.path)}"
-            f"{marker} {status} ({_OBSERVED})"
+            f" ({_STORED}){marker} {status} ({_OBSERVED})"
         )
         if cause is not None:
-            lines.append(f"    {cause}")
+            lines.append(f"    {cause} ({_OBSERVED})")
     for repository in _project_repositories(store, list(owned)):
         lines.append(
             f"  Repository: {repository.id} at "
@@ -316,7 +318,7 @@ def _topology_lines(store: IdentityStore, project: ProjectRecord) -> list[str]:
 
 
 def _reported(lines: list[str], checkout: Checkout) -> bool:
-    """Return whether one Repository line was already added, marking it then."""
+    """Return whether a line for this Repository is already present."""
 
     identifier = f"  Repository {checkout.repository_id} "
     return any(line.startswith(identifier) for line in lines)
@@ -457,18 +459,18 @@ def _harness_lines(harness: str, boundary: Path | None) -> tuple[list[str], str 
         "Ignored ambient configuration",
     )
     for name, classification in zip(names, _LAUNCH_EFFECTIVENESS[harness], strict=True):
-        lines.append(f"    {name}: {classification} ({_CONFIGURED})")
+        lines.append(f"    {name}: {classification} ({_OBSERVED})")
     return lines, refused
 
 
 def _sequencer(
     observations: list[_Observation],
-) -> Callable[[str, Callable[[], str | None]], None]:
+) -> _Step:
     """Record admission observations in order; a failure stops the sequence."""
 
     failure: list[str] = []
 
-    def attempt(subject: str, action: Callable[[], str | None]) -> None:
+    def attempt(subject: str, action: Callable[[], _StepResult]) -> None:
         if failure:
             observations.append(
                 _Observation(
@@ -492,6 +494,10 @@ def _sequencer(
                         subject, _NOT_REACHED, _NOT_REACHED, "no target Checkout"
                     )
                 )
+            elif isinstance(detail, tuple):
+                observations.append(
+                    _Observation(subject, detail[0], provenance, detail[1])
+                )
             else:
                 observations.append(_Observation(subject, "ok", provenance, detail))
 
@@ -513,9 +519,7 @@ def _observe_harness(harness: str, boundary: Path | None) -> list[_Observation]:
     return observations
 
 
-def _codex_sequence(
-    attempt: Callable[[str, Callable[[], str | None]], None], boundary: Path | None
-) -> None:
+def _codex_sequence(attempt: _Step, boundary: Path | None) -> None:
     from _codex import (
         _match_compatibility,
         _reported_version,
@@ -554,7 +558,7 @@ def _codex_sequence(
         policy._inspect_strict_configuration(boundary, boundary)
         return "the certified inspectors accepted the strict configuration"
 
-    def cache() -> str:
+    def cache() -> tuple[str, str]:
         return _probe_cache_state(cast("_MatchedPolicy", state["policy"]))
 
     attempt("executable resolution", resolve)
@@ -566,7 +570,7 @@ def _codex_sequence(
 
 
 def _claude_sequence(
-    attempt: Callable[[str, Callable[[], str | None]], None],
+    attempt: _Step,
 ) -> None:
     from _claude import (
         _match_compatibility,
@@ -604,7 +608,7 @@ def _claude_sequence(
         _require_no_managed_policy(cast("Path", state["executable"]))
         return "no managed-policy source is present or configured"
 
-    def cache() -> str:
+    def cache() -> tuple[str, str]:
         return _probe_cache_state(cast("_MatchedPolicy", state["policy"]))
 
     attempt("executable resolution", resolve)
@@ -615,35 +619,45 @@ def _claude_sequence(
     attempt("host admission probe cache", cache)
 
 
-def _probe_cache_state(policy: _MatchedPolicy) -> str:
+def _probe_cache_state(policy: _MatchedPolicy) -> tuple[str, str]:
     """Report the probe cache state without executing the probe or writing."""
 
     payload = policy._host_probe_cache_payload()
     path = policy._host_probe_cache_path(payload)
     try:
         recorded = path.read_bytes()
-        age = max(0.0, time.time() - path.stat().st_mtime)
+        recorded_at = path.stat().st_mtime
+        age = max(0.0, time.time() - recorded_at)
     except FileNotFoundError:
-        return (
+        return "unknown", (
             "no Host Admission Probe cache entry exists for this Factory "
             "version, artifact, and host"
         )
     except OSError as error:
-        return f"the Host Admission Probe cache entry cannot be inspected: {error}"
-    if recorded != payload:
         return (
+            "unknown",
+            f"the Host Admission Probe cache entry cannot be inspected: {error}",
+        )
+    try:
+        document = json.loads(recorded.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return "unknown", "the Host Admission Probe cache entry is malformed"
+    if not isinstance(document, dict):
+        return "unknown", "the Host Admission Probe cache entry is malformed"
+    if recorded != payload:
+        return "unknown", (
             "the Host Admission Probe cache entry does not match this Factory "
             "version, artifact, and host"
         )
-    document = json.loads(recorded.decode("utf-8"))
     versions = ", ".join(
         f"{name.removesuffix('_version').replace('_', ' ')} {document[name]}"
         for name in sorted(document)
         if name.endswith("_version") and isinstance(document[name], str)
     )
-    return (
+    return "ok", (
         f"a Host Admission Probe success is cached ({versions}), recorded "
-        f"{int(age)} seconds ago"
+        f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(recorded_at))} "
+        f"({int(age)} seconds ago)"
     )
 
 
@@ -658,15 +672,19 @@ def _summary_lines(
     if without_target:
         lines.append(
             "  A Run would refuse before the Shared Run Gate: the Project has "
-            "no Checkouts."
+            f"no Checkouts. ({_STORED})"
         )
     elif stopped is not None:
-        lines.append(f"  A Run would stop at the {stopped} stage.")
+        lines.append(f"  A Run would stop at the {stopped} stage. ({_OBSERVED})")
     elif dirty:
-        lines.append("  A Run would pass the Shared Run Gate with the dirty warning.")
+        lines.append(
+            f"  A Run would pass the Shared Run Gate with the dirty warning. ({_OBSERVED})"
+        )
     else:
-        lines.append("  A Run would pass the Shared Run Gate.")
+        lines.append(f"  A Run would pass the Shared Run Gate. ({_OBSERVED})")
     if harness is not None and refused is not None:
-        lines.append(f"  A {harness} Run would refuse admission at the {refused} step.")
+        lines.append(
+            f"  A {harness} Run would refuse admission at the {refused} step. ({_OBSERVED})"
+        )
     lines.append(STANDING_LABEL)
     return lines

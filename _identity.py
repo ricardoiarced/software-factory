@@ -1808,7 +1808,7 @@ def resolve_run_project(selector: str) -> RunSelection:
 def _checkout_selection(
     store: IdentityStore,
     supplied: str,
-    project: ProjectRecord | None,
+    project: ProjectRecord | str | None,
     invocation_dir: Path,
 ) -> Checkout:
     """Resolve one supplied path to a Checkout, optionally scoped to a Project."""
@@ -1822,7 +1822,10 @@ def _checkout_selection(
             _refuse_legacy_boundary(boundary, legacy)
         _refuse_unselectable_boundary(boundary)
     if project is not None:
-        _check_checkout_scope(store, project, checkout, boundary)
+        scoped = (
+            _resolve_project(store, project) if isinstance(project, str) else project
+        )
+        _check_checkout_scope(store, scoped, checkout, boundary)
     return checkout
 
 
@@ -1832,11 +1835,8 @@ def resolve_run_checkout(
     """Resolve one supplied path to a Checkout, optionally scoped to a Project."""
 
     store = run_store()
-    project = (
-        None if project_selector is None else _resolve_project(store, project_selector)
-    )
     return _verified_run_selection(
-        store, _checkout_selection(store, supplied, project, invocation_dir)
+        store, _checkout_selection(store, supplied, project_selector, invocation_dir)
     )
 
 

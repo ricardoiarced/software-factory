@@ -258,6 +258,7 @@ def test_doctor_help_is_stable_stdout() -> None:
         ("doctor", "project"),
         ("doctor", "project", "acme/web", "extra"),
         ("doctor", "project", "acme/web", "--harness", "vim"),
+        ("doctor", "project", "acme/web", "--harness=vim"),
         ("doctor", "project", "acme/web", "--checkout"),
         ("doctor", "project", "acme/web", "--checkout", "/a", "--checkout", "/b"),
         ("doctor", "project", "acme/web", "--file", "notes.txt"),
@@ -406,6 +407,11 @@ def test_doctor_target_selection_shares_the_run_refusal_table(
     assert interior.stdout == b""
     assert b"must exactly" in interior.stderr
 
+    inline = invoke("doctor", "project", "acme/web", f"--checkout={repo}", env=env)
+    assert inline.returncode == 0
+    assert inline.stderr == b""
+    assert f"Checkout: {CHECKOUT_ID} at" in inline.stdout.decode("utf-8")
+
 
 def test_the_ambiguous_target_diagnostic_is_shared_with_the_run(
     tmp_path: Path,
@@ -474,6 +480,7 @@ def test_doctor_reports_resolution_inventory_and_a_fresh_gate(
     positions = [text.index(section) for section in SECTION_ORDER]
     assert positions == sorted(positions)
     assert "Project Doctor report for acme/web" in text
+    assert f"  Project: acme/web {PROJECT_ID} (stored)" in text
     assert f"Checkout: {CHECKOUT_ID} at" in text
     for stage in GATE_STAGES:
         assert f"  {stage}: ok (observed)" in text
@@ -493,7 +500,6 @@ def test_every_reported_fact_carries_a_provenance_label(tmp_path: Path) -> None:
         "(observed)",
         "(cached)",
         "(not reached)",
-        "(configured)",
     )
     section = None
     for line in lines:
@@ -502,7 +508,7 @@ def test_every_reported_fact_carries_a_provenance_label(tmp_path: Path) -> None:
         if line in SECTION_HEADERS:
             section = line
             continue
-        if section == "Summary" or line.startswith("    "):
+        if line.startswith("    ") and section != "Summary":
             continue
         assert line.endswith(provenances), line
 
@@ -675,7 +681,7 @@ def test_doctor_harness_observations_follow_the_run_order(
         "newest stable: ok",
         "compatibility: ok",
         "strict configuration: ok",
-        "host admission probe cache: ok (cached)",
+        "host admission probe cache: unknown (cached)",
     ]
     positions = [out.index(step) for step in order]
     assert positions == sorted(positions)
@@ -741,7 +747,7 @@ def test_doctor_probe_cache_state_is_cached_evidence(
         monkeypatch, capsys, "doctor", "project", "acme/web", "--harness", "codex"
     )
     assert status == 0
-    assert "host admission probe cache: ok (cached)" in out
+    assert "host admission probe cache: unknown (cached)" in out
     assert "no Host Admission Probe cache entry exists for this Factory version" in out
 
     cache.parent.mkdir(parents=True)
@@ -750,14 +756,25 @@ def test_doctor_probe_cache_state_is_cached_evidence(
         monkeypatch, capsys, "doctor", "project", "acme/web", "--harness", "codex"
     )
     assert "a Host Admission Probe success is cached" in matched
+    assert "host admission probe cache: ok (cached)" in matched
     assert "codex 0.160.0, factory 0.1.2" in matched
     assert "recorded" in matched
 
-    cache.write_bytes(policy._host_probe_cache_payload() + b"tail")
+    mismatched_payload = json.loads(policy._host_probe_cache_payload())
+    mismatched_payload["factory_version"] = "0.1.1"
+    cache.write_text(json.dumps(mismatched_payload), encoding="utf-8")
     _status, mismatched, _err = run_doctor(
         monkeypatch, capsys, "doctor", "project", "acme/web", "--harness", "codex"
     )
     assert "does not match this Factory version, artifact, and host" in mismatched
+    assert "host admission probe cache: unknown (cached)" in mismatched
+
+    cache.write_bytes(b"{ not json")
+    _status, malformed, _err = run_doctor(
+        monkeypatch, capsys, "doctor", "project", "acme/web", "--harness", "codex"
+    )
+    assert "host admission probe cache: unknown (cached)" in malformed
+    assert "Host Admission Probe cache entry is malformed" in malformed
 
 
 def test_doctor_never_mints_a_run_record_or_runs_the_probe(
@@ -839,7 +856,7 @@ def test_harness_observations_classify_configuration_by_launch_effectiveness(
         "not a launch input, and their presence, absence, or validity never affects admission"
         in out
     )
-    assert "(configured)" in out
+    assert "(observed)" in out
 
     _status, claude_out, _err = run_doctor(
         monkeypatch, capsys, "doctor", "project", "acme/web", "--harness", "claude"

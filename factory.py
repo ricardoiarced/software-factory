@@ -664,6 +664,7 @@ def _parse_doctor_project(arguments: list[str]) -> DoctorArguments:
     position = 0
     while position < len(arguments):
         argument = arguments[position]
+        option = argument.partition("=")[0]
         if positionals_only or not argument.startswith("-") or argument == "-":
             if selector is not None:
                 raise UsageError(
@@ -680,16 +681,16 @@ def _parse_doctor_project(arguments: list[str]) -> DoctorArguments:
                 "registered Checkout.",
                 doctor=True,
             )
-        elif argument in ("--checkout", "--harness"):
-            if argument in options:
-                raise UsageError(f"{argument} may appear only once", doctor=True)
+        elif option in ("--checkout", "--harness"):
+            if option in options:
+                raise UsageError(f"{option} may appear only once", doctor=True)
             value, position = _doctor_value(arguments, position, argument)
-            if argument == "--harness":
+            if option == "--harness":
                 try:
                     _check_harness_name(value)
                 except UsageError as error:
                     raise UsageError(str(error), doctor=True) from error
-            options[argument] = value
+            options[option] = value
         else:
             raise UsageError(f"unknown Doctor option {_quoted(argument)}", doctor=True)
         position += 1

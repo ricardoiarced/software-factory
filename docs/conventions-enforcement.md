@@ -36,7 +36,7 @@ baseline to ratchet against — any regression fails outright (see
 
 | Tool | Pin | Mechanism |
 |---|---|---|
-| ruff | `0.17.0` | `[tool.ruff] required-version = "==0.17.0"` — ruff refuses to run off-spec, so every invocation (including `uv run --with ruff`) is bound. Upgrades are deliberate policy changes. The dev-group `ruff` entry stays unpinned on purpose: the config pin is the single source of truth; two pins would drift. A fresh resolution past the pin fail-closes (ruff exits 2) until the pin is bumped — the 0.16.10 and 0.17.0 releases broke CI exactly this way, and the fix is the bump. |
+| ruff | `0.17.0` | `[tool.ruff] required-version = "==0.17.0"` makes ruff refuse to run off-spec. The dev group pins the same version so a fresh `uv run` resolves a usable tool after a newer release. Both pins change together during a deliberate policy upgrade. The Conformance baseline step reads the required version from its own checkout so it can compare against an older ref whose dev dependency was not yet pinned. |
 | pyright | `1.1.414` | exact pin in the dev dependency group — pyright has no config-level version lock. |
 
 ## Lint selection

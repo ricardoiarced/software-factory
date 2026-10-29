@@ -1239,6 +1239,8 @@ def test_explicit_root_help_is_stable_stdout() -> None:
         b"  factory [--harness codex|claude] [--project NAME] [--checkout PATH] "
         b"[--file PATH]... [--force] [--re-probe] [--] INSTRUCTION...\n"
         b"  factory project COMMAND ...\n"
+        b"  factory doctor project [--] SELECTOR [--checkout PATH] "
+        b"[--harness NAME]\n"
         b"  factory (-h | --help)\n"
         b"  factory --version\n"
     )
@@ -1735,6 +1737,8 @@ def test_removed_path_flag_is_a_usage_error_naming_checkout(
         b"  factory [--harness codex|claude] [--project NAME] [--checkout PATH] "
         b"[--file PATH]... [--force] [--re-probe] [--] INSTRUCTION...\n"
         b"  factory project COMMAND ...\n"
+        b"  factory doctor project [--] SELECTOR [--checkout PATH] "
+        b"[--harness NAME]\n"
         b"  factory (-h | --help)\n"
         b"  factory --version\n"
         b"Try 'factory --help' for more information.\n"

@@ -70,7 +70,8 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          uv run ruff check . --output-format=json > "$RUNNER_TEMP/ruff.json"
+          ruff_spec="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["tool"]["ruff"]["required-version"])')"
+          uv run --with "ruff${ruff_spec}" ruff check . --output-format=json > "$RUNNER_TEMP/ruff.json"
           ruff_status=$?
           uv run pyright --outputjson > "$RUNNER_TEMP/pyright.json"
           pyright_status=$?

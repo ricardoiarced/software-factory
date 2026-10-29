@@ -1298,6 +1298,81 @@ def test_a_missing_network_control_refuses_as_unknown(
     assert "UNKNOWN" in refusal["detail"]
 
 
+def test_excluded_ambient_codex_configuration_carries_no_admission_obligation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    baseline_document, error = gate_verdict(config, direct_selection(root), "codex")
+    assert error is None
+    baseline_gate = baseline_document["gate"]
+    assert isinstance(baseline_gate, dict)
+    baseline = baseline_gate["policy"]
+    assert isinstance(baseline, dict)
+
+    ambient_home = tmp_path / "ambient-codex-home"
+    ambient_home.mkdir()
+    (ambient_home / "config.toml").write_text(
+        "factory_sentinel_unknown_key = true\n[features]\napps = true\nbroken = = =\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(ambient_home))
+    ambient_document, error = gate_verdict(config, direct_selection(root), "codex")
+
+    assert error is None
+    ambient_gate = ambient_document["gate"]
+    assert isinstance(ambient_gate, dict)
+    ambient = ambient_gate["policy"]
+    assert isinstance(ambient, dict)
+    for stage in ("instructions", "sandbox", "network"):
+        assert ambient[stage] == baseline[stage]
+    environment = ambient["environment"]
+    assert isinstance(environment, dict)
+    assert environment["provenance"] == "observed"
+    assert environment["config_location"] == {
+        "variable": "CODEX_HOME",
+        "path": str(ambient_home),
+    }
+
+
+def test_excluded_ambient_claude_settings_carries_no_admission_obligation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    home = tmp_path / "ambient-home"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    baseline_document, error = gate_verdict(config, direct_selection(root), "claude")
+    assert error is None
+    baseline_gate = baseline_document["gate"]
+    assert isinstance(baseline_gate, dict)
+    baseline = baseline_gate["policy"]
+    assert isinstance(baseline, dict)
+
+    (home / ".claude" / "settings.json").write_text(
+        '{"factorySentinelUserKey": true, "hooks": {"SessionStart": []}}\n',
+        encoding="utf-8",
+    )
+    (root / ".claude").mkdir()
+    (root / ".claude" / "settings.json").write_text(
+        '{"model": "claude-opus", "factorySentinelBoundaryKey": "ignored"}\n',
+        encoding="utf-8",
+    )
+    (root / ".claude" / "settings.local.json").write_text(
+        "{not even json\n",
+        encoding="utf-8",
+    )
+    commit_worktree(root)
+    ambient_document, error = gate_verdict(config, direct_selection(root), "claude")
+
+    assert error is None
+    ambient_gate = ambient_document["gate"]
+    assert isinstance(ambient_gate, dict)
+    ambient = ambient_gate["policy"]
+    assert isinstance(ambient, dict)
+    for stage in ("instructions", "sandbox", "network", "environment"):
+        assert ambient[stage] == baseline[stage]
+
+
 def test_the_environment_stage_records_the_effective_environment_derivation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2101,3 +2176,65 @@ def test_probe_provenance_binds_into_the_plan_and_the_launch_commit(
     document = launch_sealed(config, plan)
 
     assert document["launch"]["plan_fingerprint"] == plan.fingerprint
+
+
+def test_security_relevant_claude_keys_bind_to_version_bound_behavioral_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _config, gate = passed_gate(tmp_path, monkeypatch, "claude")
+    policy, _cache, probes = claude_probe_policy(tmp_path, monkeypatch)
+    invocation, evidence = policy.prepare_run(root)
+    executable = stub_harness(tmp_path)
+    plan = sealed_plan("claude", gate, executable, probe=evidence)
+    policy_document = gate.observation.policy
+    assert isinstance(policy_document, dict)
+    sandbox = policy_document["sandbox"]
+    assert isinstance(sandbox, dict)
+    controls = sandbox["controls"]
+    assert isinstance(controls, dict)
+    key = hashlib.sha256(policy._host_probe_cache_payload()).hexdigest()
+
+    assert sandbox["provenance"] == "configured"
+    assert controls["permission_mode"] == "dontAsk"
+    assert controls["sandbox_enabled"] is True
+    read_fence = controls["read_fence"]
+    assert isinstance(read_fence, dict)
+    assert str(root) in read_fence["allow_read"]
+    assert evidence["cache"] == "fresh"
+    assert evidence["key"] == key
+    assert plan.evidence["admission"]["probe"] == evidence
+    assert invocation.index("--permission-mode") + 1 == invocation.index("dontAsk")
+
+    superseded = replace(policy, version="9.9.10")
+    _superseded_invocation, superseded_evidence = superseded.prepare_run(root)
+
+    assert probes == ["ran", "ran"]
+    assert superseded_evidence["cache"] == "fresh"
+    assert (
+        superseded_evidence["key"]
+        == hashlib.sha256(superseded._host_probe_cache_payload()).hexdigest()
+    )
+    assert superseded_evidence["key"] != key
+
+
+def test_a_failing_host_probe_refuses_despite_recorded_sandbox_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, config = registered_checkout(tmp_path, monkeypatch)
+    sandbox = policy_evidence(config, direct_selection(root), "claude")["sandbox"]
+    assert isinstance(sandbox, dict)
+    controls = sandbox["controls"]
+    assert isinstance(controls, dict)
+    assert controls["permission_mode"] == "dontAsk"
+
+    policy, cache, probes = claude_probe_policy(tmp_path, monkeypatch)
+
+    def failing(self: _claude._ClaudePolicy) -> None:
+        raise self._host_probe_failure("exit status 7")
+
+    monkeypatch.setattr(_claude._ClaudePolicy, "_run_host_admission_probe", failing)
+    with pytest.raises(_harness.RunAdmissionError, match="exit status 7"):
+        policy.prepare_run(root)
+
+    assert probes == []
+    assert list(cache.glob("host-admission-probe/*")) == []

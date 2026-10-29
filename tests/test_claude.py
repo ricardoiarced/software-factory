@@ -473,6 +473,42 @@ def test_the_managed_policy_gate_fails_closed_on_silent_doctor_output(
         _claude._require_no_managed_policy(executable)
 
 
+def test_claude_doctor_exit_status_is_not_a_configuration_validity_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    executable_directory = tmp_path / "claude-fake"
+    executable_directory.mkdir()
+    executable = executable_directory / "claude"
+    settings_error = (
+        "Failed to parse settings: unknown top-level key "
+        "'factorySentinelKey' was ignored\\n"
+    )
+    doctor_output = (
+        f"{settings_error}"
+        "Managed settings (remote): absent\\nOrganization policy: skipped\\n"
+    )
+    make_doctor_aware_claude(executable, "9.9.9", doctor_output=doctor_output)
+    monkeypatch.setenv("PATH", os.fspath(executable_directory))
+
+    _claude._require_no_managed_policy(executable)
+
+    assert capfd.readouterr().err == ""
+
+    make_doctor_aware_claude(
+        executable,
+        "9.9.9",
+        doctor_output=doctor_output,
+        doctor_status=3,
+    )
+    with pytest.raises(
+        RunAdmissionError,
+        match=r"read-only claude doctor \(exit status 3\)",
+    ):
+        _claude._require_no_managed_policy(executable)
+
+
 def test_the_managed_policy_gate_passes_an_unmanaged_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
